@@ -15,4 +15,5 @@ export type RejectionCode =
   | 'STATUS_CONFLICT'
   | 'INVALID_TRANSITION'
   | 'NEGATIVE_QUANTITY'
-  | 'INTERNAL';
+  | 'INTERNAL'
+  | 'QUEUE_FULL'; // client only: too many changes waiting to sync

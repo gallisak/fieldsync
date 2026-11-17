@@ -8,7 +8,7 @@ import { ScriptedTransport, flush } from '../support/scripted-transport';
 describe('F21 dispose', () => {
   afterEach(() => jest.useRealTimers());
 
-  it.failing('aborts the request in flight and leaves no timers', async () => {
+  it('aborts the request in flight and leaves no timers', async () => {
     jest.useFakeTimers();
     const transport = new ScriptedTransport().replyPull(new Promise(() => undefined));
     const client = new SyncClient({ clientId: 'c1', transport, storage: new MemoryStorage() });

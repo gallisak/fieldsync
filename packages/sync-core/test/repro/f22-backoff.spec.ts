@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { MemoryStorage, SyncClient, type SyncClientOptions } from '../../src';
+import { MemoryStorage, SyncClient } from '../../src';
 import { ScriptedTransport, emptyPull, flush } from '../support/scripted-transport';
 
 const SITE = '33333333-3333-4333-8333-333333333333';
@@ -11,16 +11,11 @@ const SITE = '33333333-3333-4333-8333-333333333333';
 describe('F22 retry scheduling', () => {
   afterEach(() => jest.useRealTimers());
 
-  // `random` is the jitter source the client gains in P3.3; a fixed value makes the delays deterministic.
+  // A fixed jitter source makes the delays deterministic.
   const makeClient = (transport: ScriptedTransport) =>
-    new SyncClient({
-      clientId: 'c1',
-      transport,
-      storage: new MemoryStorage(),
-      random: () => 0.5,
-    } as SyncClientOptions);
+    new SyncClient({ clientId: 'c1', transport, storage: new MemoryStorage(), random: () => 0.5 });
 
-  it.failing('backs off with growing, capped delays while the server is unreachable', async () => {
+  it('backs off with growing, capped delays while the server is unreachable', async () => {
     jest.useFakeTimers({ now: 0 });
     const transport = new ScriptedTransport();
     const client = makeClient(transport);
@@ -43,7 +38,7 @@ describe('F22 retry scheduling', () => {
     }
   });
 
-  it.failing('does not spin when a push is answered without results', async () => {
+  it('does not spin when a push is answered without results', async () => {
     jest.useFakeTimers();
     const transport = new ScriptedTransport()
       .alwaysPush({ results: [], lastMutationId: 0 })

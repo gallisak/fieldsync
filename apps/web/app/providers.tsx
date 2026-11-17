@@ -1,20 +1,17 @@
 'use client';
 
-import { createContext, useContext, useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
-import { HttpTransport, LocalStorageSyncStorage, SyncClient } from '@fieldsync/sync-core';
+import { createContext, useCallback, useContext, useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
+import {
+  HttpTransport,
+  LocalStorageSyncStorage,
+  MutationRejected,
+  SyncClient,
+  WebLocksCoordinator,
+} from '@fieldsync/sync-core';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
 const ClientContext = createContext<SyncClient | null>(null);
-
-function getClientId(): string {
-  let id = localStorage.getItem('fs_client_id');
-  if (!id) {
-    id = crypto.randomUUID();
-    localStorage.setItem('fs_client_id', id);
-  }
-  return id;
-}
 
 export function Providers({ children }: { children: ReactNode }) {
   const [client, setClient] = useState<SyncClient | null>(null);
@@ -27,14 +24,17 @@ export function Providers({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!token) return;
     const c = new SyncClient({
-      clientId: getClientId(),
       transport: new HttpTransport(API, token),
       storage: new LocalStorageSyncStorage('fs_state'),
+      // Read over fetch so the token goes in the Authorization header, never in the URL.
+      stream: { url: `${API}/sync/stream`, token },
+      // Tabs share this storage: one of them talks to the server, the others follow.
+      tabs: new WebLocksCoordinator('fs_state'),
     });
     setClient(c);
-    void c.sync();
-    const es = new EventSource(`${API}/sync/stream?token=${encodeURIComponent(token)}`);
-    es.addEventListener('poke', () => void c.sync());
+    c.start();
+    // A new token or unmounting must not leave the old client syncing and its stream open (F21).
+    return () => c.dispose();
   }, [token]);
 
   if (!token) {
@@ -62,6 +62,24 @@ export function Providers({ children }: { children: ReactNode }) {
 
 export function useSyncClient(): SyncClient | null {
   return useContext(ClientContext);
+}
+
+/**
+ * Runs an action that may call `client.mutate`; a mutation the client refuses up front (`MutationRejected`)
+ * becomes a message to show instead of an error thrown out of an event handler.
+ */
+export function useRefusal(): [string | null, (action: () => unknown) => void] {
+  const [message, setMessage] = useState<string | null>(null);
+  const act = useCallback((action: () => unknown) => {
+    try {
+      action();
+      setMessage(null);
+    } catch (err) {
+      if (!(err instanceof MutationRejected)) throw err;
+      setMessage(err.message);
+    }
+  }, []);
+  return [message, act];
 }
 
 /** Re-renders whenever the client state changes. */

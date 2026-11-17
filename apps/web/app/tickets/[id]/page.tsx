@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { ALLOWED_TRANSITIONS, type TicketStatus } from '@fieldsync/sync-core';
-import { useSyncClient, useSyncState } from '../../providers';
+import { useRefusal, useSyncClient, useSyncState } from '../../providers';
 import { StatusBar } from '../../status-bar';
 
 export default function TicketPage() {
@@ -15,6 +15,7 @@ export default function TicketPage() {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [partName, setPartName] = useState('');
+  const [refusal, act] = useRefusal();
 
   useEffect(() => {
     if (ticket) {
@@ -35,6 +36,7 @@ export default function TicketPage() {
       <Link href="/">← All tickets</Link>
       <h1>{String(ticket.title)}</h1>
       <StatusBar client={client} />
+      {refusal && <p role="alert">{refusal}</p>}
 
       <section>
         <input value={title} onChange={(e) => setTitle(e.target.value)} />
@@ -47,7 +49,7 @@ export default function TicketPage() {
             const patch: Record<string, string> = {};
             if (title !== ticket.title) patch.title = title;
             if (description !== ticket.description) patch.description = description;
-            if (Object.keys(patch).length) client.mutate('ticket.update', { id, patch });
+            if (Object.keys(patch).length) act(() => client.mutate('ticket.update', { id, patch }));
           }}
         >
           Save
@@ -57,7 +59,7 @@ export default function TicketPage() {
       <section>
         <h3>Status: {status}</h3>
         {ALLOWED_TRANSITIONS[status].map((to) => (
-          <button key={to} onClick={() => client.mutate('ticket.setStatus', { id, from: status, to })}>
+          <button key={to} onClick={() => act(() => client.mutate('ticket.setStatus', { id, from: status, to }))}>
             {to}
           </button>
         ))}
@@ -69,8 +71,8 @@ export default function TicketPage() {
           {parts.map((p) => (
             <li key={String(p.id)}>
               {String(p.name)} × {String(p.quantity)}{' '}
-              <button onClick={() => client.mutate('part.adjust', { id: p.id, delta: 1 })}>+</button>
-              <button onClick={() => client.mutate('part.adjust', { id: p.id, delta: -1 })}>−</button>
+              <button onClick={() => act(() => client.mutate('part.adjust', { id: p.id, delta: 1 }))}>+</button>
+              <button onClick={() => act(() => client.mutate('part.adjust', { id: p.id, delta: -1 }))}>−</button>
             </li>
           ))}
         </ul>
@@ -78,8 +80,10 @@ export default function TicketPage() {
         <button
           onClick={() => {
             if (!partName.trim()) return;
-            client.mutate('part.add', { id: crypto.randomUUID(), ticketId: id, name: partName.trim(), quantity: 1 });
-            setPartName('');
+            act(() => {
+              client.mutate('part.add', { id: crypto.randomUUID(), ticketId: id, name: partName.trim(), quantity: 1 });
+              setPartName('');
+            });
           }}
         >
           Add part
@@ -91,7 +95,10 @@ export default function TicketPage() {
           <h3>Rejected changes</h3>
           <ul>
             {client.rejections.map((r) => (
-              <li key={r.mutation.id}>{r.mutation.name}: {r.error}</li>
+              <li key={r.mutation.id}>
+                {r.mutation.name}: {r.message}{' '}
+                <button onClick={() => void client.dismissRejection(r.mutation.id)}>Dismiss</button>
+              </li>
             ))}
           </ul>
         </section>

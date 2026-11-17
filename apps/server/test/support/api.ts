@@ -65,7 +65,10 @@ export interface OpenStream {
 export function openStream(baseUrl: string, opts: { token?: string; query?: string } = {}): Promise<OpenStream> {
   return new Promise((resolve, reject) => {
     const req = httpRequest(`${baseUrl}/sync/stream${opts.query ? `?${opts.query}` : ''}`, {
-      headers: opts.token ? { authorization: `Bearer ${opts.token}` } : {},
+      headers: {
+        [PROTOCOL_HEADER]: String(PROTOCOL),
+        ...(opts.token ? { authorization: `Bearer ${opts.token}` } : {}),
+      },
     });
     req.on('response', (res) => {
       res.resume();
@@ -84,7 +87,7 @@ export async function liveRows(pool: Pool, entity: 'ticket' | 'part'): Promise<R
   return rows.map((r) => r.data);
 }
 
-export function sortById(rows: Row[]): Row[] {
+export function sortById(rows: readonly Row[]): Row[] {
   return [...rows].sort((a, b) => String(a.id).localeCompare(String(b.id)));
 }
 

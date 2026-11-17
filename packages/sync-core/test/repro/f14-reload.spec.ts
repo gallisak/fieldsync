@@ -16,14 +16,13 @@ describe('F14 reload', () => {
     clients.push(c);
     return c;
   };
-  // `ready` arrives with asynchronous storage (P3.1); until then it is undefined and awaiting it is a no-op.
-  const ready = (c: SyncClient) => (c as unknown as { ready?: Promise<unknown> }).ready;
+  const ready = (c: SyncClient) => c.ready;
 
   afterEach(() => {
     for (const c of clients.splice(0)) c.dispose();
   });
 
-  it.failing('keeps unsynced mutations across a reload', async () => {
+  it('keeps unsynced mutations across a reload', async () => {
     const storage = new MemoryStorage();
     const a = open(storage, new ScriptedTransport());
     await ready(a);
@@ -39,7 +38,7 @@ describe('F14 reload', () => {
     expect(b.rows('ticket').map((r) => r.title).sort()).toEqual(['A', 'B']);
   });
 
-  it.failing('never reuses a mutation id the server has acknowledged', async () => {
+  it('never reuses a mutation id the server has acknowledged', async () => {
     const storage = new MemoryStorage();
     const first = new ScriptedTransport().replyPush({ results: [{ id: 1, status: 'applied' }], lastMutationId: 1 });
     const a = open(storage, first); // its pull is unscripted, so it fails after the push succeeded

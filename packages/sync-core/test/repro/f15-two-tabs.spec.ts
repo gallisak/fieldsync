@@ -16,13 +16,13 @@ describe('F15 two tabs on one storage', () => {
     clients.push(c);
     return c;
   };
-  const ready = (c: SyncClient) => (c as unknown as { ready?: Promise<unknown> }).ready;
+  const ready = (c: SyncClient) => c.ready;
 
   afterEach(() => {
     for (const c of clients.splice(0)) c.dispose();
   });
 
-  it.failing('gives each tab its own mutation ids and keeps both mutations', async () => {
+  it('gives each tab its own mutation ids and keeps both mutations', async () => {
     const storage = new MemoryStorage();
     const tab1 = open(storage);
     const tab2 = open(storage);

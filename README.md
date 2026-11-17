@@ -5,26 +5,31 @@ parts used) without connectivity; changes sync to an authoritative Postgres-back
 
 ## Run
 
+    cp .env.example .env             # local configuration, git-ignored
     docker compose up --build        # web :3000, api :3001, postgres :5432
 
 or locally:
 
+    cp .env.example .env
+    docker compose up -d postgres
     npm install
     npm run build:core
-    DATABASE_URL=postgres://... SEED_DEMO=true npm run build -w @fieldsync/server && npm start -w @fieldsync/server
+    npm run build -w @fieldsync/server && npm start -w @fieldsync/server
     npm run dev -w @fieldsync/web
 
-Server configuration: `apps/server/.env.example`. Demo tokens (with `SEED_DEMO=true`): `admin-token` (all
-sites), `tech-a-token` (North Plant), `tech-b-token` (South Plant).
+Configuration lives in one `.env` at the repository root; `.env.example` lists every variable with its meaning.
+The server, its integration tests, the web app and docker compose all read it, and a variable that is set in the
+real environment wins over the file (that is how CI and the containers are configured). Docker images never
+contain a `.env`. Demo tokens (with `SEED_DEMO=true`): `admin-token` (all sites), `tech-a-token` (North Plant),
+`tech-b-token` (South Plant).
 
 ### Checks
 
     docker compose up -d postgres
-    export DATABASE_URL=postgres://fieldsync:fieldsync@localhost:5432/fieldsync
     npm run lint && npm run typecheck && npm test
 
-Integration tests need `DATABASE_URL`. Without it they are skipped locally; in CI (`CI` set) a missing
-`DATABASE_URL` fails the run.
+Integration tests take `DATABASE_URL` from `.env` (or the environment). Without it they are skipped locally; in
+CI (`CI` set) a missing `DATABASE_URL` fails the run.
 
 ## Architecture
 
@@ -37,7 +42,8 @@ Integration tests need `DATABASE_URL`. Without it they are skipped locally; in C
 1. The client queues named mutations with a per-client monotonic id and applies them optimistically.
 2. `POST /sync/push` sends the queue; the server applies each mutation in a transaction.
 3. `GET /sync/pull?cursor=N&clientId=…` returns changes with `version > N` for accessible sites.
-4. `GET /sync/stream` emits `poke` events so clients pull promptly.
+4. `GET /sync/stream` emits `poke` events so clients pull promptly. The client reads it with `fetch` (the token goes
+   in the `Authorization` header, never in the URL), reconnects with backoff and syncs after every reconnect.
 
 ## Guarantee model
 
@@ -67,7 +73,7 @@ in `packages/sync-core/test/repro/`.
 |---|---|---|---|---|
 | F1 | Ordering | Log versions come from a sequence: allocated at insert, visible at commit, so a late commit is skipped by readers | `f01-commit-order.integration.spec.ts` | fixed |
 | F2 | Ordering | Pull reads changes and `lastMutationId` in separate snapshots and reports it on non-final pages | `f02-pull-snapshot.integration.spec.ts` | fixed |
-| F3 | Ordering | A poke during an in-flight sync is dropped | `f03-lost-poke.spec.ts` | open |
+| F3 | Ordering | A poke during an in-flight sync is dropped | `f03-lost-poke.spec.ts` | fixed |
 | F4 | Duplicate push | Dedup check runs outside the transaction without a lock; parallel duplicates all apply | `f04-parallel-duplicate.integration.spec.ts` | fixed |
 | F5 | Poison mutation | A rejected mutation fails the whole push with 500 and blocks the queue forever | `f05-poison.integration.spec.ts` | fixed |
 | F6 | Poison mutation | `constructor` / `__proto__` resolve to prototype members of the mutator registry → 500 | `f06-proto-name.integration.spec.ts` | fixed |
@@ -78,15 +84,15 @@ in `packages/sync-core/test/repro/`.
 | F11 | Authenticity | Bearer token accepted in the SSE query string; tokens stored in plaintext | `f11-token-in-url.integration.spec.ts` | open |
 | F12 | Access lifecycle | Revoked access and site moves never remove data from clients | `f12-revocation-move.integration.spec.ts` | moves fixed; revocation open |
 | F13 | Log lifecycle | GC by age with no floor or reload signal; new clients replay a truncated log | `f13-gc.integration.spec.ts` | open |
-| F14 | Client data loss | Pending queue not persisted; `lastMutationId` persisted only after pull | `f14-reload.spec.ts` | open |
-| F15 | Client data loss | Tabs share one `clientId` and storage blob with separate id counters | `f15-two-tabs.spec.ts` | open |
-| F16 | Client data loss | Pending mutations dropped on push ack, before the pull delivers their effects | `f16-ack-flicker.spec.ts` | open |
+| F14 | Client data loss | Pending queue not persisted; `lastMutationId` persisted only after pull | `f14-reload.spec.ts` | fixed |
+| F15 | Client data loss | Tabs share one `clientId` and storage blob with separate id counters | `f15-two-tabs.spec.ts` | fixed |
+| F16 | Client data loss | Pending mutations dropped on push ack, before the pull delivers their effects | `f16-ack-flicker.spec.ts` | fixed |
 | F17 | Determinism | `ticket.create` generates its id and timestamps inside the mutator | `f17-determinism.spec.ts` | fixed |
 | F18 | Merge semantics | `ticket.update` overwrites title and description wholesale | `f18-field-merge.spec.ts` | fixed |
 | F19 | Merge semantics | `ticket.delete` leaves the ticket's parts behind | `f19-orphan-parts.spec.ts` | fixed |
 | F20 | Resource leak (server) | Stream subscribers never removed; no backpressure or heartbeat | `f20-stream-leak.integration.spec.ts` | open |
-| F21 | Resource leak (client) | `dispose()` does not abort requests; no request timeout; web effect has no cleanup | `f21-dispose.spec.ts` | open |
-| F22 | Resource / behaviour | Fixed 5 s retry without backoff or jitter; immediate re-push loop | `f22-backoff.spec.ts` | open |
+| F21 | Resource leak (client) | `dispose()` does not abort requests; no request timeout; web effect has no cleanup | `f21-dispose.spec.ts` | fixed |
+| F22 | Resource / behaviour | Fixed 5 s retry without backoff or jitter; immediate re-push loop | `f22-backoff.spec.ts` | fixed |
 | F23 | Input handling | Malformed cursor silently becomes a full-history pull | `f23-bad-cursor.integration.spec.ts` | fixed |
 | F24 | Vacuous test | Assertion inside `catch`: passes when nothing throws | `mutators.spec.ts` (rewritten) | fixed — see below |
 | F25 | Vacuous test | Mocked pool, SQL never inspected; passes with F9 present | replaced by `f09-read-access` | fixed — see below |
@@ -150,6 +156,27 @@ on the last page for mutation ids above `ackedMutationId`.
 **Alternatives considered.** Returning `lastMutationId` as "the highest mutation whose changes are all on this
 page" needs per-page bookkeeping of which client wrote which row, and still breaks when a mutation writes to a
 site the reader cannot see; deferring the acknowledgement to the end of paging is simpler and exact.
+
+### F3 — a poke during a sync is lost
+
+**What.** `sync()` returned the running promise when a sync was already in flight and then forgot the request.
+Afterwards it ran again only if local mutations were pending.
+
+**Why it is dangerous.** The stream pokes exactly when another device changed something. If that happens while
+this client is mid-pull (whose snapshot predates the change), the change stays invisible until some unrelated
+event triggers the next sync — possibly minutes, possibly never on a quiet device.
+
+**Reproduce.** `packages/sync-core/test/repro/f03-lost-poke.spec.ts`: a pull is held, `sync()` is called again,
+the pull is released; a second pull must follow.
+
+**Fix.** Single flight with a remembered request: a `sync()` during a run sets `rerun` and returns the running
+promise; when the run settles, `rerun` starts exactly one more. Every trigger goes through it: a stored
+mutation, a stream poke, `start()`, the browser's `online` and `visibilitychange` events and a background poll
+every 30 s × (0.5 + random), all injectable (`env`, `clock`, `random`) so tests need no DOM.
+
+**Alternatives considered.** Queuing every request would run one sync per poke during a burst; cancelling the
+running sync for a new one throws away a nearly finished pull. One extra run covers any number of requests
+that arrived during the current one.
 
 ### F4 — parallel duplicate pushes all apply
 
@@ -278,6 +305,91 @@ otherwise), and the push response's `lastMutationId` is read with the same condi
 **Alternatives considered.** Deriving the client id on the server (e.g. `userId + device`) would remove the
 check but breaks the client's ability to create its id offline before it has ever talked to the server.
 
+### F14 — a reload loses offline work and reuses mutation ids
+
+**What.** The queue of unsynced mutations lived only in memory, and `lastMutationId` was saved only after a
+successful pull. Mutation ids were computed as `lastMutationId + pending + 1`.
+
+**Why it is dangerous.** Closing the tab or a crash while offline silently discards everything the technician
+did since the last sync. Worse, a reload between "push acknowledged" and "pull done" starts numbering again
+from the old `lastMutationId`: the server answers `duplicate` for the new work and it is lost without any
+error.
+
+**Reproduce.** `packages/sync-core/test/repro/f14-reload.spec.ts`: two mutations, dispose, reopen on the same
+storage → both must still be queued and visible; a push is acknowledged, the pull fails, reopen, mutate → the
+new id must be above every id the server has seen.
+
+**Fix.** Storage became an asynchronous, transactional interface (`load`, `enqueue`, `commitPull`,
+`dismissRejection`, `resetClient`), and it owns the queue, the client id and the id counter. `enqueue` takes
+`nextMutationId` and appends the mutation in one atomic step, so an id is durable before it is ever sent and is
+never handed out twice. `commitPull` applies a page, moves the cursor and — on the last page only — drops
+acknowledged mutations and keeps rejected ones with their reason, all in one step guarded by the expected
+cursor. `mutate()` stays synchronous for the UI: the mutation shows at once from an in-memory "unsaved" list and
+gets its id when it is stored; nothing is pushed before that. The web app's `localStorage` backend migrates the
+starter's blob and adopts its `fs_client_id`, so an upgraded browser keeps its server-side identity (checked in
+a browser: the next mutation is accepted as number 5 of the old client).
+
+**Alternatives considered.** Persisting the in-memory structures after every change (the starter's `save`)
+keeps the race between "id handed out" and "id saved"; ids derived from a timestamp or random value would
+break the server's gap-free per-client ordering that duplicate detection relies on.
+
+### F15 — two tabs hand out the same mutation ids
+
+**What.** Every tab of the app shared one `clientId` and one storage blob, but each kept its own in-memory id
+counter and its own copy of the state, and each wrote the whole blob back.
+
+**Why it is dangerous.** Two tabs creating something offline both used id `n + 1`: the server applied the first
+and answered `duplicate` for the second, which was then silently gone; each tab also overwrote the other's saved
+state.
+
+**Reproduce.** `packages/sync-core/test/repro/f15-two-tabs.spec.ts`: two clients on one storage mutate at the
+same time; after reopening, both mutations are queued with different ids.
+
+**Fix.** Ids are allocated by the storage in the same atomic step that stores the mutation (`enqueue`; in
+IndexedDB one `readwrite` transaction, which browsers serialise across tabs), so tabs can no longer collide.
+On top, one tab leads (`WebLocksCoordinator`: a Web Lock held while the tab is open, messages over a
+`BroadcastChannel`): only the leader pushes, pulls and keeps the stream; the others store their mutations, tell
+the leader (`queue-changed`), reload after its commits (`state-changed`) and show its status. Closing or killing
+the leader frees the lock and the next tab takes over from storage. Leadership only saves requests —
+correctness does not depend on it: with two leaders the server drops duplicate pushes and `commitPull`'s cursor
+check drops the slower of two overlapping pulls (`test/tabs/tabs.spec.ts`, including a leader that dies with its
+push in flight). In Chrome, a second tab made no API request at all while its ticket was sent by the first, and
+took over the stream and the sync when the first tab closed.
+
+**Alternatives considered.** A `SharedWorker` owning the connection is cleaner but not available in Chrome for
+Android, the technicians' likely browser; per-tab client ids would avoid collisions but multiply server clients
+and still race on the shared storage.
+
+### F16 — an acknowledged change disappears until the pull arrives
+
+**What.** The client removed a mutation from its queue as soon as the push response said `applied`, but the
+change itself reaches `base` only with the next pull. In between, the view (base + queue) contained the change
+in neither place.
+
+**Why it is dangerous.** The user's edit visibly reverts for the length of a pull, and if the pull fails or the
+app is closed in that window, it is gone from the device until some later sync happens to deliver it.
+
+**Reproduce.** `packages/sync-core/test/repro/f16-ack-flicker.spec.ts`: the push is answered `applied`, the
+pull is held; the view must still show the created ticket.
+
+**Fix.** The push response no longer removes anything. The client keeps an in-memory `pushedUpTo` so it does
+not resend what the server has answered, and a mutation leaves the queue only inside `storage.commitPull` of
+the pull page that also writes its effect into `base` (the last page, which carries `lastMutationId`). After
+every committed page the client reloads base and queue from storage and replays the queue, so the view is
+always base + every unacknowledged mutation (`test/client/rebase.spec.ts`: a base change under a pending
+patch, a row deleted underneath, a snapshot replacing the base with three mutations queued, a pull that
+acknowledges two of three). Push failures are now decided by `TransportError`: network / 5xx retry; `401` and
+`426` block syncing with the queue kept; `OUT_OF_ORDER` resends from `expected` once; `OUT_OF_ORDER` with
+`expected = 1` after earlier acknowledgements, or `CLIENT_MISMATCH`, start over under a new client id with
+the queue renumbered; any other 4xx blocks instead of looping. The stored `lastMutationId` never goes
+backwards, so a server that lost the client is detected on the next push (checked in a browser against a
+server that had never seen the client: `409`, reset, the change is accepted as mutation 1 of the new client).
+
+**Alternatives considered.** Keeping acknowledged mutations in a separate "applied, not yet pulled" list
+duplicates the queue and still needs the same commit to retire them; applying the push result to `base`
+directly would put an unconfirmed server state into `base` and break the rule that `base` only ever holds
+what the server sent.
+
 ### F17 — non-deterministic `ticket.create`
 
 **What.** `ticket.create` called `crypto.randomUUID()` and `new Date()` inside the mutator.
@@ -337,6 +449,47 @@ ticket.
 **Alternatives considered.** An `ON DELETE CASCADE` in Postgres would not reach the change log (clients would
 never hear about the deleted parts) and would not run on the client; soft-hiding orphans in the UI leaves the
 data and the replication cost in place.
+
+### F21 — disposing the client leaves requests and timers alive
+
+**What.** `dispose()` only cleared the retry timer. A request in flight was never aborted and had no timeout,
+and the web app created a client and an `EventSource` in an effect without any cleanup.
+
+**Why it is dangerous.** Every token change or remount leaked a syncing client and an open stream; a hung
+request (a dead TCP connection on a mobile network) kept the single sync slot busy forever, so the client
+silently stopped syncing.
+
+**Reproduce.** `packages/sync-core/test/repro/f21-dispose.spec.ts`: dispose during a held pull; the request's
+`AbortSignal` must be aborted and no timer may remain.
+
+**Fix.** The client owns an `AbortController`; every transport call receives its signal, and `HttpTransport`
+combines it with a 20 s timeout in a per-request controller whose timer is cleared when the call ends. A timeout
+is a `TransportError('timeout')` (retried with backoff); an abort by the caller is reported as such and ignored.
+`dispose()` aborts, clears the retry and poll timers, removes the `online`/`visibilitychange` listeners, closes
+storage and drops subscribers. The web effect now returns a cleanup that disposes the client, which also
+closes its poke stream.
+
+**Alternatives considered.** `AbortSignal.any` / `AbortSignal.timeout` are shorter but missing on older
+browsers, and the timeout's timer would outlive a finished request.
+
+### F22 — fixed 5 s retry and an immediate re-push loop
+
+**What.** Every failure was retried after exactly 5 s, and after every sync the client started another one at
+once if anything was still queued — including when the server had answered `200` without handling anything.
+
+**Why it is dangerous.** After an outage every client retries in lockstep every 5 s (a thundering herd on a
+recovering server); a server bug that returns empty results turns each client into a hot loop.
+
+**Reproduce.** `packages/sync-core/test/repro/f22-backoff.spec.ts`: with the server unreachable the delays must
+grow and stay capped; a push answered without results must not be resent in a loop.
+
+**Fix.** Full-jitter exponential backoff, `delay = random() × min(60 s, 500 ms × 2^attempt)` (`nextDelay`, unit
+tested), reset after a successful run; the unconditional re-run is gone (see F3); a push answered without any
+result counts as a failure (`502`) and goes through the same backoff. In a browser with the server stopped, the
+gaps between failed syncs were 0.3, 0.8, 1.0, 2.0, 0.9, 6.7, 1.5 and 8.6 s, each below its bound.
+
+**Alternatives considered.** Equal or decorrelated jitter spread load similarly; full jitter is the simplest
+with the lowest total load, and needs no state beyond the attempt counter.
 
 ### F23 — malformed cursor becomes a full-history pull
 

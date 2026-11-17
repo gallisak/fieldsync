@@ -9,14 +9,14 @@ const TICKET = '11111111-1111-4111-8111-111111111111';
  * effects into `base`. The user's change disappears until the pull lands (and is lost if the app dies then).
  */
 describe('F16 acknowledgement before the pull', () => {
-  it.failing('keeps showing an acknowledged change until the pull delivers it', async () => {
+  it('keeps showing an acknowledged change until the pull delivers it', async () => {
     const held = deferred<PullResponse>();
     const transport = new ScriptedTransport()
       .replyPush({ results: [{ id: 1, status: 'applied' }], lastMutationId: 1 })
       .replyPull(held.promise);
     const client = new SyncClient({ clientId: 'c1', transport, storage: new MemoryStorage() });
     try {
-      await (client as unknown as { ready?: Promise<unknown> }).ready;
+      await client.ready;
       await client.mutate('ticket.create', { id: TICKET, siteId: SITE, title: 'Leaking valve', description: '' });
       await flush();
       expect(transport.callsOf('push')).toHaveLength(1);

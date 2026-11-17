@@ -1,0 +1,8 @@
+.git
+**/node_modules
+**/dist
+**/.next
+**/*.tsbuildinfo
+**/*.log
+# Configuration is passed to containers at run time, never baked into an image.
+**/.env

@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import type { MutationResult, PushRequest, PushResponse } from '@fieldsync/sync-core';
 import type { AuthUser } from './auth';
-import { Db } from './db';
+import { Db } from './database/db.service';
 import { applyMutation } from './server-tx';
 import { StreamService } from './stream.service';
 

@@ -1,9 +1,3 @@
-import { Inject, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { Pool, PoolClient } from 'pg';
-import { APP_CONFIG, type AppConfig } from './config/env';
-import { seedDemo } from './seed';
-
-const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sites (
   id uuid PRIMARY KEY,
   name text NOT NULL
@@ -44,37 +38,3 @@ CREATE TABLE IF NOT EXISTS clients (
   user_id uuid NOT NULL,
   last_mutation_id bigint NOT NULL DEFAULT 0
 );
-`;
-
-@Injectable()
-export class Db implements OnModuleInit, OnModuleDestroy {
-  readonly pool: Pool;
-
-  constructor(@Inject(APP_CONFIG) private readonly config: AppConfig) {
-    this.pool = new Pool({ connectionString: config.DATABASE_URL, max: config.DB_POOL_MAX });
-  }
-
-  async onModuleInit(): Promise<void> {
-    await this.pool.query(SCHEMA);
-    if (this.config.SEED_DEMO) await seedDemo(this.pool);
-  }
-
-  async onModuleDestroy(): Promise<void> {
-    await this.pool.end();
-  }
-
-  async tx<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
-    const client = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
-      const result = await fn(client);
-      await client.query('COMMIT');
-      return result;
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
-    }
-  }
-}

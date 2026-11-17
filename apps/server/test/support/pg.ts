@@ -6,7 +6,7 @@ import { Pool } from 'pg';
 import request from 'supertest';
 import { AppModule } from '../../src/app.module';
 import { APP_CONFIG, parseConfig } from '../../src/config/env';
-import { Db } from '../../src/db';
+import { Db } from '../../src/database/db.service';
 
 /**
  * Returns DATABASE_URL. In CI a missing URL is a hard error, so integration suites can never be

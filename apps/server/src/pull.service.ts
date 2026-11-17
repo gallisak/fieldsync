@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { Change, PullResponse } from '@fieldsync/sync-core';
 import { accessibleSites } from './access';
 import type { AuthUser } from './auth';
-import { Db } from './db';
+import { Db } from './database/db.service';
 
 interface LogRow {
   version: string;

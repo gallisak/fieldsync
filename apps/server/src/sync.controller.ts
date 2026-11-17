@@ -3,7 +3,7 @@ import type { PushRequest } from '@fieldsync/sync-core';
 import type { Response } from 'express';
 import { accessibleSites } from './access';
 import { AuthGuard, type AuthedRequest } from './auth';
-import { Db } from './db';
+import { Db } from './database/db.service';
 import { PullService } from './pull.service';
 import { PushService } from './push.service';
 import { StreamService } from './stream.service';

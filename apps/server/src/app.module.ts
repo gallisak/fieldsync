@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { AuthGuard } from './auth';
 import { ConfigModule } from './config/config.module';
-import { Db } from './db';
+import { Db } from './database/db.service';
 import { GcService } from './gc.service';
 import { HealthController } from './health.controller';
 import { PullService } from './pull.service';

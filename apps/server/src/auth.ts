@@ -1,6 +1,6 @@
 import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
 import type { Request } from 'express';
-import { Db } from './db';
+import { Db } from './database/db.service';
 
 export interface AuthUser {
   id: string;

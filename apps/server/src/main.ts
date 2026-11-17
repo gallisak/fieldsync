@@ -1,14 +1,24 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
+import { ConfigError, loadConfig } from './config/env';
 
 async function bootstrap() {
+  let config;
+  try {
+    // Validate before Nest starts so a bad environment fails with a readable message, not a DI stack trace.
+    config = loadConfig();
+  } catch (err) {
+    if (!(err instanceof ConfigError)) throw err;
+    // eslint-disable-next-line no-console
+    console.error(err.message);
+    process.exit(1);
+  }
   const app = await NestFactory.create(AppModule);
-  app.enableCors();
+  app.enableCors({ origin: config.CORS_ORIGINS });
   app.enableShutdownHooks();
-  const port = Number(process.env.PORT ?? 3001);
-  await app.listen(port);
+  await app.listen(config.PORT);
   // eslint-disable-next-line no-console
-  console.log(`fieldsync server listening on ${port}`);
+  console.log(`fieldsync server listening on ${config.PORT}`);
 }
 bootstrap();

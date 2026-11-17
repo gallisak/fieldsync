@@ -5,6 +5,7 @@ import { Test } from '@nestjs/testing';
 import { Pool } from 'pg';
 import request from 'supertest';
 import { AppModule } from '../../src/app.module';
+import { APP_CONFIG, parseConfig } from '../../src/config/env';
 import { Db } from '../../src/db';
 
 /**
@@ -43,16 +44,15 @@ export async function createTestApp(): Promise<TestApp> {
   const admin = new Pool({ connectionString, max: 1 });
   await admin.query(`CREATE SCHEMA "${schema}"`);
 
-  const pool = new Pool({ connectionString, max: 20, options: `-c search_path=${schema}` });
-  // Db creates its pool in a field initializer, so build the instance without running it and
-  // attach the schema-scoped pool instead. Lifecycle hooks (schema DDL, pool.end) still run.
-  const db = Object.create(Db.prototype) as Db;
-  Object.defineProperty(db, 'pool', { value: pool });
+  // libpq `options` in the URL pins every pooled connection to the private schema.
+  const url = new URL(connectionString);
+  url.searchParams.set('options', `-c search_path=${schema}`);
+  const config = parseConfig({ DATABASE_URL: url.toString(), SEED_DEMO: 'false' });
 
   try {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
-      .overrideProvider(Db)
-      .useValue(db)
+      .overrideProvider(APP_CONFIG)
+      .useValue(config)
       .compile();
     const app = moduleRef.createNestApplication({ logger: false });
     await app.init();
@@ -60,7 +60,7 @@ export async function createTestApp(): Promise<TestApp> {
     return {
       app,
       http: request(app.getHttpServer()),
-      pool,
+      pool: app.get(Db).pool,
       schema,
       async close() {
         try {
@@ -72,7 +72,6 @@ export async function createTestApp(): Promise<TestApp> {
       },
     };
   } catch (err) {
-    await pool.end().catch(() => undefined);
     await admin.query(`DROP SCHEMA "${schema}" CASCADE`);
     await admin.end();
     throw err;

@@ -10,3 +10,5 @@ export * from './storage/local-storage';
 export * from './transport/errors';
 export * from './transport/http';
 export * from './client/sync-client';
+export * from './client/sse';
+export * from './client/backoff';

@@ -39,9 +39,8 @@ export class SyncController {
     return this.pullService.pull(req.user, query);
   }
 
-  // No ProtocolGuard until the stream moves to fetch (P3.4): a browser EventSource cannot send the header.
   @Get('sync/stream')
-  @UseGuards(AuthGuard)
+  @UseGuards(ProtocolGuard, AuthGuard)
   async stream(@Req() req: AuthedRequest, @Res() res: Response) {
     const sites = await accessibleSites(this.db.pool, req.user);
     this.streams.add(sites, res);

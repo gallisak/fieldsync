@@ -2,6 +2,7 @@ import { MutationRejected, getMutator, type MutatorTx } from '../mutators';
 import type { PersistedState, StoredMutation, SyncStorage } from '../storage/types';
 import { TransportError } from '../transport/errors';
 import { nextDelay } from './backoff';
+import { openPokeStream } from './sse';
 import type { Transport } from '../transport/http';
 import type { Cursor, EntityName, Mutation, MutatorName, Row } from '../protocol/types';
 
@@ -31,11 +32,21 @@ export interface SyncEnvironment {
   onVisible?(fn: () => void): () => void;
 }
 
+/** Where `start()` opens the server's poke stream. */
+export interface PokeStreamConfig {
+  url: string;
+  token: string;
+  fetchImpl?: typeof fetch;
+  watchdogMs?: number;
+}
+
 export interface SyncClientOptions {
   /** @deprecated Ignored: the storage owns the client id. Kept so existing callers still compile. */
   clientId?: string;
   transport: Transport;
   storage: SyncStorage;
+  /** Without it the client syncs on its own triggers only (mutations, `online`, visibility, poll). */
+  stream?: PokeStreamConfig;
   clock?: SyncClock;
   random?: () => number;
   /** Defaults to the browser's `online` and `visibilitychange` events, and to nothing elsewhere. */
@@ -108,8 +119,12 @@ export class SyncClient {
   private readonly clock: SyncClock;
   private readonly random: () => number;
   private readonly env: SyncEnvironment;
+  private readonly streamConfig?: PokeStreamConfig;
   /** Aborted by `dispose()`: every request in flight is given up. */
   private readonly abort = new AbortController();
+  /** Closes the poke stream only: `dispose()` and `block()`. */
+  private readonly streamAbort = new AbortController();
+  private streamTimer?: unknown;
   private id = '';
   private base = new Map<string, Row>();
   private cursor: Cursor | null = null;
@@ -143,6 +158,7 @@ export class SyncClient {
     this.clock = opts.clock ?? realClock;
     this.random = opts.random ?? Math.random;
     this.env = opts.env ?? browserEnvironment();
+    this.streamConfig = opts.stream;
     this.ready = this.boot();
     this.writeChain = this.ready;
   }
@@ -217,8 +233,8 @@ export class SyncClient {
   }
 
   /**
-   * Starts background syncing: one sync now, then on `online`, on the page becoming visible and on a jittered
-   * poll. Mutations and stream pokes request a sync whether or not the client was started.
+   * Starts background syncing: one sync now, then on every stream poke, on `online`, on the page becoming
+   * visible and on a jittered poll. Mutations request a sync whether or not the client was started.
    */
   start(): void {
     if (this.started || this.disposed) return;
@@ -227,6 +243,7 @@ export class SyncClient {
     if (this.env.onOnline) this.unsubscribe.push(this.env.onOnline(request));
     if (this.env.onVisible) this.unsubscribe.push(this.env.onVisible(request));
     this.schedulePoll();
+    if (this.streamConfig) void this.keepStreamOpen(this.streamConfig);
     request();
   }
 
@@ -256,6 +273,7 @@ export class SyncClient {
     if (this.disposed) return;
     this.disposed = true;
     this.abort.abort();
+    this.closeStream();
     this.clearRetry();
     if (this.pollTimer !== undefined) this.clock.clearTimeout(this.pollTimer);
     for (const off of this.unsubscribe.splice(0)) off();
@@ -360,6 +378,7 @@ export class SyncClient {
   /** Stops syncing for good (until a new client is made); the queue is kept. */
   private block(reason: BlockReason): void {
     this.blockedBy = reason;
+    this.closeStream();
     this.clearRetry();
     if (this.pollTimer !== undefined) this.clock.clearTimeout(this.pollTimer);
     this.pollTimer = undefined;
@@ -405,6 +424,45 @@ export class SyncClient {
     if (this.currentStatus === status) return;
     this.currentStatus = status;
     this.emit();
+  }
+
+  /**
+   * Keeps the poke stream open: reopens after an end or an error with backoff (reset by the first byte of a
+   * connection). Every successful open requests a sync, since pokes may have been missed while disconnected.
+   */
+  private async keepStreamOpen(config: PokeStreamConfig): Promise<void> {
+    let attempt = 0;
+    while (!this.disposed && !this.blockedBy) {
+      let receiving = false;
+      try {
+        await openPokeStream({
+          ...config,
+          signal: this.streamAbort.signal,
+          timers: this.clock,
+          onOpen: () => void this.sync(),
+          onData: () => {
+            if (!receiving) attempt = 0;
+            receiving = true;
+          },
+          onPoke: () => void this.sync(),
+        });
+      } catch (err) {
+        if (this.disposed || this.blockedBy) return;
+        if (err instanceof TransportError && err.status === 401) return this.block('auth');
+        if (err instanceof TransportError && err.status === 426) return this.block('upgrade');
+      }
+      if (this.disposed || this.blockedBy) return;
+      await new Promise<void>((resolve) => {
+        this.streamTimer = this.clock.setTimeout(resolve, nextDelay(attempt++, this.random));
+      });
+      this.streamTimer = undefined;
+    }
+  }
+
+  private closeStream(): void {
+    this.streamAbort.abort();
+    if (this.streamTimer !== undefined) this.clock.clearTimeout(this.streamTimer);
+    this.streamTimer = undefined;
   }
 
   private clearRetry(): void {

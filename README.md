@@ -42,7 +42,8 @@ CI (`CI` set) a missing `DATABASE_URL` fails the run.
 1. The client queues named mutations with a per-client monotonic id and applies them optimistically.
 2. `POST /sync/push` sends the queue; the server applies each mutation in a transaction.
 3. `GET /sync/pull?cursor=N&clientId=…` returns changes with `version > N` for accessible sites.
-4. `GET /sync/stream` emits `poke` events so clients pull promptly.
+4. `GET /sync/stream` emits `poke` events so clients pull promptly. The client reads it with `fetch` (the token goes
+   in the `Authorization` header, never in the URL), reconnects with backoff and syncs after every reconnect.
 
 ## Guarantee model
 
@@ -438,8 +439,8 @@ silently stopped syncing.
 combines it with a 20 s timeout in a per-request controller whose timer is cleared when the call ends. A timeout
 is a `TransportError('timeout')` (retried with backoff); an abort by the caller is reported as such and ignored.
 `dispose()` aborts, clears the retry and poll timers, removes the `online`/`visibilitychange` listeners, closes
-storage and drops subscribers. The web effect now returns a cleanup that closes the stream and disposes the
-client.
+storage and drops subscribers. The web effect now returns a cleanup that disposes the client, which also
+closes its poke stream.
 
 **Alternatives considered.** `AbortSignal.any` / `AbortSignal.timeout` are shorter but missing on older
 browsers, and the timeout's timer would outlive a finished request.

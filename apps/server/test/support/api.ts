@@ -65,7 +65,10 @@ export interface OpenStream {
 export function openStream(baseUrl: string, opts: { token?: string; query?: string } = {}): Promise<OpenStream> {
   return new Promise((resolve, reject) => {
     const req = httpRequest(`${baseUrl}/sync/stream${opts.query ? `?${opts.query}` : ''}`, {
-      headers: opts.token ? { authorization: `Bearer ${opts.token}` } : {},
+      headers: {
+        [PROTOCOL_HEADER]: String(PROTOCOL),
+        ...(opts.token ? { authorization: `Bearer ${opts.token}` } : {}),
+      },
     });
     req.on('response', (res) => {
       res.resume();

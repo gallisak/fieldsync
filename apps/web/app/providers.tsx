@@ -20,16 +20,13 @@ export function Providers({ children }: { children: ReactNode }) {
     const c = new SyncClient({
       transport: new HttpTransport(API, token),
       storage: new LocalStorageSyncStorage('fs_state'),
+      // Read over fetch so the token goes in the Authorization header, never in the URL.
+      stream: { url: `${API}/sync/stream`, token },
     });
     setClient(c);
     c.start();
-    const es = new EventSource(`${API}/sync/stream?token=${encodeURIComponent(token)}`);
-    es.addEventListener('poke', () => void c.sync());
     // A new token or unmounting must not leave the old client syncing and its stream open (F21).
-    return () => {
-      es.close();
-      c.dispose();
-    };
+    return () => c.dispose();
   }, [token]);
 
   if (!token) {

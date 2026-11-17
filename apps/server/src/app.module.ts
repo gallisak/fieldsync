@@ -9,6 +9,7 @@ import { HealthController } from './health.controller';
 import { PullService } from './pull.service';
 import { PushService } from './push.service';
 import { MutationExecutor } from './sync/push/mutation-executor';
+import { ChangeLogRepository } from './sync/repositories/change-log.repository';
 import { StreamService } from './stream.service';
 import { SyncController } from './sync.controller';
 
@@ -21,6 +22,7 @@ import { SyncController } from './sync.controller';
     AuthGuard,
     PushService,
     MutationExecutor,
+    ChangeLogRepository,
     PullService,
     StreamService,
     GcService,

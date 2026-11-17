@@ -65,7 +65,7 @@ in `packages/sync-core/test/repro/`.
 
 | # | Category | Defect | Reproduced by | Status |
 |---|---|---|---|---|
-| F1 | Ordering | Log versions come from a sequence: allocated at insert, visible at commit, so a late commit is skipped by readers | `f01-commit-order.integration.spec.ts` | open |
+| F1 | Ordering | Log versions come from a sequence: allocated at insert, visible at commit, so a late commit is skipped by readers | `f01-commit-order.integration.spec.ts` | fixed |
 | F2 | Ordering | Pull reads changes and `lastMutationId` in separate snapshots and reports it on non-final pages | `f02-pull-snapshot.integration.spec.ts` | open |
 | F3 | Ordering | A poke during an in-flight sync is dropped | `f03-lost-poke.spec.ts` | open |
 | F4 | Duplicate push | Dedup check runs outside the transaction without a lock; parallel duplicates all apply | `f04-parallel-duplicate.integration.spec.ts` | open |
@@ -92,6 +92,36 @@ in `packages/sync-core/test/repro/`.
 | F25 | Vacuous test | Mocked pool, SQL never inspected; passes with F9 present | replaced by `f09-read-access` | fixed — see below |
 | F26 | Vacuous test | Fake DB ignores the query; encodes F8 | replaced by `f08-write-access` | fixed — see below |
 | F27 | Vacuous test | `SELECT 1` "integration", `it.todo`, silent skip without `DATABASE_URL`, web not type-checked | replaced by the repro suites; tooling | fixed — see below |
+
+### F1 — change versions visible out of commit order
+
+**What.** `change_log.version` was a `bigserial`: the number is taken at `INSERT`, but the row becomes visible
+at `COMMIT`. Transaction A takes version 10, transaction B takes 11 and commits first; a pull between the two
+commits returns 11 and moves the client's cursor past 10. When A commits, its row is never delivered.
+
+**Why it is dangerous.** Silent, permanent divergence under perfectly normal concurrent writes: nothing errors,
+the client just never sees one change (and every later change to that row is applied on a stale base).
+
+**Reproduce.** `apps/server/test/repro/f01-commit-order.integration.spec.ts`: push A is paused inside its
+transaction (a test hook in `MutationExecutor` blocks on an advisory lock after A's writes), push B runs, an
+admin pull happens, then A is released; the next pull from the returned cursor must contain A's change.
+
+**Fix.** Versions come from a single `sync_state` row:
+`UPDATE sync_state SET last_version = last_version + n RETURNING last_version`, run after the mutator and
+after every entity row lock, as the last lock of the transaction. The row lock is held until `COMMIT`, so a
+transaction holding version 10 always commits before any other transaction can even obtain 11 — version
+order equals commit order and the log is gap-free. All rows of one mutation share a `tx_seq` (its first
+version) and carry `client_id`/`mutation_id`. Migration `003_version_allocation.sql` re-syncs the counter
+with `max(version)` and drops the sequence. Write rules: a `put` that changes a row's site logs a `del` under
+the old site before the `put` under the new one (this is how a moved ticket leaves the old site's clients);
+deleting a row that does not exist logs nothing.
+
+**Alternatives considered.** Reading only below the oldest in-flight transaction (`pg_snapshot_xmin` /
+`txid_current_snapshot()`, as several sync engines do) keeps writes fully parallel but couples the cursor to
+Postgres transaction ids and still needs care around wraparound and replicas; a logical-replication / outbox
+consumer that assigns versions after commit adds a moving part and a lag. The single counter row serialises
+only the short tail of each write transaction (allocation → commit), which is far below this system's write
+rate.
 
 ### F6 — prototype names reach the mutator registry
 

@@ -32,7 +32,7 @@ describeDb('F1 change order vs commit order', () => {
     }
   }
 
-  it.failing('delivers a change whose transaction commits after a later-numbered one', async () => {
+  it('delivers a change whose transaction commits after a later-numbered one', async () => {
     const http = request(await listen(t.app));
     const executor = t.app.get(MutationExecutor);
     let pausedPid: number | undefined;

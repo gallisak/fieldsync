@@ -12,12 +12,14 @@ describeDb('F2 lastMutationId vs paged changes', () => {
     t = await createTestApp();
     await seed(t.pool);
     // Seeded into both tables so the page-1 assertion still holds once the initial pull becomes a snapshot.
+    // Versions 1..600 are taken here, so the allocator must continue after them.
+    await t.pool.query(`UPDATE sync_state SET last_version = 600`);
     await t.pool.query(
       `WITH rows AS (
          SELECT gen_random_uuid() AS id, g FROM generate_series(1, 600) AS g
        ), log AS (
-         INSERT INTO change_log (site_id, entity, entity_id, op, data)
-         SELECT $1::uuid, 'ticket', id,
+         INSERT INTO change_log (version, tx_seq, site_id, entity, entity_id, op, data)
+         SELECT g, g, $1::uuid, 'ticket', id,
                 'put', jsonb_build_object('id', id, 'siteId', $1::text, 'title', 'seed ' || g,
                                           'description', '', 'status', 'open')
            FROM rows ORDER BY g

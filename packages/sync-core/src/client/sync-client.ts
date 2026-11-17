@@ -4,6 +4,7 @@ import type { PersistedState, StoredMutation, StoredRejection, SyncStorage } fro
 import type { TabCoordinator, TabMessage } from '../tabs/coordinator';
 import { TransportError } from '../transport/errors';
 import { nextDelay } from './backoff';
+import { CLIENT_INTERNALS, type ClientInternals } from './internals';
 import { openPokeStream } from './sse';
 import type { BlockReason, SyncFacts } from './status';
 import type { Transport } from '../transport/http';
@@ -229,6 +230,10 @@ export class SyncClient {
       this.emit();
     });
     this.tabs?.post({ t: 'state-changed' });
+  }
+
+  [CLIENT_INTERNALS](): ClientInternals {
+    return { base: this.base, cursor: this.cursor };
   }
 
   /** Increases on every state change; usable as a cheap snapshot id for UI bindings. */

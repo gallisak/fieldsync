@@ -50,7 +50,7 @@ describeDb('F28 lost database connection', () => {
   };
   const terminate = (pids: number[]) => admin.query('SELECT pg_terminate_backend(pid) FROM unnest($1::int[]) AS pid', [pids]);
 
-  it.failing('keeps serving after its idle pooled connections are dropped', async () => {
+  it('keeps serving after its idle pooled connections are dropped', async () => {
     expect((await fetch(`${server!.url}/sync/pull`, { headers })).status).toBe(200);
     const idle = await serverBackends(`state = 'idle'`);
     expect(idle.length).toBeGreaterThan(0);
@@ -63,7 +63,7 @@ describeDb('F28 lost database connection', () => {
     expect((await fetch(`${server!.url}/sync/pull`, { headers })).status).toBe(200);
   });
 
-  it.failing('retries a push whose connection is dropped mid-transaction and applies it once', async () => {
+  it('retries a push whose connection is dropped mid-transaction and applies it once', async () => {
     // Hold the version counter so the push stops inside its transaction, after its writes.
     const blocker = await db.connect();
     try {

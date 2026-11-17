@@ -1,4 +1,4 @@
-import { Inject, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Pool, PoolClient } from 'pg';
 import { APP_CONFIG, type AppConfig } from '../config/env';
 import { seedDemo } from '../seed';
@@ -28,9 +28,13 @@ export function isTransient(err: unknown): boolean {
 @Injectable()
 export class Db implements OnModuleInit, OnModuleDestroy {
   readonly pool: Pool;
+  private readonly logger = new Logger(Db.name);
 
   constructor(@Inject(APP_CONFIG) private readonly config: AppConfig) {
     this.pool = new Pool({ connectionString: config.DATABASE_URL, max: config.DB_POOL_MAX });
+    // node-postgres reports a connection that Postgres dropped as an 'error' event, which kills the process
+    // when nobody listens (F28). The pool already discards the dead client; queries on it fail on their own.
+    this.pool.on('error', (err) => this.logger.warn(`idle database connection lost: ${err.message}`));
   }
 
   async onModuleInit(): Promise<void> {
@@ -50,6 +54,9 @@ export class Db implements OnModuleInit, OnModuleDestroy {
 
     for (let attempt = 0; ; attempt++) {
       const client = await this.pool.connect();
+      // While checked out, the client's 'error' event is ours to handle (the pool listens only to idle ones).
+      const onLost = (err: Error) => this.logger.warn(`database connection lost during a transaction: ${err.message}`);
+      client.on('error', onLost);
       let broken = false;
       try {
         await client.query(begin);
@@ -65,6 +72,7 @@ export class Db implements OnModuleInit, OnModuleDestroy {
         if (isTransient(err) && attempt < MAX_RETRIES) continue;
         throw err;
       } finally {
+        client.off('error', onLost);
         client.release(broken);
       }
     }

@@ -92,7 +92,7 @@ in `packages/sync-core/test/repro/`.
 | F25 | Vacuous test | Mocked pool, SQL never inspected; passes with F9 present | replaced by `f09-read-access` | fixed — see below |
 | F26 | Vacuous test | Fake DB ignores the query; encodes F8 | replaced by `f08-write-access` | fixed — see below |
 | F27 | Vacuous test | `SELECT 1` "integration", `it.todo`, silent skip without `DATABASE_URL`, web not type-checked | replaced by the repro suites; tooling | fixed — see below |
-| F28 | Resilience (server) | A dropped database connection raises an unhandled `'error'` event and crashes the server process | `f28-connection-loss.integration.spec.ts` | open |
+| F28 | Resilience (server) | A dropped database connection raises an unhandled `'error'` event and crashes the server process | `f28-connection-loss.integration.spec.ts` | fixed |
 
 ### F1 — change versions visible out of commit order
 
@@ -359,6 +359,35 @@ well instead of being clamped or defaulted.
 leaves the server unable to change what a cursor means (site fingerprint, snapshot paging) without another
 protocol break; signing the cursor (HMAC) would stop clients from forging positions, but a forged cursor can
 only point at data the caller may read anyway, so it buys nothing here.
+
+### F28 — a dropped database connection crashes the server
+
+Found while writing the concurrency proof (P2.7); not in the original list.
+
+**What.** When Postgres closes a pooled connection (restart, failover, `pg_terminate_backend`, an idle timeout
+in a proxy), node-postgres fails the running query *and* emits an `'error'` event — on the pool for an idle
+connection, on the client for a checked-out one. Neither had a listener, and an `'error'` event without a
+listener throws, so the whole Node process exited.
+
+**Why it is dangerous.** Any database blip — including a routine Postgres restart while the server is idle —
+takes every API instance down at once, and with them every open stream. The transaction-retry and `503`
+logic for connection loss never ran, because the process was already gone.
+
+**Reproduce.** `apps/server/test/repro/f28-connection-loss.integration.spec.ts` runs `src/main.ts` in its own
+Node process (inside Jest an uncaught exception is only reported, not fatal) and finds its connections by
+`application_name`: (1) its idle connections are terminated → the process must stay alive and keep answering;
+(2) a push is paused inside its transaction (the test holds the `sync_state` row), its connection is
+terminated → the push must be retried on a new connection and applied exactly once.
+
+**Fix.** `Db` listens for `'error'` on the pool (idle connections; the pool already discards the dead client)
+and on each client for as long as `tx()` has it checked out. Both only log a warning: the failed query
+rejects on its own, `tx()` sees a transient error, releases the connection as broken and retries; after the
+retries the request ends with `503 UNAVAILABLE`. `pool.query()` attaches its own listener, so it was not
+affected.
+
+**Alternatives considered.** A global `process.on('uncaughtException')` would keep the process alive but also
+swallow genuine bugs and leave it in an unknown state; restarting via a supervisor still drops every in-flight
+request and stream on each blip.
 
 ## Changes to existing tests
 

@@ -4,6 +4,8 @@ import type { MutatorName, Row, TicketStatus } from '../protocol/types';
 import { MemoryStorage } from '../storage/memory';
 import type { StoredMutation } from '../storage/types';
 import { MemoryTabHub } from '../tabs/memory';
+import type { Transport } from '../transport/http';
+import { checkConvergence, checkSafety } from './invariants';
 import { ModelServer } from './model-server';
 import { chance, int, mulberry32, pick, uuidFrom } from './prng';
 import { Scheduler } from './scheduler';
@@ -39,6 +41,11 @@ export interface Device {
   tabs: SyncClient[];
   /** `clientId/mutationId` of every mutation this device stored, under the client id in force at the time. */
   issued: string[];
+  /** The user's sites when a pull response was last delivered to this device. */
+  sitesAtLastPull: Set<string>;
+  /** Bookkeeping for invariant 3. */
+  lastCursorVersion: number;
+  snapshotSinceLastCheck: boolean;
 }
 
 export type Action =
@@ -264,9 +271,10 @@ async function perform(a: Action, sim: Sim): Promise<void> {
 }
 
 /**
- * Runs `steps` random actions against `ModelServer` over a faulty network, then heals the network and lets
- * every client settle. Everything random comes from one generator seeded with `seed`, and time is virtual, so
- * a seed always replays the same run.
+ * Runs `steps` random actions against `ModelServer` over a faulty network, checking safety after each, then heals
+ * the network, lets every client settle and checks convergence; a violation throws `SimulationFailure`.
+ * Everything random comes from one generator seeded with `seed`, and time is virtual, so a seed always replays
+ * the same run.
  */
 export async function runSimulation(cfg: SimConfig): Promise<SimReport> {
   const rng = mulberry32(cfg.seed);
@@ -275,8 +283,18 @@ export async function runSimulation(cfg: SimConfig): Promise<SimReport> {
   const world = seedWorld(rng, server);
   const net = new SimNetwork(rng, s, server, cfg.faults);
   const openTab = (d: Device) => {
+    const network = net.transportFor(d.index, d.user);
+    const transport: Transport = {
+      push: (req, signal) => network.push(req, signal),
+      pull: async (q, signal) => {
+        const res = await network.pull(q, signal);
+        d.sitesAtLastPull = server.sitesOf(d.user);
+        if (res.mode === 'snapshot') d.snapshotSinceLastCheck = true;
+        return res;
+      },
+    };
     const client = new SyncClient({
-      transport: net.transportFor(d.index, d.user),
+      transport,
       storage: d.storage,
       tabs: d.hub.join(),
       clock: s.clock,
@@ -298,6 +316,9 @@ export async function runSimulation(cfg: SimConfig): Promise<SimReport> {
       hub: new MemoryTabHub(),
       tabs: [],
       issued,
+      sitesAtLastPull: new Set(),
+      lastCursorVersion: 0,
+      snapshotSinceLastCheck: false,
     };
     openTab(d);
     return d;
@@ -305,15 +326,20 @@ export async function runSimulation(cfg: SimConfig): Promise<SimReport> {
   const sim: Sim = { rng, s, net, server, world, devices, openTab };
 
   const trace: string[] = [];
-  for (let step = 0; step < cfg.steps; step++) {
-    const action = pickAction(sim, cfg.flags);
-    trace.push(`${step} t=${s.now} ${JSON.stringify(action)}`);
-    await perform(action, sim);
-    await s.advance(int(rng, 200));
-  }
+  try {
+    for (let step = 0; step < cfg.steps; step++) {
+      const action = pickAction(sim, cfg.flags);
+      trace.push(`${step} t=${s.now} ${JSON.stringify(action)}`);
+      await perform(action, sim);
+      await s.advance(int(rng, 200));
+      checkSafety(server, devices, { seed: cfg.seed, step, trace });
+    }
 
-  net.heal();
-  await s.advance(600_000); // several times the backoff cap and the poll period
-  for (const d of devices) for (const tab of d.tabs) tab.dispose();
-  return { applied: server.applied.length, rejected: server.rejections.size, endTime: s.now, trace };
+    net.heal();
+    await s.advance(600_000); // several times the backoff cap and the poll period
+    checkConvergence(server, devices, { seed: cfg.seed, step: cfg.steps, trace });
+    return { applied: server.applied.length, rejected: server.rejections.size, endTime: s.now, trace };
+  } finally {
+    for (const d of devices) for (const tab of d.tabs) tab.dispose();
+  }
 }

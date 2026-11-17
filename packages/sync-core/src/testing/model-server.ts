@@ -104,6 +104,8 @@ export class ModelServer implements SyncServerPort {
   readonly userSites = new Map<string, Set<string>>();
   /** `clientId/mutationId` of every applied mutation, in order. */
   readonly applied: string[] = [];
+  /** Per live part: the quantity it was added with and the delta of each applied adjustment, by mutation. */
+  private readonly parts = new Map<string, { initial: number; deltas: Map<string, number> }>();
 
   /** `clock` (ms) is the transaction time a mutator gets as `ctx.now`. */
   constructor(private readonly clock: () => number = () => 0) {}
@@ -164,6 +166,24 @@ export class ModelServer implements SyncServerPort {
       if (e.row && (!entity || key.startsWith(`${entity}/`))) rows.push(e.row);
     }
     return rows;
+  }
+
+  /**
+   * What each part's quantity must be: the quantity it was added with plus the delta of every applied
+   * adjustment. A mutation counts once, however often it was executed.
+   */
+  expectedQuantities(): Map<string, number> {
+    const expected = new Map<string, number>();
+    for (const [id, p] of this.parts)
+      expected.set(
+        id,
+        [...p.deltas.values()].reduce((q, d) => q + d, p.initial),
+      );
+    return expected;
+  }
+
+  quantityOf(partId: string): number | undefined {
+    return this.entities.get(`part/${partId}`)?.row?.quantity as number | undefined;
   }
 
   private applyOne(user: AuthUser, clientId: string, m: Mutation): MutationResult {
@@ -240,6 +260,19 @@ export class ModelServer implements SyncServerPort {
       tx.writes.flatMap((w) => (w.op === 'put' ? [w.row?.siteId as string] : [])),
     );
     this.write(tx.writes, clientId, m.id);
+    this.trackParts(tx.writes, m, `${clientId}/${m.id}`);
+  }
+
+  private trackParts(writes: Write[], m: Mutation, key: string): void {
+    for (const w of writes) {
+      if (w.entity !== 'part') continue;
+      if (w.op === 'del') this.parts.delete(w.id);
+      else if (!w.prevSite) this.parts.set(w.id, { initial: w.row?.quantity as number, deltas: new Map() });
+    }
+    if (m.name === 'part.adjust') {
+      const { id, delta } = m.args as { id: string; delta: number };
+      this.parts.get(id)?.deltas.set(key, delta);
+    }
   }
 
   private authorize(user: AuthUser, siteIds: string[]): void {

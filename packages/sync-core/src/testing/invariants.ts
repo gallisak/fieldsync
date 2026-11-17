@@ -1,0 +1,134 @@
+import { CLIENT_INTERNALS } from '../client/internals';
+import type { SyncClient } from '../client/sync-client';
+import { decodeCursor } from '../protocol/cursor';
+import type { Cursor, Row } from '../protocol/types';
+import type { Device } from './harness';
+import type { ModelServer } from './model-server';
+
+/** Where a check ran: enough to replay the run. */
+export interface At {
+  seed: number;
+  step: number;
+  trace: readonly string[];
+}
+
+export class SimulationFailure extends Error {
+  constructor(
+    readonly at: At,
+    readonly invariant: number,
+    detail: string,
+  ) {
+    super(
+      [`seed ${at.seed}, step ${at.step}: invariant ${invariant} violated: ${detail}`, 'last steps:']
+        .concat(at.trace.slice(-30))
+        .join('\n'),
+    );
+    this.name = 'SimulationFailure';
+  }
+}
+
+/** The rows the client holds as synced from the server, without its queue. */
+export const baseRows = (client: SyncClient): Row[] => [...client[CLIENT_INTERNALS]().base.values()];
+
+export const cursorOf = (client: SyncClient): Cursor | null => client[CLIENT_INTERNALS]().cursor;
+
+const cursorVersion = (cursor: Cursor | null): number => (cursor ? (decodeCursor(cursor)?.v ?? 0) : 0);
+
+/** `[id, row as JSON with sorted keys]`, sorted by id: a comparison that ignores row and key order. */
+export function canonical(rows: readonly Row[]): [string, string][] {
+  const json = (row: Row) =>
+    JSON.stringify(
+      Object.keys(row)
+        .sort()
+        .map((k) => [k, row[k]]),
+    );
+  return rows
+    .map((row): [string, string] => [String(row.id), json(row)])
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+/** `undefined` when equal, otherwise which ids are missing, extra or different. */
+function difference(actual: [string, string][], expected: [string, string][]): string | undefined {
+  const want = new Map(expected);
+  const have = new Map(actual);
+  const missing = [...want.keys()].filter((id) => !have.has(id));
+  const extra = [...have.keys()].filter((id) => !want.has(id));
+  const changed = [...want.keys()].filter((id) => have.has(id) && have.get(id) !== want.get(id));
+  if (missing.length + extra.length + changed.length === 0) return undefined;
+  const list = (ids: string[]) => ids.slice(0, 5).join(', ') + (ids.length > 5 ? ` … (${ids.length})` : '');
+  return [
+    missing.length ? `missing ${list(missing)}` : '',
+    extra.length ? `extra ${list(extra)}` : '',
+    changed.length ? `different ${list(changed)}` : '',
+  ]
+    .filter(Boolean)
+    .join('; ');
+}
+
+const fail = (at: At, invariant: number, detail: string): never => {
+  throw new SimulationFailure(at, invariant, detail);
+};
+
+/** Holds after every step, whatever the network does. */
+export function checkSafety(server: ModelServer, devices: Device[], at: At): void {
+  // 2. effectively once: no (clientId, mutationId) applied twice
+  const seen = new Set<string>();
+  for (const key of server.applied) {
+    if (seen.has(key)) fail(at, 2, `mutation ${key} applied twice`);
+    seen.add(key);
+  }
+  for (const d of devices) {
+    const client = d.tabs[0];
+    if (!client) continue;
+    // 1. no data the user must not have
+    for (const row of baseRows(client)) {
+      if (!d.sitesAtLastPull.has(row.siteId as string)) {
+        fail(at, 1, `device ${d.index} holds ${String(row.id)} of site ${String(row.siteId)}`);
+      }
+    }
+    // 3. the cursor never goes backwards except through a snapshot
+    const v = cursorVersion(cursorOf(client));
+    if (v < d.lastCursorVersion && !d.snapshotSinceLastCheck) {
+      fail(at, 3, `device ${d.index} cursor ${d.lastCursorVersion} → ${v}`);
+    }
+    d.lastCursorVersion = v;
+    d.snapshotSinceLastCheck = false;
+  }
+}
+
+/** Holds once the network is healed and every client has settled. */
+export function checkConvergence(server: ModelServer, devices: Device[], at: At): void {
+  const applied = new Set(server.applied);
+  for (const d of devices) {
+    const sites = server.sitesOf(d.user);
+    const expected = canonical(server.liveRows().filter((row) => sites.has(row.siteId as string)));
+    for (const [tab, client] of d.tabs.entries()) {
+      const where = `device ${d.index} tab ${tab}`;
+      // 4. every client holds exactly the server's rows of its user's sites
+      const base = difference(canonical(baseRows(client)), expected);
+      if (base) fail(at, 4, `${where}: base ≠ server: ${base}`);
+      // 5. nothing is left pending, so the view is the base
+      if (client.pendingCount !== 0) fail(at, 5, `${where}: ${client.pendingCount} still pending`);
+      const view = difference(canonical([...client.view().values()]), expected);
+      if (view) fail(at, 5, `${where}: view ≠ base: ${view}`);
+    }
+    // 6. every issued mutation is applied on the server or rejected with a reason the client knows, not both.
+    // Rejections are keyed by the current client id: the simulated server never loses a client, so none is reset.
+    const client = d.tabs[0];
+    const rejected = new Set(client.rejections.map((r) => `${client.clientId}/${r.mutation.id}`));
+    for (const key of d.issued) {
+      if (applied.has(key) === rejected.has(key)) {
+        fail(
+          at,
+          6,
+          `device ${d.index}: ${key} is ${applied.has(key) ? 'both applied and rejected' : 'neither applied nor rejected'}`,
+        );
+      }
+    }
+  }
+  // 7. quantities commute: each is what it was added with plus every applied delta, each counted once
+  for (const [partId, quantity] of server.expectedQuantities()) {
+    const actual = server.quantityOf(partId);
+    if (actual !== quantity) fail(at, 7, `part ${partId} has quantity ${actual}, expected ${quantity}`);
+  }
+}

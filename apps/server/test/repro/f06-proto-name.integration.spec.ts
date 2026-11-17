@@ -16,7 +16,7 @@ describeDb('F6 prototype-property mutator names', () => {
   afterAll(() => t?.close());
 
   // `siteId` makes the starter's authorization pass, so the request reaches the registry lookup.
-  it.failing.each(['constructor', '__proto__'])(
+  it.each(['constructor', '__proto__'])(
     'answers "%s" with 400 or a rejection, and the queue keeps moving',
     async (name) => {
       const clientId = `c-${name}`;

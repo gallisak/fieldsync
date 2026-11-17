@@ -1,5 +1,5 @@
 import { MUTATORS, MutationRejected, type MutatorTx } from '../src/mutators';
-import type { EntityName, Row } from '../src/types';
+import type { EntityName, Row } from '../src/protocol/types';
 
 class FakeTx implements MutatorTx {
   readonly rows = new Map<string, Row>();

@@ -1,5 +1,5 @@
 import type { INestApplication } from '@nestjs/common';
-import type { Mutation, Row } from '@fieldsync/sync-core';
+import { PROTOCOL, PROTOCOL_HEADER, type Mutation, type Row } from '@fieldsync/sync-core';
 import { request as httpRequest, type ClientRequest } from 'http';
 import type { AddressInfo } from 'net';
 import type { Pool } from 'pg';
@@ -21,7 +21,11 @@ export function seed(pool: Pool): Promise<void> {
 }
 
 export function push(http: Http, token: string, clientId: string, mutations: Mutation[]) {
-  return http.post('/sync/push').set('authorization', `Bearer ${token}`).send({ clientId, mutations });
+  return http
+    .post('/sync/push')
+    .set('authorization', `Bearer ${token}`)
+    .set(PROTOCOL_HEADER, String(PROTOCOL))
+    .send({ clientId, mutations });
 }
 
 export function pull(
@@ -33,11 +37,15 @@ export function pull(
   if (params.cursor !== undefined) query.cursor = String(params.cursor);
   if (params.clientId !== undefined) query.clientId = params.clientId;
   if (params.limit !== undefined) query.limit = String(params.limit);
-  return http.get('/sync/pull').set('authorization', `Bearer ${token}`).query(query);
+  return http
+    .get('/sync/pull')
+    .set('authorization', `Bearer ${token}`)
+    .set(PROTOCOL_HEADER, String(PROTOCOL))
+    .query(query);
 }
 
 export function me(http: Http, token: string) {
-  return http.get('/me').set('authorization', `Bearer ${token}`);
+  return http.get('/me').set('authorization', `Bearer ${token}`).set(PROTOCOL_HEADER, String(PROTOCOL));
 }
 
 /** Starts the app on an ephemeral port (needed for streams and for a real SyncClient) and returns its URL. */

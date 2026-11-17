@@ -1,8 +1,9 @@
-import type { PullResponse, PushRequest, PushResponse } from './types';
+import type { Cursor, PullResponse, PushRequest, PushResponse } from '../protocol/types';
+import { PROTOCOL, PROTOCOL_HEADER } from '../protocol/version';
 
 export interface Transport {
   push(req: PushRequest): Promise<PushResponse>;
-  pull(cursor: number, clientId: string, limit?: number): Promise<PullResponse>;
+  pull(cursor: Cursor | null, clientId: string, limit?: number): Promise<PullResponse>;
 }
 
 export class HttpTransport implements Transport {
@@ -15,17 +16,22 @@ export class HttpTransport implements Transport {
   async push(req: PushRequest): Promise<PushResponse> {
     const res = await this.fetchImpl(`${this.baseUrl}/sync/push`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${this.token}` },
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${this.token}`,
+        [PROTOCOL_HEADER]: String(PROTOCOL),
+      },
       body: JSON.stringify(req),
     });
     if (!res.ok) throw new Error(`push failed: HTTP ${res.status}`);
     return (await res.json()) as PushResponse;
   }
 
-  async pull(cursor: number, clientId: string, limit = 500): Promise<PullResponse> {
-    const qs = new URLSearchParams({ cursor: String(cursor), clientId, limit: String(limit) });
+  async pull(cursor: Cursor | null, clientId: string, limit = 500): Promise<PullResponse> {
+    const qs = new URLSearchParams({ clientId, limit: String(limit) });
+    if (cursor) qs.set('cursor', cursor);
     const res = await this.fetchImpl(`${this.baseUrl}/sync/pull?${qs}`, {
-      headers: { authorization: `Bearer ${this.token}` },
+      headers: { authorization: `Bearer ${this.token}`, [PROTOCOL_HEADER]: String(PROTOCOL) },
     });
     if (!res.ok) throw new Error(`pull failed: HTTP ${res.status}`);
     return (await res.json()) as PullResponse;

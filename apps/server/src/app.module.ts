@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
+import { APP_FILTER } from '@nestjs/core';
 import { AuthGuard } from './auth';
+import { ApiExceptionFilter } from './common/api-exception.filter';
 import { ConfigModule } from './config/config.module';
 import { Db } from './database/db.service';
 import { GcService } from './gc.service';
@@ -12,6 +14,14 @@ import { SyncController } from './sync.controller';
 @Module({
   imports: [ConfigModule],
   controllers: [SyncController, HealthController],
-  providers: [Db, AuthGuard, PushService, PullService, StreamService, GcService],
+  providers: [
+    { provide: APP_FILTER, useClass: ApiExceptionFilter },
+    Db,
+    AuthGuard,
+    PushService,
+    PullService,
+    StreamService,
+    GcService,
+  ],
 })
 export class AppModule {}

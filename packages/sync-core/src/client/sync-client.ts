@@ -1,7 +1,7 @@
-import { MUTATORS, MutationRejected, type MutatorTx } from './mutators';
-import type { SyncStorage } from './storage';
-import type { Transport } from './transport';
-import type { EntityName, Mutation, MutatorName, Row } from './types';
+import { MUTATORS, MutationRejected, type MutatorTx } from '../mutators';
+import type { SyncStorage } from '../storage/memory';
+import type { Transport } from '../transport/http';
+import type { Cursor, EntityName, Mutation, MutatorName, Row } from '../protocol/types';
 
 export type SyncStatus = 'idle' | 'syncing' | 'offline';
 
@@ -45,7 +45,7 @@ export class SyncClient {
   private readonly transport: Transport;
   private readonly storage: SyncStorage;
   private base = new Map<string, Row>();
-  private cursor = 0;
+  private cursor: Cursor | null = null;
   private lastMutationId = 0;
   private pending: Mutation[] = [];
   private listeners = new Set<() => void>();
@@ -62,7 +62,8 @@ export class SyncClient {
     this.storage = opts.storage;
     const saved = this.storage.load();
     if (saved) {
-      this.cursor = saved.cursor;
+      // A v1 numeric cursor is meaningless to a v2 server: start over with a full pull.
+      this.cursor = typeof saved.cursor === 'string' ? saved.cursor : null;
       this.lastMutationId = saved.lastMutationId;
       this.base = new Map(Object.entries(saved.base));
     }
@@ -150,7 +151,7 @@ export class SyncClient {
     for (const r of resp.results) {
       if (r.status === 'rejected') {
         const mutation = batch.find((m) => m.id === r.id);
-        if (mutation) this.rejected.push({ mutation, error: r.error ?? 'rejected' });
+        if (mutation) this.rejected.push({ mutation, error: r.message ?? r.code ?? 'rejected' });
       }
     }
     this.pending = this.pending.filter((m) => !handled.has(m.id));
@@ -166,8 +167,8 @@ export class SyncClient {
         if (change.op === 'put' && change.data) this.base.set(key, change.data);
         else this.base.delete(key);
       }
-      this.cursor = resp.nextCursor;
-      this.lastMutationId = Math.max(this.lastMutationId, resp.lastMutationId);
+      this.cursor = resp.cursor;
+      if (resp.lastMutationId !== null) this.lastMutationId = Math.max(this.lastMutationId, resp.lastMutationId);
       this.pending = this.pending.filter((m) => m.id > this.lastMutationId);
       this.persist();
       this.emit();

@@ -1,4 +1,4 @@
-import type { EntityName, MutatorName, Row, TicketStatus } from './types';
+import type { EntityName, MutatorName, Row, TicketStatus } from '../protocol/types';
 
 export class MutationRejected extends Error {
   constructor(readonly code: string, message?: string) {

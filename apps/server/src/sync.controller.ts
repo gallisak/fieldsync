@@ -1,38 +1,16 @@
-import { BadRequestException, Body, Controller, Get, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
-import type { PushRequest } from '@fieldsync/sync-core';
+import { Body, Controller, Get, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
+import { pullQuerySchema, pushRequestSchema, type PullQuery, type PushRequest } from '@fieldsync/sync-core';
 import type { Response } from 'express';
 import { accessibleSites } from './access';
 import { AuthGuard, type AuthedRequest } from './auth';
+import { ProtocolGuard } from './common/protocol.guard';
+import { ZodPipe } from './common/zod.pipe';
 import { Db } from './database/db.service';
 import { PullService } from './pull.service';
 import { PushService } from './push.service';
 import { StreamService } from './stream.service';
 
-function assertPushRequest(body: unknown): asserts body is PushRequest {
-  const b = body as Partial<PushRequest> | null;
-  const valid =
-    b !== null &&
-    typeof b === 'object' &&
-    typeof b.clientId === 'string' &&
-    b.clientId.length > 0 &&
-    b.clientId.length <= 64 &&
-    Array.isArray(b.mutations) &&
-    b.mutations.length <= 100 &&
-    b.mutations.every(
-      (m) =>
-        m !== null &&
-        typeof m === 'object' &&
-        Number.isInteger(m.id) &&
-        m.id > 0 &&
-        typeof m.name === 'string' &&
-        m.args !== null &&
-        typeof m.args === 'object',
-    );
-  if (!valid) throw new BadRequestException('Malformed push request');
-}
-
 @Controller()
-@UseGuards(AuthGuard)
 export class SyncController {
   constructor(
     private readonly db: Db,
@@ -42,6 +20,7 @@ export class SyncController {
   ) {}
 
   @Get('me')
+  @UseGuards(ProtocolGuard, AuthGuard)
   async me(@Req() req: AuthedRequest) {
     const siteIds = await accessibleSites(this.db.pool, req.user);
     const { rows } = await this.db.pool.query(`SELECT id, name FROM sites WHERE id = ANY($1) ORDER BY name`, [siteIds]);
@@ -49,22 +28,20 @@ export class SyncController {
   }
 
   @Post('sync/push')
-  push(@Req() req: AuthedRequest, @Body() body: unknown) {
-    assertPushRequest(body);
+  @UseGuards(ProtocolGuard, AuthGuard)
+  push(@Req() req: AuthedRequest, @Body(new ZodPipe(pushRequestSchema)) body: PushRequest) {
     return this.pushService.push(req.user, body);
   }
 
   @Get('sync/pull')
-  pull(
-    @Req() req: AuthedRequest,
-    @Query('cursor') cursor?: string,
-    @Query('limit') limit?: string,
-    @Query('clientId') clientId?: string,
-  ) {
-    return this.pullService.pull(req.user, Number(cursor ?? 0) || 0, Number(limit ?? 500) || 500, clientId);
+  @UseGuards(ProtocolGuard, AuthGuard)
+  pull(@Req() req: AuthedRequest, @Query(new ZodPipe(pullQuerySchema)) query: PullQuery) {
+    return this.pullService.pull(req.user, query);
   }
 
+  // No ProtocolGuard until the stream moves to fetch (P3.4): a browser EventSource cannot send the header.
   @Get('sync/stream')
+  @UseGuards(AuthGuard)
   async stream(@Req() req: AuthedRequest, @Res() res: Response) {
     const sites = await accessibleSites(this.db.pool, req.user);
     this.streams.add(sites, res);

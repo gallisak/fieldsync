@@ -23,7 +23,7 @@ describeDb('F9 read access on every pull path', () => {
     expect(initial.status).toBe(200);
 
     await ticket(3, DEMO.siteB, 'F9 B2');
-    const incremental = await pull(t.http, TOKENS.techA, { cursor: initial.body.nextCursor });
+    const incremental = await pull(t.http, TOKENS.techA, { cursor: initial.body.cursor });
     expect(incremental.status).toBe(200);
 
     const sites = (body: { changes: Array<{ siteId: string }> }) => body.changes.map((c) => c.siteId);

@@ -37,7 +37,7 @@ describeDb('F1 change order vs commit order', () => {
       expect(first.status).toBe(200);
 
       await a.query('COMMIT');
-      const second = await pull(t.http, TOKENS.admin, { cursor: first.body.nextCursor });
+      const second = await pull(t.http, TOKENS.admin, { cursor: first.body.cursor });
       expect(second.status).toBe(200);
 
       const seen = [...first.body.changes, ...second.body.changes].map((c: { id: string }) => c.id);

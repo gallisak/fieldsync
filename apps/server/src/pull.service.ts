@@ -1,8 +1,9 @@
 import { Injectable } from '@nestjs/common';
-import type { Change, PullResponse } from '@fieldsync/sync-core';
+import type { Change, PullQuery, PullResponse } from '@fieldsync/sync-core';
 import { accessibleSites } from './access';
 import type { AuthUser } from './auth';
 import { Db } from './database/db.service';
+import { decodeCursor, encodeCursor, siteFingerprint } from './sync/pull/cursor';
 
 interface LogRow {
   version: string;
@@ -17,7 +18,9 @@ interface LogRow {
 export class PullService {
   constructor(private readonly db: Db) {}
 
-  async pull(user: AuthUser, cursor: number, limit: number, clientId?: string): Promise<PullResponse> {
+  async pull(user: AuthUser, query: PullQuery): Promise<PullResponse> {
+    const { limit, clientId } = query;
+    const cursor = query.cursor ? decodeCursor(query.cursor).v : 0;
     const sites = await accessibleSites(this.db.pool, user);
     const siteFilter = cursor === 0 ? sites : null;
     const take = Math.min(Math.max(limit, 1), 500);
@@ -50,10 +53,16 @@ export class PullService {
     }
 
     return {
+      mode: 'delta',
       changes,
-      nextCursor: changes.length ? changes[changes.length - 1].version : cursor,
+      cursor: encodeCursor({
+        k: 'd',
+        v: changes.length ? changes[changes.length - 1].version : cursor,
+        fp: siteFingerprint(user, sites),
+      }),
       hasMore: rows.length === take,
       lastMutationId,
+      rejections: [],
     };
   }
 }

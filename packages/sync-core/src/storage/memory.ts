@@ -1,7 +1,7 @@
-import type { Row } from './types';
+import type { Cursor, Row } from '../protocol/types';
 
 export interface Persisted {
-  cursor: number;
+  cursor: Cursor | null;
   lastMutationId: number;
   base: Record<string, Row>;
 }

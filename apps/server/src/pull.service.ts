@@ -1,68 +1,86 @@
 import { Injectable } from '@nestjs/common';
 import type { Change, PullQuery, PullResponse } from '@fieldsync/sync-core';
+import type { PoolClient } from 'pg';
 import { accessibleSites } from './access';
 import type { AuthUser } from './auth';
 import { Db } from './database/db.service';
-import { decodeCursor, encodeCursor, siteFingerprint } from './sync/pull/cursor';
+import { decodeCursor, encodeCursor, siteFingerprint, type CursorData } from './sync/pull/cursor';
+import { ChangeLogRepository, type LogState, type StoredLogRow } from './sync/repositories/change-log.repository';
+import { ClientRepository } from './sync/repositories/client.repository';
+import { RejectionRepository } from './sync/repositories/rejection.repository';
 
-interface LogRow {
-  version: string;
-  site_id: string;
-  entity: Change['entity'];
-  entity_id: string;
-  op: 'put' | 'del';
-  data: Change['data'];
-}
+type Page = Pick<PullResponse, 'mode' | 'changes' | 'cursor' | 'hasMore'>;
+
+const toChange = (r: StoredLogRow): Change => ({
+  version: r.version,
+  entity: r.entity,
+  id: r.entityId,
+  siteId: r.siteId,
+  op: r.op,
+  data: r.data,
+});
 
 @Injectable()
 export class PullService {
-  constructor(private readonly db: Db) {}
+  constructor(
+    private readonly db: Db,
+    private readonly log: ChangeLogRepository,
+    private readonly clients: ClientRepository,
+    private readonly rejections: RejectionRepository,
+  ) {}
 
-  async pull(user: AuthUser, query: PullQuery): Promise<PullResponse> {
-    const { limit, clientId } = query;
-    const cursor = query.cursor ? decodeCursor(query.cursor).v : 0;
-    const sites = await accessibleSites(this.db.pool, user);
-    const siteFilter = cursor === 0 ? sites : null;
-    const take = Math.min(Math.max(limit, 1), 500);
+  /**
+   * One REPEATABLE READ snapshot for everything in the response (F2): the changes, the cursor and
+   * lastMutationId all describe the same database state.
+   */
+  async pull(user: AuthUser, q: PullQuery): Promise<PullResponse> {
+    return this.db.tx(
+      async (c) => {
+        const sites = await accessibleSites(c, user);
+        const fp = siteFingerprint(user, sites);
+        const state = await this.log.state(c);
+        // Snapshot mode (P6.1) is not there yet: no cursor means a delta from 0, still filtered by site.
+        const cur = q.cursor ? decodeCursor(q.cursor) : { k: 'd' as const, v: 0, fp };
+        const page = await this.deltaPage(c, sites, cur, state, fp, q.limit);
 
-    const { rows } = await this.db.pool.query<LogRow>(
-      `SELECT version, site_id, entity, entity_id, op, data
-         FROM change_log
-        WHERE version > $1 AND ($2::uuid[] IS NULL OR site_id = ANY($2))
-        ORDER BY version
-        LIMIT $3`,
-      [cursor, siteFilter, take],
+        const own = q.clientId ? await this.clients.find(c, q.clientId) : undefined;
+        const mine = own !== undefined && own.userId === user.id;
+        const final = !page.hasMore;
+        return {
+          ...page,
+          // A mutation is acknowledged only on the last page, where all of its changes have been delivered.
+          lastMutationId: !final ? null : mine ? own.lastMutationId : 0,
+          rejections: final && mine ? await this.rejections.listAfter(c, q.clientId!, q.ackedMutationId) : [],
+        };
+      },
+      { isolation: 'repeatable read', readOnly: true },
     );
+  }
 
-    const changes: Change[] = rows.map((r) => ({
-      version: Number(r.version),
-      entity: r.entity,
-      id: r.entity_id,
-      siteId: r.site_id,
-      op: r.op,
-      data: r.data,
-    }));
-
-    let lastMutationId = 0;
-    if (clientId) {
-      const res = await this.db.pool.query<{ last_mutation_id: string }>(
-        `SELECT last_mutation_id FROM clients WHERE client_id = $1`,
-        [clientId],
-      );
-      lastMutationId = res.rows.length ? Number(res.rows[0].last_mutation_id) : 0;
-    }
-
-    return {
+  private async deltaPage(
+    c: PoolClient,
+    sites: string[],
+    cur: CursorData,
+    state: LogState,
+    fp: string,
+    limit: number,
+  ): Promise<Page> {
+    const done = (v: number, rows: StoredLogRow[], hasMore: boolean): Page => ({
       mode: 'delta',
-      changes,
-      cursor: encodeCursor({
-        k: 'd',
-        v: changes.length ? changes[changes.length - 1].version : cursor,
-        fp: siteFingerprint(user, sites),
-      }),
-      hasMore: rows.length === take,
-      lastMutationId,
-      rejections: [],
-    };
+      changes: rows.map(toChange),
+      cursor: encodeCursor({ k: 'd', v, fp }),
+      hasMore,
+    });
+    if (sites.length === 0) return done(state.lastVersion, [], false);
+
+    let rows = await this.log.after(c, sites, cur.v, limit + 1);
+    const hasMore = rows.length > limit;
+    if (hasMore) {
+      rows = rows.slice(0, limit);
+      const last = rows[rows.length - 1];
+      rows.push(...(await this.log.restOfTx(c, sites, last.txSeq, last.version)));
+    }
+    // On the last page the cursor jumps to lastVersion: this snapshot holds every change up to it.
+    return done(hasMore ? rows[rows.length - 1].version : state.lastVersion, rows, hasMore);
   }
 }

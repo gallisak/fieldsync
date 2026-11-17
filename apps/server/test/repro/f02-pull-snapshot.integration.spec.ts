@@ -32,7 +32,7 @@ describeDb('F2 lastMutationId vs paged changes', () => {
   });
   afterAll(() => t?.close());
 
-  it.failing('does not acknowledge a mutation on a page that lacks its changes', async () => {
+  it('does not acknowledge a mutation on a page that lacks its changes', async () => {
     await createTicket(t.http, {
       token: TOKENS.admin,
       clientId: 'c1',

@@ -21,6 +21,14 @@ export class ClientRepository {
     return { userId: rows[0].user_id, lastMutationId: Number(rows[0].last_mutation_id) };
   }
 
+  async find(q: Pool | PoolClient, clientId: string): Promise<ClientRow | undefined> {
+    const { rows } = await q.query<{ user_id: string; last_mutation_id: string }>(
+      `SELECT user_id, last_mutation_id FROM clients WHERE client_id = $1`,
+      [clientId],
+    );
+    return rows.length ? { userId: rows[0].user_id, lastMutationId: Number(rows[0].last_mutation_id) } : undefined;
+  }
+
   async setLastMutationId(c: PoolClient, clientId: string, mutationId: number): Promise<void> {
     await c.query(`UPDATE clients SET last_mutation_id = $2, last_seen_at = now() WHERE client_id = $1`, [
       clientId,

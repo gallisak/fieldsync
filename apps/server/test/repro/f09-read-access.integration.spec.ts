@@ -12,7 +12,7 @@ describeDb('F9 read access on every pull path', () => {
   });
   afterAll(() => t?.close());
 
-  it.failing('never returns another site to a technician, initial or incremental', async () => {
+  it('never returns another site to a technician, initial or incremental', async () => {
     const ticket = (mutationId: number, siteId: string, title: string) =>
       createTicket(t.http, { token: TOKENS.admin, clientId: 'admin', mutationId, siteId, title });
 

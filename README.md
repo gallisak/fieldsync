@@ -66,17 +66,17 @@ in `packages/sync-core/test/repro/`.
 | # | Category | Defect | Reproduced by | Status |
 |---|---|---|---|---|
 | F1 | Ordering | Log versions come from a sequence: allocated at insert, visible at commit, so a late commit is skipped by readers | `f01-commit-order.integration.spec.ts` | fixed |
-| F2 | Ordering | Pull reads changes and `lastMutationId` in separate snapshots and reports it on non-final pages | `f02-pull-snapshot.integration.spec.ts` | open |
+| F2 | Ordering | Pull reads changes and `lastMutationId` in separate snapshots and reports it on non-final pages | `f02-pull-snapshot.integration.spec.ts` | fixed |
 | F3 | Ordering | A poke during an in-flight sync is dropped | `f03-lost-poke.spec.ts` | open |
 | F4 | Duplicate push | Dedup check runs outside the transaction without a lock; parallel duplicates all apply | `f04-parallel-duplicate.integration.spec.ts` | fixed |
 | F5 | Poison mutation | A rejected mutation fails the whole push with 500 and blocks the queue forever | `f05-poison.integration.spec.ts` | fixed |
 | F6 | Poison mutation | `constructor` / `__proto__` resolve to prototype members of the mutator registry → 500 | `f06-proto-name.integration.spec.ts` | fixed |
 | F7 | Poison mutation | Out-of-order id answered with a generic 400 the client retries unchanged | `f07-out-of-order.integration.spec.ts` | fixed |
 | F8 | Write access | Authorization trusts the client-supplied `siteId` | `f08-write-access.integration.spec.ts` | fixed for live rows; tombstoned ids open |
-| F9 | Read access | Site filter applied only when `cursor = 0` | `f09-read-access.integration.spec.ts` | open |
-| F10 | Authenticity | `clientId` ownership never checked on push or pull | `f10-client-ownership.integration.spec.ts` | push fixed; pull open |
+| F9 | Read access | Site filter applied only when `cursor = 0` | `f09-read-access.integration.spec.ts` | fixed |
+| F10 | Authenticity | `clientId` ownership never checked on push or pull | `f10-client-ownership.integration.spec.ts` | fixed |
 | F11 | Authenticity | Bearer token accepted in the SSE query string; tokens stored in plaintext | `f11-token-in-url.integration.spec.ts` | open |
-| F12 | Access lifecycle | Revoked access and site moves never remove data from clients | `f12-revocation-move.integration.spec.ts` | open |
+| F12 | Access lifecycle | Revoked access and site moves never remove data from clients | `f12-revocation-move.integration.spec.ts` | moves fixed; revocation open |
 | F13 | Log lifecycle | GC by age with no floor or reload signal; new clients replay a truncated log | `f13-gc.integration.spec.ts` | open |
 | F14 | Client data loss | Pending queue not persisted; `lastMutationId` persisted only after pull | `f14-reload.spec.ts` | open |
 | F15 | Client data loss | Tabs share one `clientId` and storage blob with separate id counters | `f15-two-tabs.spec.ts` | open |
@@ -123,6 +123,33 @@ consumer that assigns versions after commit adds a moving part and a lag. The si
 only the short tail of each write transaction (allocation → commit), which is far below this system's write
 rate.
 
+### F2 — pull acknowledges a mutation before delivering its changes
+
+**What.** Pull read the change page, then `clients.last_mutation_id`, in separate statements on the pool (two
+snapshots), and returned `lastMutationId` on every page. With more than one page of changes, page 1 already
+said "your mutation 1 is applied" while the change it produced was on page 2 — or had committed between the two
+reads and was on no page yet.
+
+**Why it is dangerous.** The client drops a pending mutation once it is acknowledged and shows `base` instead.
+Between the two pages the user's own edit disappears from the screen; if the next page fails, it stays gone
+until a later sync.
+
+**Reproduce.** `apps/server/test/repro/f02-pull-snapshot.integration.spec.ts`: 600 changes are seeded, then
+mutation 1 creates a ticket (version 601); page 1 (limit 500) must not contain it and must not acknowledge
+mutation 1.
+
+**Fix.** Pull is one `REPEATABLE READ READ ONLY` transaction: accessible sites, `sync_state`, the changes, the
+client row and its rejections all come from the same snapshot. `lastMutationId` is `null` on every page with
+`hasMore` and is reported only on the last page, where every change up to that snapshot has been delivered.
+A page never splits one mutation: if the page boundary falls inside a transaction (`tx_seq`), the rest of that
+transaction is appended. On the last page the cursor jumps to `sync_state.last_version`, so a user whose sites
+had no new changes does not re-scan the same range on every pull. Rejections stored by push (F5) are returned
+on the last page for mutation ids above `ackedMutationId`.
+
+**Alternatives considered.** Returning `lastMutationId` as "the highest mutation whose changes are all on this
+page" needs per-page bookkeeping of which client wrote which row, and still breaks when a mutation writes to a
+site the reader cannot see; deferring the acknowledgement to the end of paging is simpler and exact.
+
 ### F4 — parallel duplicate pushes all apply
 
 **What.** The "already applied?" check read `clients.last_mutation_id` with a plain `SELECT` outside the
@@ -163,7 +190,7 @@ conflict and another valid mutation must answer `applied, rejected (STATUS_CONFL
 survives), the reason is stored in `mutation_rejections`, and `last_mutation_id` advances anyway — a rejected
 mutation is consumed exactly like an applied one. The result is `rejected` with `code`, `message` and
 `details`; a retry of the same id answers `duplicate` with the stored reason, so it survives a lost response
-(pull will also report it, P2.6). Any other non-transient error takes the same path as `INTERNAL` (stack
+(the last pull page reports it as well). Any other non-transient error takes the same path as `INTERNAL` (stack
 logged, generic message to the client). Transient database errors (serialization failure, deadlock,
 connection loss) are not rejections: the whole transaction is retried up to three times and then the request
 ends with `503 UNAVAILABLE`; the id is not consumed.
@@ -212,6 +239,43 @@ committed earlier in the same request stay committed and are reported by the nex
 
 **Alternatives considered.** Silently skipping ahead would accept a gap and could reorder a client's own
 mutations; applying out-of-order ids would break the "one id, applied at most once" rule the dedup relies on.
+
+### F9 — incremental pulls return every site
+
+**What.** The site filter was `cursor = 0 ? sites : null`: only the very first pull was restricted to the
+user's sites; every pull with a cursor returned all sites' changes.
+
+**Why it is dangerous.** Every technician's device receives every other site's tickets after its first sync —
+a data leak that looks correct in a quick test, because the initial load is filtered.
+
+**Reproduce.** `apps/server/test/repro/f09-read-access.integration.spec.ts`: a site-A technician pulls, a
+site-B ticket is created, the incremental pull must not contain site B.
+
+**Fix.** There is one delta query and it always takes the site list: a `LATERAL` per accessible site
+(`site_id = s AND version > cursor ORDER BY version LIMIT n`), merged by version. A user with no sites gets an
+empty page without querying the log. The cursor carries a fingerprint of the site set it was issued for, which
+P5/P6 use to detect access changes.
+
+**Alternatives considered.** Row-level security in Postgres would make the filter impossible to forget but
+moves authorization out of the code that is tested here and complicates pooling with a per-request role.
+
+### F10 — another user's `clientId` is accepted
+
+**What.** `clients.user_id` was written but never compared with the caller. Any user could push under another
+user's `clientId` and pull with it.
+
+**Why it is dangerous.** Pushing under a foreign `clientId` burns that client's mutation ids, so the owner's
+real mutations are later answered `duplicate` and silently lost; pulling with it leaked the owner's
+`lastMutationId`.
+
+**Reproduce.** `apps/server/test/repro/f10-client-ownership.integration.spec.ts`.
+
+**Fix.** Push locks the client row and answers `403 CLIENT_MISMATCH` when it belongs to another user, before
+anything else. Pull reports `lastMutationId` and rejections only for the caller's own client (`0` and `[]`
+otherwise), and the push response's `lastMutationId` is read with the same condition.
+
+**Alternatives considered.** Deriving the client id on the server (e.g. `userId + device`) would remove the
+check but breaks the client's ability to create its id offline before it has ever talked to the server.
 
 ### F17 — non-deterministic `ticket.create`
 

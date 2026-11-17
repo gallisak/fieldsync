@@ -14,7 +14,7 @@ describeDb('F10 clientId belongs to one user', () => {
   });
   afterAll(() => t?.close());
 
-  it.failing("refuses another user's clientId on push and pull", async () => {
+  it("refuses another user's clientId on push and pull", async () => {
     const own = await push(t.http, TOKENS.techA, 'c1', [
       { id: 1, name: 'ticket.create', args: { id: randomUUID(), siteId: DEMO.siteA, title: 'F10 A', description: '' } },
     ]);

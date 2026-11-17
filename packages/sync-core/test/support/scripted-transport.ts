@@ -1,4 +1,4 @@
-import type { PullResponse, PushRequest, PushResponse, Transport } from '../../src';
+import type { Cursor, PullResponse, PushRequest, PushResponse, Transport } from '../../src';
 
 type Kind = 'push' | 'pull';
 
@@ -87,11 +87,13 @@ export class ScriptedTransport implements Transport {
   }
 }
 
-export const emptyPull = (lastMutationId = 0): PullResponse => ({
+export const emptyPull = (lastMutationId: number | null = 0): PullResponse => ({
+  mode: 'delta',
   changes: [],
-  nextCursor: 0,
+  cursor: 'test-cursor' as Cursor,
   hasMore: false,
   lastMutationId,
+  rejections: [],
 });
 
 /** Lets pending promise chains run. Microtask-only, so it also works under fake timers. */

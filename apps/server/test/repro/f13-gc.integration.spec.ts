@@ -36,7 +36,7 @@ describeDb('F13 change-log GC vs stale and new clients', () => {
     const ids: string[] = [];
     for (let i = 0; i < 10; i++) {
       ids.push(
-        await createTicket(t.http, t.pool, {
+        await createTicket(t.http, {
           token: TOKENS.admin,
           clientId: 'writer',
           mutationId: ++mutationId,
@@ -52,7 +52,7 @@ describeDb('F13 change-log GC vs stale and new clients', () => {
 
     // Include deletions so "equal to the server" also proves removed rows disappear from the stale client.
     for (let i = 0; i < 7; i++) {
-      await createTicket(t.http, t.pool, {
+      await createTicket(t.http, {
         token: TOKENS.admin,
         clientId: 'writer',
         mutationId: ++mutationId,
@@ -64,7 +64,7 @@ describeDb('F13 change-log GC vs stale and new clients', () => {
       t.http,
       TOKENS.admin,
       'writer',
-      ids.slice(0, 3).map((id) => ({ id: ++mutationId, name: 'ticket.delete' as const, args: { id, siteId: DEMO.siteA } })),
+      ids.slice(0, 3).map((id) => ({ id: ++mutationId, name: 'ticket.delete' as const, args: { id } })),
     );
     expect(deleted.status).toBeLessThan(300);
 

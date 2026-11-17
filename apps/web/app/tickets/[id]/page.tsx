@@ -27,7 +27,6 @@ export default function TicketPage() {
   if (!client) return <p>Loading…</p>;
   if (!ticket) return <p>Ticket not found. <Link href="/">Back</Link></p>;
 
-  const siteId = String(ticket.siteId);
   const status = ticket.status as TicketStatus;
   const parts = client.rows('part').filter((p) => p.ticketId === id);
 
@@ -42,13 +41,23 @@ export default function TicketPage() {
         <br />
         <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={4} cols={50} />
         <br />
-        <button onClick={() => client.mutate('ticket.update', { id, siteId, title, description })}>Save</button>
+        <button
+          onClick={() => {
+            // Send only what this form changed, so a concurrent edit of the other field survives.
+            const patch: Record<string, string> = {};
+            if (title !== ticket.title) patch.title = title;
+            if (description !== ticket.description) patch.description = description;
+            if (Object.keys(patch).length) client.mutate('ticket.update', { id, patch });
+          }}
+        >
+          Save
+        </button>
       </section>
 
       <section>
         <h3>Status: {status}</h3>
         {ALLOWED_TRANSITIONS[status].map((to) => (
-          <button key={to} onClick={() => client.mutate('ticket.setStatus', { id, siteId, from: status, to })}>
+          <button key={to} onClick={() => client.mutate('ticket.setStatus', { id, from: status, to })}>
             {to}
           </button>
         ))}
@@ -60,8 +69,8 @@ export default function TicketPage() {
           {parts.map((p) => (
             <li key={String(p.id)}>
               {String(p.name)} × {String(p.quantity)}{' '}
-              <button onClick={() => client.mutate('part.adjust', { id: p.id, siteId, delta: 1 })}>+</button>
-              <button onClick={() => client.mutate('part.adjust', { id: p.id, siteId, delta: -1 })}>−</button>
+              <button onClick={() => client.mutate('part.adjust', { id: p.id, delta: 1 })}>+</button>
+              <button onClick={() => client.mutate('part.adjust', { id: p.id, delta: -1 })}>−</button>
             </li>
           ))}
         </ul>
@@ -69,7 +78,7 @@ export default function TicketPage() {
         <button
           onClick={() => {
             if (!partName.trim()) return;
-            client.mutate('part.add', { id: crypto.randomUUID(), ticketId: id, siteId, name: partName.trim(), quantity: 1 });
+            client.mutate('part.add', { id: crypto.randomUUID(), ticketId: id, name: partName.trim(), quantity: 1 });
             setPartName('');
           }}
         >

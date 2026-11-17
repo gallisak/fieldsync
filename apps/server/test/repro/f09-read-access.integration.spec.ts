@@ -12,9 +12,9 @@ describeDb('F9 read access on every pull path', () => {
   });
   afterAll(() => t?.close());
 
-  it.failing('never returns another site to a technician, initial or incremental', async () => {
+  it('never returns another site to a technician, initial or incremental', async () => {
     const ticket = (mutationId: number, siteId: string, title: string) =>
-      createTicket(t.http, t.pool, { token: TOKENS.admin, clientId: 'admin', mutationId, siteId, title });
+      createTicket(t.http, { token: TOKENS.admin, clientId: 'admin', mutationId, siteId, title });
 
     await ticket(1, DEMO.siteA, 'F9 A1');
     await ticket(2, DEMO.siteB, 'F9 B1');
@@ -23,7 +23,7 @@ describeDb('F9 read access on every pull path', () => {
     expect(initial.status).toBe(200);
 
     await ticket(3, DEMO.siteB, 'F9 B2');
-    const incremental = await pull(t.http, TOKENS.techA, { cursor: initial.body.nextCursor });
+    const incremental = await pull(t.http, TOKENS.techA, { cursor: initial.body.cursor });
     expect(incremental.status).toBe(200);
 
     const sites = (body: { changes: Array<{ siteId: string }> }) => body.changes.map((c) => c.siteId);

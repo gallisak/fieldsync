@@ -22,7 +22,7 @@ export default function HomePage() {
         onSubmit={(e) => {
           e.preventDefault();
           if (!title.trim()) return;
-          client.mutate('ticket.create', { siteId, title: title.trim(), description: '' });
+          client.mutate('ticket.create', { id: crypto.randomUUID(), siteId, title: title.trim(), description: '' });
           setTitle('');
         }}
       >

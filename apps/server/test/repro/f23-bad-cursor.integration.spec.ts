@@ -12,7 +12,7 @@ describeDb('F23 malformed cursor', () => {
   });
   afterAll(() => t?.close());
 
-  it.failing('answers 400 to a cursor it cannot parse', async () => {
+  it('answers 400 to a cursor it cannot parse', async () => {
     const res = await pull(t.http, TOKENS.admin, { cursor: 'banana' });
     expect(res.status).toBe(400);
   });

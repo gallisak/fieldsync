@@ -1,48 +1,83 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
-import type { MutationResult, PushRequest, PushResponse } from '@fieldsync/sync-core';
+import { Injectable, Logger } from '@nestjs/common';
+import { MutationRejected, type Mutation, type MutationResult, type PushRequest, type PushResponse } from '@fieldsync/sync-core';
+import { ZodError } from 'zod';
+import type { PoolClient } from 'pg';
 import type { AuthUser } from './auth';
-import { Db } from './db';
-import { applyMutation } from './server-tx';
+import { ApiError } from './common/errors';
+import { Db, isTransient } from './database/db.service';
+import { MutationExecutor } from './sync/push/mutation-executor';
+import { ClientRepository } from './sync/repositories/client.repository';
+import { RejectionRepository, type Rejection } from './sync/repositories/rejection.repository';
 import { StreamService } from './stream.service';
 
 @Injectable()
 export class PushService {
+  private readonly logger = new Logger(PushService.name);
+
   constructor(
     private readonly db: Db,
     private readonly streams: StreamService,
+    private readonly executor: MutationExecutor,
+    private readonly clients: ClientRepository,
+    private readonly rejections: RejectionRepository,
   ) {}
 
+  /**
+   * One transaction per mutation. A request-level error (CLIENT_MISMATCH, OUT_OF_ORDER) aborts the rest of the
+   * batch; mutations committed before it stay committed and the client learns about them on the next pull.
+   */
   async push(user: AuthUser, req: PushRequest): Promise<PushResponse> {
     const results: MutationResult[] = [];
     for (const m of req.mutations) {
-      const last = await this.lastMutationId(req.clientId);
-      if (m.id <= last) {
-        results.push({ id: m.id, status: 'duplicate' });
-        continue;
-      }
-      if (m.id !== last + 1) {
-        throw new BadRequestException(`Out-of-order mutation ${m.id}, expected ${last + 1}`);
-      }
-      const touched = await this.db.tx(async (c) => {
-        const sites = await applyMutation(c, user, m);
-        await c.query(
-          `INSERT INTO clients (client_id, user_id, last_mutation_id) VALUES ($1, $2, $3)
-           ON CONFLICT (client_id) DO UPDATE SET last_mutation_id = $3`,
-          [req.clientId, user.id, m.id],
-        );
-        return sites;
-      });
-      this.streams.notify(touched);
-      results.push({ id: m.id, status: 'applied' });
+      const { result, sites } = await this.applyOne(user, req.clientId, m);
+      if (sites.length) this.streams.notify(sites);
+      results.push(result);
     }
-    return { results, lastMutationId: await this.lastMutationId(req.clientId) };
+    return { results, lastMutationId: await this.clients.lastMutationId(this.db.pool, req.clientId, user.id) };
   }
 
-  async lastMutationId(clientId: string): Promise<number> {
-    const { rows } = await this.db.pool.query<{ last_mutation_id: string }>(
-      `SELECT last_mutation_id FROM clients WHERE client_id = $1`,
-      [clientId],
+  private applyOne(user: AuthUser, clientId: string, m: Mutation): Promise<{ result: MutationResult; sites: string[] }> {
+    return this.db.tx(async (c) => {
+      const client = await this.clients.lockOrCreate(c, clientId, user.id);
+      if (client.userId !== user.id) throw new ApiError('CLIENT_MISMATCH', 403, undefined, 'clientId belongs to another user');
+      if (m.id <= client.lastMutationId) return { result: await this.duplicate(c, clientId, m.id), sites: [] };
+      const expected = client.lastMutationId + 1;
+      if (m.id !== expected) throw new ApiError('OUT_OF_ORDER', 409, { expected }, `Expected mutation ${expected}`);
+
+      let result: MutationResult;
+      let sites: string[] = [];
+      await c.query('SAVEPOINT m');
+      try {
+        sites = await this.executor.execute(c, user, m, clientId);
+        result = { id: m.id, status: 'applied' };
+      } catch (err) {
+        if (isTransient(err)) throw err; // the whole transaction is retried; the id is not consumed
+        await c.query('ROLLBACK TO SAVEPOINT m');
+        const rejection = this.toRejection(err, m);
+        await this.rejections.insert(c, clientId, m.id, rejection);
+        result = { id: m.id, status: 'rejected', ...rejection };
+      }
+      // Advanced for rejected mutations too: a rejection must not block the mutations queued behind it (F5).
+      await this.clients.setLastMutationId(c, clientId, m.id);
+      return { result, sites };
+    });
+  }
+
+  private async duplicate(c: PoolClient, clientId: string, id: number): Promise<MutationResult> {
+    const rejection = await this.rejections.find(c, clientId, id);
+    return { id, status: 'duplicate', ...rejection };
+  }
+
+  private toRejection(err: unknown, m: Mutation): Rejection {
+    if (err instanceof MutationRejected) {
+      return { code: err.code, message: err.message, ...(err.details === undefined ? {} : { details: err.details }) };
+    }
+    if (err instanceof ZodError) {
+      return { code: 'BAD_ARGS', message: err.issues[0]?.message ?? 'Invalid arguments', details: err.issues };
+    }
+    this.logger.error(
+      `mutation ${m.id} (${m.name}) failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
     );
-    return rows.length ? Number(rows[0].last_mutation_id) : 0;
+    return { code: 'INTERNAL', message: 'Unexpected server error' };
   }
 }

@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { MemoryStorage, SyncClient, type Transport } from '../src';
 import type { PullResponse, PushRequest, PushResponse } from '../src';
 
@@ -20,7 +21,7 @@ function makeClient(): SyncClient {
 describe('SyncClient', () => {
   it('shows a locally created ticket before the server confirms it', () => {
     const client = makeClient();
-    client.mutate('ticket.create', { siteId: SITE, title: 'Leaking valve', description: '' });
+    client.mutate('ticket.create', { id: randomUUID(), siteId: SITE, title: 'Leaking valve', description: '' });
     expect(client.rows('ticket')).toHaveLength(1);
     expect(client.pendingCount).toBe(1);
     client.dispose();
@@ -28,8 +29,8 @@ describe('SyncClient', () => {
 
   it('numbers local mutations sequentially', () => {
     const client = makeClient();
-    client.mutate('ticket.create', { siteId: SITE, title: 'A', description: '' });
-    client.mutate('ticket.create', { siteId: SITE, title: 'B', description: '' });
+    client.mutate('ticket.create', { id: randomUUID(), siteId: SITE, title: 'A', description: '' });
+    client.mutate('ticket.create', { id: randomUUID(), siteId: SITE, title: 'B', description: '' });
     expect(client.rows('ticket')).toHaveLength(2);
     expect(client.pendingCount).toBe(2);
     client.dispose();

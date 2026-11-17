@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { MemoryStorage, SyncClient, type SyncClientOptions } from '../../src';
 import { ScriptedTransport, emptyPull, flush } from '../support/scripted-transport';
 
@@ -24,7 +25,7 @@ describe('F22 retry scheduling', () => {
     const transport = new ScriptedTransport();
     const client = makeClient(transport);
     try {
-      client.mutate('ticket.create', { siteId: SITE, title: 'Offline', description: '' });
+      client.mutate('ticket.create', { id: randomUUID(), siteId: SITE, title: 'Offline', description: '' });
       await flush();
       for (let step = 0; step < 50 && transport.calls.length < 10; step++) {
         jest.advanceTimersToNextTimer();
@@ -49,7 +50,7 @@ describe('F22 retry scheduling', () => {
       .alwaysPull(emptyPull());
     const client = makeClient(transport);
     try {
-      client.mutate('ticket.create', { siteId: SITE, title: 'Ignored by the server', description: '' });
+      client.mutate('ticket.create', { id: randomUUID(), siteId: SITE, title: 'Ignored by the server', description: '' });
       await flush(200);
 
       expect(transport.callsOf('push').length).toBeLessThanOrEqual(2);

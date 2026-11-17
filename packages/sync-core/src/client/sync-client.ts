@@ -1,13 +1,18 @@
-import { MUTATORS, MutationRejected, type MutatorTx } from './mutators';
-import type { SyncStorage } from './storage';
-import type { Transport } from './transport';
-import type { EntityName, Mutation, MutatorName, Row } from './types';
+import { MutationRejected, getMutator, type MutatorTx } from '../mutators';
+import type { SyncStorage } from '../storage/memory';
+import type { Transport } from '../transport/http';
+import type { Cursor, EntityName, Mutation, MutatorName, Row } from '../protocol/types';
 
 export type SyncStatus = 'idle' | 'syncing' | 'offline';
 
 export interface Rejection {
   mutation: Mutation;
   error: string;
+}
+
+/** `createdAt` is stamped once at enqueue time and reused as `ctx.now` on every replay. */
+interface PendingMutation extends Mutation {
+  createdAt: string;
 }
 
 export interface SyncClientOptions {
@@ -30,11 +35,19 @@ class MapTx implements MutatorTx {
   del(entity: EntityName, id: string): void {
     this.state.delete(`${entity}/${id}`);
   }
+
+  scan(entity: 'part', by: { ticketId: string }): Row[] {
+    const rows: Row[] = [];
+    for (const [key, row] of this.state) {
+      if (key.startsWith(`${entity}/`) && row.ticketId === by.ticketId) rows.push(row);
+    }
+    return rows;
+  }
 }
 
-function applyLocally(state: Map<string, Row>, m: Mutation): void {
+function applyLocally(state: Map<string, Row>, m: PendingMutation): void {
   try {
-    MUTATORS[m.name].apply(new MapTx(state), m.args);
+    getMutator(m.name)?.apply(new MapTx(state), m.args, { now: m.createdAt });
   } catch (err) {
     if (!(err instanceof MutationRejected)) throw err;
   }
@@ -45,9 +58,9 @@ export class SyncClient {
   private readonly transport: Transport;
   private readonly storage: SyncStorage;
   private base = new Map<string, Row>();
-  private cursor = 0;
+  private cursor: Cursor | null = null;
   private lastMutationId = 0;
-  private pending: Mutation[] = [];
+  private pending: PendingMutation[] = [];
   private listeners = new Set<() => void>();
   private currentStatus: SyncStatus = 'idle';
   private rejected: Rejection[] = [];
@@ -62,7 +75,8 @@ export class SyncClient {
     this.storage = opts.storage;
     const saved = this.storage.load();
     if (saved) {
-      this.cursor = saved.cursor;
+      // A v1 numeric cursor is meaningless to a v2 server: start over with a full pull.
+      this.cursor = typeof saved.cursor === 'string' ? saved.cursor : null;
       this.lastMutationId = saved.lastMutationId;
       this.base = new Map(Object.entries(saved.base));
     }
@@ -91,10 +105,11 @@ export class SyncClient {
   }
 
   mutate(name: MutatorName, args: Record<string, unknown>): void {
-    const mutation: Mutation = {
+    const mutation: PendingMutation = {
       id: this.lastMutationId + this.pending.length + 1,
       name,
       args,
+      createdAt: new Date().toISOString(),
     };
     this.pending.push(mutation);
     this.emit();
@@ -145,12 +160,15 @@ export class SyncClient {
   private async push(): Promise<void> {
     if (this.pending.length === 0) return;
     const batch = this.pending.slice(0, 100);
-    const resp = await this.transport.push({ clientId: this.clientId, mutations: batch });
+    const resp = await this.transport.push({
+      clientId: this.clientId,
+      mutations: batch.map(({ id, name, args }) => ({ id, name, args })),
+    });
     const handled = new Set(resp.results.map((r) => r.id));
     for (const r of resp.results) {
       if (r.status === 'rejected') {
         const mutation = batch.find((m) => m.id === r.id);
-        if (mutation) this.rejected.push({ mutation, error: r.error ?? 'rejected' });
+        if (mutation) this.rejected.push({ mutation, error: r.message ?? r.code ?? 'rejected' });
       }
     }
     this.pending = this.pending.filter((m) => !handled.has(m.id));
@@ -160,14 +178,19 @@ export class SyncClient {
 
   private async pull(): Promise<void> {
     for (;;) {
-      const resp = await this.transport.pull(this.cursor, this.clientId, 500);
+      const resp = await this.transport.pull({
+        cursor: this.cursor,
+        clientId: this.clientId,
+        ackedMutationId: this.lastMutationId,
+        limit: 500,
+      });
       for (const change of resp.changes) {
         const key = `${change.entity}/${change.id}`;
         if (change.op === 'put' && change.data) this.base.set(key, change.data);
         else this.base.delete(key);
       }
-      this.cursor = resp.nextCursor;
-      this.lastMutationId = Math.max(this.lastMutationId, resp.lastMutationId);
+      this.cursor = resp.cursor;
+      if (resp.lastMutationId !== null) this.lastMutationId = Math.max(this.lastMutationId, resp.lastMutationId);
       this.pending = this.pending.filter((m) => m.id > this.lastMutationId);
       this.persist();
       this.emit();

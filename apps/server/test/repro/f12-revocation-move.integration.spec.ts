@@ -20,7 +20,7 @@ describeDb('F12 revocation and site moves reach the client', () => {
   });
 
   async function techAClientWithOneTicket(): Promise<{ client: SyncClient; ticketId: string }> {
-    const ticketId = await createTicket(t.http, t.pool, {
+    const ticketId = await createTicket(t.http, {
       token: TOKENS.admin,
       clientId: 'admin',
       mutationId: 1,
@@ -46,7 +46,7 @@ describeDb('F12 revocation and site moves reach the client', () => {
     expect(client.rows('ticket')).toHaveLength(0);
   });
 
-  it.failing('removes a ticket that was moved to a site the client cannot see', async () => {
+  it('removes a ticket that was moved to a site the client cannot see', async () => {
     let ticketId: string;
     ({ client, ticketId } = await techAClientWithOneTicket());
 

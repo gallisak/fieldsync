@@ -1,5 +1,6 @@
 import type { INestApplication } from '@nestjs/common';
-import type { Mutation, Row } from '@fieldsync/sync-core';
+import { PROTOCOL, PROTOCOL_HEADER, type Mutation, type Row } from '@fieldsync/sync-core';
+import { randomUUID } from 'crypto';
 import { request as httpRequest, type ClientRequest } from 'http';
 import type { AddressInfo } from 'net';
 import type { Pool } from 'pg';
@@ -21,7 +22,11 @@ export function seed(pool: Pool): Promise<void> {
 }
 
 export function push(http: Http, token: string, clientId: string, mutations: Mutation[]) {
-  return http.post('/sync/push').set('authorization', `Bearer ${token}`).send({ clientId, mutations });
+  return http
+    .post('/sync/push')
+    .set('authorization', `Bearer ${token}`)
+    .set(PROTOCOL_HEADER, String(PROTOCOL))
+    .send({ clientId, mutations });
 }
 
 export function pull(
@@ -33,11 +38,15 @@ export function pull(
   if (params.cursor !== undefined) query.cursor = String(params.cursor);
   if (params.clientId !== undefined) query.clientId = params.clientId;
   if (params.limit !== undefined) query.limit = String(params.limit);
-  return http.get('/sync/pull').set('authorization', `Bearer ${token}`).query(query);
+  return http
+    .get('/sync/pull')
+    .set('authorization', `Bearer ${token}`)
+    .set(PROTOCOL_HEADER, String(PROTOCOL))
+    .query(query);
 }
 
 export function me(http: Http, token: string) {
-  return http.get('/me').set('authorization', `Bearer ${token}`);
+  return http.get('/me').set('authorization', `Bearer ${token}`).set(PROTOCOL_HEADER, String(PROTOCOL));
 }
 
 /** Starts the app on an ephemeral port (needed for streams and for a real SyncClient) and returns its URL. */
@@ -79,23 +88,17 @@ export function sortById(rows: Row[]): Row[] {
   return [...rows].sort((a, b) => String(a.id).localeCompare(String(b.id)));
 }
 
-/**
- * Creates a ticket through the push endpoint and returns its id. The starter generates ticket ids on the
- * server (F17), so the id is looked up by its (unique per test) title.
- */
+/** Creates a ticket through the push endpoint and returns its id; throws unless the mutation was applied. */
 export async function createTicket(
   http: Http,
-  pool: Pool,
   opts: { token: string; clientId: string; mutationId: number; siteId: string; title: string },
 ): Promise<string> {
+  const id = randomUUID();
   const res = await push(http, opts.token, opts.clientId, [
-    { id: opts.mutationId, name: 'ticket.create', args: { siteId: opts.siteId, title: opts.title, description: '' } },
+    { id: opts.mutationId, name: 'ticket.create', args: { id, siteId: opts.siteId, title: opts.title, description: '' } },
   ]);
-  if (res.status >= 300) throw new Error(`createTicket: HTTP ${res.status} ${JSON.stringify(res.body)}`);
-  const { rows } = await pool.query<{ id: string }>(
-    `SELECT id FROM entities WHERE entity = 'ticket' AND data->>'title' = $1`,
-    [opts.title],
-  );
-  if (rows.length !== 1) throw new Error(`createTicket: expected one ticket titled ${opts.title}`);
-  return rows[0].id;
+  if (res.status >= 300 || res.body.results?.[0]?.status !== 'applied') {
+    throw new Error(`createTicket: HTTP ${res.status} ${JSON.stringify(res.body)}`);
+  }
+  return id;
 }

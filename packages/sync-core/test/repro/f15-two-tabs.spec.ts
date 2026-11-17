@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { MemoryStorage, SyncClient } from '../../src';
 import { ScriptedTransport, flush } from '../support/scripted-transport';
 
@@ -27,8 +28,8 @@ describe('F15 two tabs on one storage', () => {
     const tab2 = open(storage);
     await Promise.all([ready(tab1), ready(tab2)]);
     await Promise.all([
-      tab1.mutate('ticket.create', { siteId: SITE, title: 'from tab 1', description: '' }),
-      tab2.mutate('ticket.create', { siteId: SITE, title: 'from tab 2', description: '' }),
+      tab1.mutate('ticket.create', { id: randomUUID(), siteId: SITE, title: 'from tab 1', description: '' }),
+      tab2.mutate('ticket.create', { id: randomUUID(), siteId: SITE, title: 'from tab 2', description: '' }),
     ]);
     await flush();
 

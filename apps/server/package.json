@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && mkdir -p dist/database/migrations && cp src/database/migrations/*.sql dist/database/migrations/",
     "start": "node dist/main",
     "dev": "tsc -p tsconfig.build.json --watch",
     "test": "jest",

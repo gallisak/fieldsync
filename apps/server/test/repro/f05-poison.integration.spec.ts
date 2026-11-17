@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { DEMO, TOKENS, createTicket, push, seed } from '../support/api';
 import { createTestApp, describeDb, type TestApp } from '../support/pg';
 
@@ -13,8 +14,8 @@ describeDb('F5 rejected mutation inside a batch', () => {
   });
   afterAll(() => t?.close());
 
-  it.failing('rejects the bad mutation and applies the ones around it', async () => {
-    const ticketId = await createTicket(t.http, t.pool, {
+  it('rejects the bad mutation and applies the ones around it', async () => {
+    const ticketId = await createTicket(t.http, {
       token: TOKENS.admin,
       clientId: 'setup',
       mutationId: 1,
@@ -23,10 +24,10 @@ describeDb('F5 rejected mutation inside a batch', () => {
     });
 
     const res = await push(t.http, TOKENS.admin, 'c1', [
-      { id: 1, name: 'ticket.create', args: { siteId: DEMO.siteA, title: 'F5 other', description: '' } },
+      { id: 1, name: 'ticket.create', args: { id: randomUUID(), siteId: DEMO.siteA, title: 'F5 other', description: '' } },
       // The ticket is "open", so a transition declared from "done" is a status conflict.
-      { id: 2, name: 'ticket.setStatus', args: { id: ticketId, siteId: DEMO.siteA, from: 'done', to: 'open' } },
-      { id: 3, name: 'ticket.update', args: { id: ticketId, siteId: DEMO.siteA, title: 'F5 updated', description: '' } },
+      { id: 2, name: 'ticket.setStatus', args: { id: ticketId, from: 'done', to: 'open' } },
+      { id: 3, name: 'ticket.update', args: { id: ticketId, patch: { title: 'F5 updated' } } },
     ]);
 
     expect([200, 201]).toContain(res.status);

@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { APP_CONFIG, type AppConfig } from './config/env';
-import { Db } from './db';
+import { Db } from './database/db.service';
 
 @Injectable()
 export class GcService implements OnModuleInit, OnModuleDestroy {

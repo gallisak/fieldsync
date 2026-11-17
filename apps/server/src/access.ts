@@ -1,4 +1,4 @@
-import { MutationRejected, type Mutation } from '@fieldsync/sync-core';
+import { MutationRejected } from '@fieldsync/sync-core';
 import type { Pool, PoolClient } from 'pg';
 import type { AuthUser } from './auth';
 
@@ -14,10 +14,11 @@ export async function accessibleSites(q: Queryable, user: AuthUser): Promise<str
   return rows.map((r) => r.site_id);
 }
 
-export async function authorize(q: Queryable, user: AuthUser, mutation: Mutation): Promise<void> {
-  const sites = await accessibleSites(q, user);
-  const siteId = mutation.args.siteId;
-  if (typeof siteId !== 'string' || !sites.includes(siteId)) {
-    throw new MutationRejected('FORBIDDEN', 'No access to this site');
+/** Every site the mutation reads or writes must be accessible; otherwise NO_ACCESS (same as "not found"). */
+export async function authorize(q: Queryable, user: AuthUser, siteIds: string[]): Promise<void> {
+  if (siteIds.length === 0) return;
+  const sites = new Set(await accessibleSites(q, user));
+  if (!siteIds.every((s) => sites.has(s))) {
+    throw new MutationRejected('NO_ACCESS', 'Ticket is unavailable: deleted, moved, or access revoked');
   }
 }

@@ -7,7 +7,8 @@
     "build": "npm run build:core && npm run build -w @fieldsync/server && npm run build -w @fieldsync/web",
     "lint": "eslint \"packages/*/{src,test}/**/*.ts\" \"apps/server/{src,test}/**/*.ts\" && npm run lint -w @fieldsync/web",
     "typecheck": "npm run build:core && tsc --noEmit -p packages/sync-core/tsconfig.json && tsc --noEmit -p apps/server/tsconfig.json && tsc --noEmit -p apps/web",
-    "test": "npm run build:core && npm test -w @fieldsync/sync-core && npm test -w @fieldsync/server"
+    "test": "npm run build:core && npm test -w @fieldsync/sync-core && npm test -w @fieldsync/server",
+    "sim": "npm run test:sim -w @fieldsync/sync-core --"
   },
   "devDependencies": {
     "@types/jest": "^29.5.12",

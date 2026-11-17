@@ -588,6 +588,57 @@ tests now pass an `id` to `ticket.create` (required since F17); their assertions
 
 ## Simulation
 
+A deterministic simulation drives real `SyncClient`s against `ModelServer`. That is the push and pull protocol
+in memory, with the same mutators and the same decision order as the server. Everything runs in virtual time
+and draws from one seeded generator, so a seed replays exactly. Code: `packages/sync-core/src/testing/`.
+
+Each step is one random action:
+- a mutation from a fixed mix (create, update, status change, delete, add a part, adjust a quantity);
+- the passage of time;
+- a network partition;
+- a device crash and restart on the same storage;
+- opening or closing a second tab.
+
+The network loses requests and responses, delivers duplicates, cuts a batch midway and delays every hop by up to
+400 ms, so answers overtake each other. After the last step the network heals and every client settles.
+
+Checked after every step:
+1. no client holds a row of a site its user could not see;
+2. no mutation is applied twice;
+3. a client's cursor never goes backwards, except through a snapshot.
+
+Checked at the end:
+
+4. every tab holds exactly the server's rows for its user;
+5. nothing is left pending;
+6. every issued mutation is either applied or rejected with a reason the client knows;
+7. every part quantity equals what it was added with plus each applied adjustment.
+
+```sh
+npm run sim                                  # regression seeds, then seeds 1–500 × 400 steps (about 40 s)
+SIM_SEED=1234 npm run sim                    # one seed
+SIM_SEED=1234 SIM_STEPS=57 npm run sim       # one seed, a shorter run
+SIM_SEEDS=50 npm run sim                     # seeds 1–50 (0: regression seeds only)
+```
+
+On a failure the runner binary-searches the step count down. It prints the smallest failing run as a command,
+followed by the violated invariant and the last 30 steps. `npm test` includes the simulation; CI runs it as
+its own step (`test:sim`).
+
+Access changes (F12) and change-log garbage collection (F13) are not simulated yet. With them switched on,
+every seed fails on invariant 1 or 4, which is those two defects.
+
+**Regression seeds** (`packages/sync-core/test/sim/regression-seeds.ts`). They run first. Each entry is the
+smallest failing run found when that one fix was reverted on its own, which is evidence that the simulation
+catches it. The second column shows how many of seeds 1–100 failed with that fix reverted.
+
+| Seed | Steps | Seeds 1–100 failing | Found |
+|---|---|---|---|
+| 30 | 1 | 100 | F4: a server that does not deduplicate applies a retried mutation twice |
+| 56 | 3 | 100 | F5: a rejection that does not advance the client blocks its queue |
+| 91 | 2 | 68 | F15: a follower tab that ignores `state-changed` keeps a stale base |
+| 86 | 27 | 41 | F15: a leader that ignores `queue-changed` never pushes another tab's mutation |
+
 ## Load results
 
 ## Not done / would do differently

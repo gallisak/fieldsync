@@ -15,3 +15,6 @@ export * from './transport/http';
 export * from './client/sync-client';
 export * from './client/sse';
 export * from './client/backoff';
+export * from './tabs/coordinator';
+export * from './tabs/web-locks';
+export * from './tabs/memory';

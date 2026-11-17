@@ -1,5 +1,6 @@
 import { MutationRejected, getMutator, type MutatorTx } from '../mutators';
 import type { PersistedState, StoredMutation, SyncStorage } from '../storage/types';
+import type { TabCoordinator, TabMessage } from '../tabs/coordinator';
 import { TransportError } from '../transport/errors';
 import { nextDelay } from './backoff';
 import { openPokeStream } from './sse';
@@ -47,6 +48,11 @@ export interface SyncClientOptions {
   storage: SyncStorage;
   /** Without it the client syncs on its own triggers only (mutations, `online`, visibility, poll). */
   stream?: PokeStreamConfig;
+  /**
+   * Tabs sharing the storage: only the elected one talks to the server, the others follow through storage.
+   * Without it this client always leads.
+   */
+  tabs?: TabCoordinator;
   clock?: SyncClock;
   random?: () => number;
   /** Defaults to the browser's `online` and `visibilitychange` events, and to nothing elsewhere. */
@@ -120,10 +126,13 @@ export class SyncClient {
   private readonly random: () => number;
   private readonly env: SyncEnvironment;
   private readonly streamConfig?: PokeStreamConfig;
+  private readonly tabs?: TabCoordinator;
+  /** Only the leader pushes, pulls, keeps the stream and polls; a follower reloads from storage. */
+  private isLeader: boolean;
   /** Aborted by `dispose()`: every request in flight is given up. */
   private readonly abort = new AbortController();
   /** Closes the poke stream only: `dispose()` and `block()`. */
-  private readonly streamAbort = new AbortController();
+  private streamAbort = new AbortController();
   private streamTimer?: unknown;
   private id = '';
   private base = new Map<string, Row>();
@@ -159,6 +168,8 @@ export class SyncClient {
     this.random = opts.random ?? Math.random;
     this.env = opts.env ?? browserEnvironment();
     this.streamConfig = opts.stream;
+    this.tabs = opts.tabs;
+    this.isLeader = !opts.tabs;
     const offVersionChange = this.storage.onVersionChange?.(() => this.block('upgrade'));
     if (offVersionChange) this.unsubscribe.push(offVersionChange);
     this.ready = this.boot();
@@ -215,7 +226,10 @@ export class SyncClient {
       this.emit();
     });
     durable.then(
-      () => void this.sync(),
+      () => {
+        if (this.isLeader) void this.sync();
+        this.tabs?.post({ t: 'queue-changed' });
+      },
       () => undefined,
     );
     return durable;
@@ -236,7 +250,8 @@ export class SyncClient {
 
   /**
    * Starts background syncing: one sync now, then on every stream poke, on `online`, on the page becoming
-   * visible and on a jittered poll. Mutations request a sync whether or not the client was started.
+   * visible and on a jittered poll. Mutations request a sync whether or not the client was started. With
+   * `tabs`, the stream and the poll run only while this tab leads; the others ask the leader to sync.
    */
   start(): void {
     if (this.started || this.disposed) return;
@@ -244,8 +259,14 @@ export class SyncClient {
     const request = () => void this.sync();
     if (this.env.onOnline) this.unsubscribe.push(this.env.onOnline(request));
     if (this.env.onVisible) this.unsubscribe.push(this.env.onVisible(request));
-    this.schedulePoll();
-    if (this.streamConfig) void this.keepStreamOpen(this.streamConfig);
+    if (this.tabs) {
+      this.tabs.start(
+        (leader) => this.onLeaderChange(leader),
+        (m) => this.onTabMessage(m),
+      );
+    } else {
+      this.lead();
+    }
     request();
   }
 
@@ -255,6 +276,10 @@ export class SyncClient {
    */
   sync(): Promise<void> {
     if (this.disposed || this.blockedBy) return Promise.resolve();
+    if (!this.isLeader) {
+      this.tabs?.post({ t: 'sync-request' });
+      return Promise.resolve();
+    }
     if (this.running) {
       this.rerun = true;
       return this.running;
@@ -279,6 +304,7 @@ export class SyncClient {
     this.clearRetry();
     if (this.pollTimer !== undefined) this.clock.clearTimeout(this.pollTimer);
     for (const off of this.unsubscribe.splice(0)) off();
+    this.tabs?.close(); // the next tab takes over
     this.storage.close();
     this.listeners.clear();
   }
@@ -395,6 +421,7 @@ export class SyncClient {
       this.outOfOrderRetried = false;
       this.emit();
     });
+    this.tabs?.post({ t: 'state-changed' });
     this.setStatus('idle');
     void this.sync();
   }
@@ -418,6 +445,7 @@ export class SyncClient {
         this.emit();
         return ok;
       });
+      if (committed) this.tabs?.post({ t: 'state-changed' });
       if (committed && !resp.hasMore) break;
     }
   }
@@ -425,7 +453,58 @@ export class SyncClient {
   private setStatus(status: SyncStatus): void {
     if (this.currentStatus === status) return;
     this.currentStatus = status;
+    if (this.isLeader) this.tabs?.post({ t: 'status', status, blocked: this.blockedBy });
     this.emit();
+  }
+
+  /** Leader duties beyond syncing on request: the poke stream and the background poll. */
+  private lead(): void {
+    this.schedulePoll();
+    if (this.streamConfig) void this.keepStreamOpen(this.streamConfig);
+  }
+
+  private onLeaderChange(leader: boolean): void {
+    if (this.disposed || leader === this.isLeader) return;
+    this.isLeader = leader;
+    if (!leader) {
+      this.closeStream();
+      if (this.pollTimer !== undefined) this.clock.clearTimeout(this.pollTimer);
+      this.pollTimer = undefined;
+      return;
+    }
+    // What the previous leader left in storage is the starting point; anything it had not pushed goes now.
+    void this.reload().then(() => {
+      this.lead();
+      void this.sync();
+    });
+  }
+
+  private onTabMessage(m: TabMessage): void {
+    if (this.disposed) return;
+    switch (m.t) {
+      case 'queue-changed':
+        void this.reload().then(() => {
+          if (this.isLeader) void this.sync();
+        });
+        return;
+      case 'sync-request':
+        if (this.isLeader) void this.sync();
+        return;
+      case 'state-changed':
+        void this.reload();
+        return;
+      case 'status':
+        if (this.isLeader) return;
+        this.blockedBy = m.blocked;
+        this.setStatus(m.status);
+    }
+  }
+
+  private reload(): Promise<void> {
+    return this.serial(async () => {
+      this.adopt(await this.storage.load());
+      this.emit();
+    });
   }
 
   /**
@@ -434,12 +513,13 @@ export class SyncClient {
    */
   private async keepStreamOpen(config: PokeStreamConfig): Promise<void> {
     let attempt = 0;
-    while (!this.disposed && !this.blockedBy) {
+    const abort = (this.streamAbort = new AbortController());
+    while (!this.disposed && !this.blockedBy && !abort.signal.aborted) {
       let receiving = false;
       try {
         await openPokeStream({
           ...config,
-          signal: this.streamAbort.signal,
+          signal: abort.signal,
           timers: this.clock,
           onOpen: () => void this.sync(),
           onData: () => {
@@ -449,11 +529,11 @@ export class SyncClient {
           onPoke: () => void this.sync(),
         });
       } catch (err) {
-        if (this.disposed || this.blockedBy) return;
+        if (this.disposed || this.blockedBy || abort.signal.aborted) return;
         if (err instanceof TransportError && err.status === 401) return this.block('auth');
         if (err instanceof TransportError && err.status === 426) return this.block('upgrade');
       }
-      if (this.disposed || this.blockedBy) return;
+      if (this.disposed || this.blockedBy || abort.signal.aborted) return;
       await new Promise<void>((resolve) => {
         this.streamTimer = this.clock.setTimeout(resolve, nextDelay(attempt++, this.random));
       });

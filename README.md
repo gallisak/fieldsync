@@ -85,7 +85,7 @@ in `packages/sync-core/test/repro/`.
 | F12 | Access lifecycle | Revoked access and site moves never remove data from clients | `f12-revocation-move.integration.spec.ts` | moves fixed; revocation open |
 | F13 | Log lifecycle | GC by age with no floor or reload signal; new clients replay a truncated log | `f13-gc.integration.spec.ts` | open |
 | F14 | Client data loss | Pending queue not persisted; `lastMutationId` persisted only after pull | `f14-reload.spec.ts` | fixed |
-| F15 | Client data loss | Tabs share one `clientId` and storage blob with separate id counters | `f15-two-tabs.spec.ts` | ids fixed; real tabs open (IndexedDB, one syncing tab) |
+| F15 | Client data loss | Tabs share one `clientId` and storage blob with separate id counters | `f15-two-tabs.spec.ts` | fixed |
 | F16 | Client data loss | Pending mutations dropped on push ack, before the pull delivers their effects | `f16-ack-flicker.spec.ts` | fixed |
 | F17 | Determinism | `ticket.create` generates its id and timestamps inside the mutator | `f17-determinism.spec.ts` | fixed |
 | F18 | Merge semantics | `ticket.update` overwrites title and description wholesale | `f18-field-merge.spec.ts` | fixed |
@@ -332,6 +332,33 @@ a browser: the next mutation is accepted as number 5 of the old client).
 **Alternatives considered.** Persisting the in-memory structures after every change (the starter's `save`)
 keeps the race between "id handed out" and "id saved"; ids derived from a timestamp or random value would
 break the server's gap-free per-client ordering that duplicate detection relies on.
+
+### F15 — two tabs hand out the same mutation ids
+
+**What.** Every tab of the app shared one `clientId` and one storage blob, but each kept its own in-memory id
+counter and its own copy of the state, and each wrote the whole blob back.
+
+**Why it is dangerous.** Two tabs creating something offline both used id `n + 1`: the server applied the first
+and answered `duplicate` for the second, which was then silently gone; each tab also overwrote the other's saved
+state.
+
+**Reproduce.** `packages/sync-core/test/repro/f15-two-tabs.spec.ts`: two clients on one storage mutate at the
+same time; after reopening, both mutations are queued with different ids.
+
+**Fix.** Ids are allocated by the storage in the same atomic step that stores the mutation (`enqueue`; in
+IndexedDB one `readwrite` transaction, which browsers serialise across tabs), so tabs can no longer collide.
+On top, one tab leads (`WebLocksCoordinator`: a Web Lock held while the tab is open, messages over a
+`BroadcastChannel`): only the leader pushes, pulls and keeps the stream; the others store their mutations, tell
+the leader (`queue-changed`), reload after its commits (`state-changed`) and show its status. Closing or killing
+the leader frees the lock and the next tab takes over from storage. Leadership only saves requests —
+correctness does not depend on it: with two leaders the server drops duplicate pushes and `commitPull`'s cursor
+check drops the slower of two overlapping pulls (`test/tabs/tabs.spec.ts`, including a leader that dies with its
+push in flight). In Chrome, a second tab made no API request at all while its ticket was sent by the first, and
+took over the stream and the sync when the first tab closed.
+
+**Alternatives considered.** A `SharedWorker` owning the connection is cleaner but not available in Chrome for
+Android, the technicians' likely browser; per-tab client ids would avoid collisions but multiply server clients
+and still race on the shared storage.
 
 ### F16 — an acknowledged change disappears until the pull arrives
 

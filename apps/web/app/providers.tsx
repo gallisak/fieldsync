@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useContext, useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
-import { HttpTransport, LocalStorageSyncStorage, SyncClient } from '@fieldsync/sync-core';
+import { HttpTransport, LocalStorageSyncStorage, SyncClient, WebLocksCoordinator } from '@fieldsync/sync-core';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
@@ -22,6 +22,8 @@ export function Providers({ children }: { children: ReactNode }) {
       storage: new LocalStorageSyncStorage('fs_state'),
       // Read over fetch so the token goes in the Authorization header, never in the URL.
       stream: { url: `${API}/sync/stream`, token },
+      // Tabs share this storage: one of them talks to the server, the others follow.
+      tabs: new WebLocksCoordinator('fs_state'),
     });
     setClient(c);
     c.start();

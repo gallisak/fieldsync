@@ -64,11 +64,13 @@ site's ticket while sending their own `siteId` and asserts the write is rejected
 was `SELECT 1`; it exercised no application code. Removed; the server's integration coverage is the
 `*.integration.spec.ts` suites built on `test/support/pg.ts` (a full Nest app per private schema). The rest of
 F27 is fixed in the tooling: integration suites now fail instead of silently skipping when `DATABASE_URL` is
-missing in CI (`requireDatabaseUrl()`), and `npm run typecheck` now type-checks `apps/web`. Until the Phase 1
-reproductions land, the server's `test`, `test:unit` and `test:integration` scripts carry `--passWithNoTests`.
+missing in CI (`requireDatabaseUrl()`), and `npm run typecheck` now type-checks `apps/web`. The server's
+`test:unit` script carries `--passWithNoTests` because the server has no unit tests yet.
 
-**`packages/sync-core/test/client.spec.ts` — two `it.todo` (F27).** Still present; they are replaced by the
-`f14-reload` and `f15-two-tabs` reproductions in Phase 1.
+**`packages/sync-core/test/client.spec.ts` — two `it.todo` (F27).** "keeps unsynced mutations across a
+reload" and "does not lose mutations when two tabs share one clientId" were placeholders that always report
+as todo. Removed; replaced by `packages/sync-core/test/repro/f14-reload.spec.ts` and
+`packages/sync-core/test/repro/f15-two-tabs.spec.ts`, which assert exactly those behaviours.
 
 ## Your task
 

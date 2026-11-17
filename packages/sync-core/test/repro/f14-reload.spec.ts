@@ -1,0 +1,63 @@
+import { MemoryStorage, SyncClient } from '../../src';
+import { ScriptedTransport, flush } from '../support/scripted-transport';
+
+const SITE = '33333333-3333-4333-8333-333333333333';
+
+/**
+ * F14: the queue of unsynced mutations lives only in memory, and lastMutationId is persisted only after a
+ * successful pull. A reload loses all offline work; a reload between "push acknowledged" and "pull done"
+ * reuses mutation ids the server has already seen, so new work is discarded as duplicates.
+ */
+describe('F14 reload', () => {
+  const clients: SyncClient[] = [];
+  const open = (storage: MemoryStorage, transport: ScriptedTransport) => {
+    const c = new SyncClient({ clientId: 'c1', transport, storage });
+    clients.push(c);
+    return c;
+  };
+  // `ready` arrives with asynchronous storage (P3.1); until then it is undefined and awaiting it is a no-op.
+  const ready = (c: SyncClient) => (c as unknown as { ready?: Promise<unknown> }).ready;
+
+  afterEach(() => {
+    for (const c of clients.splice(0)) c.dispose();
+  });
+
+  it.failing('keeps unsynced mutations across a reload', async () => {
+    const storage = new MemoryStorage();
+    const a = open(storage, new ScriptedTransport());
+    await ready(a);
+    await a.mutate('ticket.create', { siteId: SITE, title: 'A', description: '' });
+    await a.mutate('ticket.create', { siteId: SITE, title: 'B', description: '' });
+    await flush();
+    a.dispose();
+
+    const b = open(storage, new ScriptedTransport());
+    await ready(b);
+
+    expect(b.pendingCount).toBe(2);
+    expect(b.rows('ticket').map((r) => r.title).sort()).toEqual(['A', 'B']);
+  });
+
+  it.failing('never reuses a mutation id the server has acknowledged', async () => {
+    const storage = new MemoryStorage();
+    const first = new ScriptedTransport().replyPush({ results: [{ id: 1, status: 'applied' }], lastMutationId: 1 });
+    const a = open(storage, first); // its pull is unscripted, so it fails after the push succeeded
+    await ready(a);
+    await a.mutate('ticket.create', { siteId: SITE, title: 'before reload', description: '' });
+    await flush();
+    expect(first.callsOf('push')).toHaveLength(1);
+    expect(first.callsOf('pull')).toHaveLength(1);
+    a.dispose();
+
+    const second = new ScriptedTransport();
+    const b = open(storage, second);
+    await ready(b);
+    await b.mutate('ticket.create', { siteId: SITE, title: 'after reload', description: '' });
+    await flush();
+
+    const seenByServer = Math.max(...first.pushedMutations().map((m) => m.id));
+    const created = second.pushedMutations().find((m) => m.args.title === 'after reload');
+    expect(created).toBeDefined();
+    expect(created!.id).toBeGreaterThan(seenByServer);
+  });
+});

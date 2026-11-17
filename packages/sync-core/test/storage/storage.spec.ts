@@ -240,6 +240,15 @@ describe.each(backends)('%s', (_name, backend) => {
   });
 });
 
+describe('MemoryStorage specifics', () => {
+  it('takes its client ids from idGen when one is given', async () => {
+    const ids = ['first', 'second'];
+    const s = new MemoryStorage({ idGen: () => ids.shift() ?? 'exhausted' });
+    expect((await s.load()).clientId).toBe('first');
+    expect((await s.resetClient()).clientId).toBe('second');
+  });
+});
+
 describe('IdbStorage specifics', () => {
   const name = () => `fieldsync-test-${randomUUID()}`;
 

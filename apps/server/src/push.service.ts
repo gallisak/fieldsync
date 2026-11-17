@@ -1,5 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { MutationRejected, type Mutation, type MutationResult, type PushRequest, type PushResponse } from '@fieldsync/sync-core';
+import {
+  MutationRejected,
+  type Mutation,
+  type MutationResult,
+  type PushRequest,
+  type PushResponse,
+} from '@fieldsync/sync-core';
 import { ZodError } from 'zod';
 import type { PoolClient } from 'pg';
 import type { AuthUser } from './auth';
@@ -36,10 +42,16 @@ export class PushService {
     return { results, lastMutationId: await this.clients.lastMutationId(this.db.pool, req.clientId, user.id) };
   }
 
-  private applyOne(user: AuthUser, clientId: string, m: Mutation): Promise<{ result: MutationResult; sites: string[] }> {
+  private applyOne(
+    user: AuthUser,
+    clientId: string,
+    m: Mutation,
+  ): Promise<{ result: MutationResult; sites: string[] }> {
     return this.db.tx(async (c) => {
       const client = await this.clients.lockOrCreate(c, clientId, user.id);
-      if (client.userId !== user.id) throw new ApiError('CLIENT_MISMATCH', 403, undefined, 'clientId belongs to another user');
+      if (client.userId !== user.id) {
+        throw new ApiError('CLIENT_MISMATCH', 403, undefined, 'clientId belongs to another user');
+      }
       if (m.id <= client.lastMutationId) return { result: await this.duplicate(c, clientId, m.id), sites: [] };
       const expected = client.lastMutationId + 1;
       if (m.id !== expected) throw new ApiError('OUT_OF_ORDER', 409, { expected }, `Expected mutation ${expected}`);

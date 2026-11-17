@@ -32,6 +32,13 @@ function applyChanges(base: Map<string, Row>, changes: Change[]): void {
  * shares the backend.
  */
 export abstract class WholeStateStorage implements SyncStorage {
+  private readonly newId: () => string;
+
+  /** `idGen` makes client ids reproducible, as the simulation needs. */
+  constructor(opts: { idGen?: () => string } = {}) {
+    this.newId = opts.idGen ?? newClientId;
+  }
+
   /** A private copy of the stored state, or `undefined` when nothing is stored yet. */
   protected abstract read(): WholeState | undefined;
   protected abstract write(state: WholeState): void;
@@ -39,7 +46,7 @@ export abstract class WholeStateStorage implements SyncStorage {
   private current(): WholeState {
     const stored = this.read();
     if (stored) return stored;
-    const fresh = emptyState(newClientId());
+    const fresh = emptyState(this.newId());
     this.write(fresh);
     return fresh;
   }
@@ -100,7 +107,7 @@ export abstract class WholeStateStorage implements SyncStorage {
 
   async resetClient(): Promise<PersistedState> {
     const s = this.current();
-    s.clientId = newClientId();
+    s.clientId = this.newId();
     s.pending = s.pending.map((m, i) => ({ ...m, id: i + 1 }));
     s.nextMutationId = s.pending.length + 1;
     s.lastMutationId = 0;

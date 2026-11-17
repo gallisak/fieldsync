@@ -6,7 +6,7 @@ import { ScriptedTransport, deferred, emptyPull, flush } from '../support/script
  * re-runs afterwards unless local mutations are pending, so the server change behind the poke is missed.
  */
 describe('F3 poke during an in-flight sync', () => {
-  it.failing('pulls again after the running sync finishes', async () => {
+  it('pulls again after the running sync finishes', async () => {
     const held = deferred<PullResponse>();
     const transport = new ScriptedTransport().replyPull(held.promise).alwaysPull(emptyPull());
     const client = new SyncClient({ clientId: 'c1', transport, storage: new MemoryStorage() });

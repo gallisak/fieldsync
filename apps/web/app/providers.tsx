@@ -22,9 +22,14 @@ export function Providers({ children }: { children: ReactNode }) {
       storage: new LocalStorageSyncStorage('fs_state'),
     });
     setClient(c);
-    void c.sync();
+    c.start();
     const es = new EventSource(`${API}/sync/stream?token=${encodeURIComponent(token)}`);
     es.addEventListener('poke', () => void c.sync());
+    // A new token or unmounting must not leave the old client syncing and its stream open (F21).
+    return () => {
+      es.close();
+      c.dispose();
+    };
   }, [token]);
 
   if (!token) {

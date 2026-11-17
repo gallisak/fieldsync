@@ -1,6 +1,7 @@
 import { MutationRejected, getMutator, type MutatorTx } from '../mutators';
 import type { PersistedState, StoredMutation, SyncStorage } from '../storage/types';
 import { TransportError } from '../transport/errors';
+import { nextDelay } from './backoff';
 import type { Transport } from '../transport/http';
 import type { Cursor, EntityName, Mutation, MutatorName, Row } from '../protocol/types';
 
@@ -17,12 +18,55 @@ export interface Rejection {
 /** Applied to the local view at once, but not yet in storage: it gets its id when it is stored. */
 type UnsavedMutation = Omit<StoredMutation, 'id'>;
 
+/** Time source of the client; injectable so tests and the simulator control it. */
+export interface SyncClock {
+  now(): number;
+  setTimeout(fn: () => void, ms: number): unknown;
+  clearTimeout(handle: unknown): void;
+}
+
+/** Outside signals that make syncing worthwhile; each returns its unsubscribe function. */
+export interface SyncEnvironment {
+  onOnline?(fn: () => void): () => void;
+  onVisible?(fn: () => void): () => void;
+}
+
 export interface SyncClientOptions {
   /** @deprecated Ignored: the storage owns the client id. Kept so existing callers still compile. */
   clientId?: string;
   transport: Transport;
   storage: SyncStorage;
+  clock?: SyncClock;
+  random?: () => number;
+  /** Defaults to the browser's `online` and `visibilitychange` events, and to nothing elsewhere. */
+  env?: SyncEnvironment;
 }
+
+const realClock: SyncClock = {
+  now: () => Date.now(),
+  setTimeout: (fn, ms) => setTimeout(fn, ms),
+  clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
+function browserEnvironment(): SyncEnvironment {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return {};
+  return {
+    onOnline(fn) {
+      window.addEventListener('online', fn);
+      return () => window.removeEventListener('online', fn);
+    },
+    onVisible(fn) {
+      const listener = () => {
+        if (document.visibilityState === 'visible') fn();
+      };
+      document.addEventListener('visibilitychange', listener);
+      return () => document.removeEventListener('visibilitychange', listener);
+    },
+  };
+}
+
+/** Background poll period: 30 s, jittered so clients do not poll in step. */
+const POLL_MS = 30_000;
 
 class MapTx implements MutatorTx {
   constructor(private readonly state: Map<string, Row>) {}
@@ -61,6 +105,11 @@ export class SyncClient {
   readonly ready: Promise<void>;
   private readonly transport: Transport;
   private readonly storage: SyncStorage;
+  private readonly clock: SyncClock;
+  private readonly random: () => number;
+  private readonly env: SyncEnvironment;
+  /** Aborted by `dispose()`: every request in flight is given up. */
+  private readonly abort = new AbortController();
   private id = '';
   private base = new Map<string, Row>();
   private cursor: Cursor | null = null;
@@ -77,13 +126,23 @@ export class SyncClient {
   private currentStatus: SyncStatus = 'idle';
   private rejected: Rejection[] = [];
   private changeCount = 0;
-  private retryTimer?: ReturnType<typeof setTimeout>;
-  private inFlight?: Promise<void>;
+  private running?: Promise<void>;
+  /** Set when a sync is requested while one runs (a poke, a new mutation): it runs again afterwards (F3). */
+  private rerun = false;
+  /** Consecutive failed runs; drives the backoff. */
+  private attempt = 0;
+  private retryTimer?: unknown;
+  private pollTimer?: unknown;
+  private unsubscribe: (() => void)[] = [];
+  private started = false;
   private disposed = false;
 
   constructor(opts: SyncClientOptions) {
     this.transport = opts.transport;
     this.storage = opts.storage;
+    this.clock = opts.clock ?? realClock;
+    this.random = opts.random ?? Math.random;
+    this.env = opts.env ?? browserEnvironment();
     this.ready = this.boot();
     this.writeChain = this.ready;
   }
@@ -128,7 +187,7 @@ export class SyncClient {
     if (!def) throw new MutationRejected('BAD_ARGS', `Unknown mutator ${String(name)}`);
     def.parse(args);
 
-    const entry: UnsavedMutation = { name, args, createdAt: new Date().toISOString() };
+    const entry: UnsavedMutation = { name, args, createdAt: new Date(this.clock.now()).toISOString() };
     this.unsaved.push(entry);
     this.emit();
     const durable = this.serial(async () => {
@@ -157,20 +216,50 @@ export class SyncClient {
     return [...this.view()].filter(([key]) => key.startsWith(prefix)).map(([, row]) => row);
   }
 
-  sync(): Promise<void> {
-    if (this.disposed || this.blockedBy) return Promise.resolve();
-    if (!this.inFlight) {
-      this.inFlight = this.runSync().finally(() => {
-        this.inFlight = undefined;
-        if (this.unpushed().length > 0 && this.currentStatus === 'idle') void this.sync();
-      });
-    }
-    return this.inFlight;
+  /**
+   * Starts background syncing: one sync now, then on `online`, on the page becoming visible and on a jittered
+   * poll. Mutations and stream pokes request a sync whether or not the client was started.
+   */
+  start(): void {
+    if (this.started || this.disposed) return;
+    this.started = true;
+    const request = () => void this.sync();
+    if (this.env.onOnline) this.unsubscribe.push(this.env.onOnline(request));
+    if (this.env.onVisible) this.unsubscribe.push(this.env.onVisible(request));
+    this.schedulePoll();
+    request();
   }
 
+  /**
+   * Requests a sync. One runs at a time; a request during a run is remembered and runs right after it, so a
+   * poke is never lost (F3). Resolves when the current run settles.
+   */
+  sync(): Promise<void> {
+    if (this.disposed || this.blockedBy) return Promise.resolve();
+    if (this.running) {
+      this.rerun = true;
+      return this.running;
+    }
+    this.clearRetry();
+    this.running = this.run().finally(() => {
+      this.running = undefined;
+      if (this.rerun && !this.disposed) {
+        this.rerun = false;
+        void this.sync();
+      }
+    });
+    return this.running;
+  }
+
+  /** Stops everything: aborts the requests in flight, clears every timer and listener, closes storage (F21). */
   dispose(): void {
+    if (this.disposed) return;
     this.disposed = true;
-    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.abort.abort();
+    this.clearRetry();
+    if (this.pollTimer !== undefined) this.clock.clearTimeout(this.pollTimer);
+    for (const off of this.unsubscribe.splice(0)) off();
+    this.storage.close();
     this.listeners.clear();
   }
 
@@ -194,13 +283,15 @@ export class SyncClient {
     return run;
   }
 
-  private async runSync(): Promise<void> {
+  private async run(): Promise<void> {
     this.setStatus('syncing');
     try {
       await this.ready;
       await this.writeChain; // every local mutation is stored and has its id
       await this.push();
       await this.pull();
+      this.attempt = 0;
+      this.outOfOrderRetried = false;
       this.setStatus('idle');
     } catch (err) {
       await this.onSyncError(err);
@@ -220,20 +311,21 @@ export class SyncClient {
     for (;;) {
       const batch = this.unpushed().slice(0, 100);
       if (batch.length === 0) return;
-      const resp = await this.transport.push({
-        clientId: this.id,
-        mutations: batch.map(({ id, name, args }) => ({ id, name, args })),
-      });
-      this.outOfOrderRetried = false;
-      const top = Math.max(0, ...resp.results.map((r) => r.id));
-      if (top <= Math.max(this.lastMutationId, this.pushedUpTo)) return; // the server handled nothing new
+      const from = Math.max(this.lastMutationId, this.pushedUpTo);
+      const resp = await this.transport.push(
+        { clientId: this.id, mutations: batch.map(({ id, name, args }) => ({ id, name, args })) },
+        this.abort.signal,
+      );
+      const top = Math.max(from, ...resp.results.map((r) => r.id));
+      // A 200 that handled nothing would otherwise be resent at once, forever: treat it as a failure (F22).
+      if (top === from) throw new TransportError('http', 502, undefined, undefined, 'Push answered without results');
       this.pushedUpTo = top;
     }
   }
 
   /** Decides from the error what happens to the queue and whether syncing goes on. */
   private async onSyncError(err: unknown): Promise<void> {
-    if (this.disposed) return;
+    if (this.disposed) return; // includes requests aborted by dispose()
     const e = err instanceof TransportError ? err : undefined;
     if (e?.status === 401) return this.block('auth');
     if (e?.status === 426) return this.block('upgrade');
@@ -246,9 +338,9 @@ export class SyncClient {
         const highest = Math.max(this.lastMutationId, ...this.pending.map((m) => m.id));
         if (expected <= highest + 1 && !this.outOfOrderRetried) {
           this.outOfOrderRetried = true;
-          this.pushedUpTo = expected - 1; // resend from what the server expects; `sync()` reruns at once
+          this.pushedUpTo = expected - 1; // resend from what the server expects, right after this run
           this.setStatus('idle');
-          return;
+          return void this.sync();
         }
       }
     }
@@ -258,12 +350,19 @@ export class SyncClient {
       return this.block('error');
     }
     this.setStatus('offline');
-    this.scheduleRetry();
+    const delay = nextDelay(this.attempt++, this.random);
+    this.retryTimer = this.clock.setTimeout(() => {
+      this.retryTimer = undefined;
+      void this.sync();
+    }, delay);
   }
 
+  /** Stops syncing for good (until a new client is made); the queue is kept. */
   private block(reason: BlockReason): void {
     this.blockedBy = reason;
-    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.clearRetry();
+    if (this.pollTimer !== undefined) this.clock.clearTimeout(this.pollTimer);
+    this.pollTimer = undefined;
     this.setStatus('blocked');
   }
 
@@ -276,16 +375,15 @@ export class SyncClient {
       this.emit();
     });
     this.setStatus('idle');
+    void this.sync();
   }
 
   private async pull(): Promise<void> {
     for (;;) {
-      const resp = await this.transport.pull({
-        cursor: this.cursor,
-        clientId: this.id,
-        ackedMutationId: this.lastMutationId,
-        limit: 500,
-      });
+      const resp = await this.transport.pull(
+        { cursor: this.cursor, clientId: this.id, ackedMutationId: this.lastMutationId, limit: 500 },
+        this.abort.signal,
+      );
       const committed = await this.serial(async () => {
         const ok = await this.storage.commitPull({
           expectedCursor: this.cursor,
@@ -309,10 +407,20 @@ export class SyncClient {
     this.emit();
   }
 
-  private scheduleRetry(): void {
-    if (this.disposed) return;
-    if (this.retryTimer) clearTimeout(this.retryTimer);
-    this.retryTimer = setTimeout(() => void this.sync(), 5000);
+  private clearRetry(): void {
+    if (this.retryTimer !== undefined) this.clock.clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
+  }
+
+  private schedulePoll(): void {
+    if (this.disposed || this.blockedBy) return;
+    this.pollTimer = this.clock.setTimeout(
+      () => {
+        void this.sync();
+        this.schedulePoll();
+      },
+      POLL_MS * (0.5 + this.random()),
+    );
   }
 
   private emit(): void {

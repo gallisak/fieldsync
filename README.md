@@ -72,7 +72,7 @@ in `packages/sync-core/test/repro/`.
 |---|---|---|---|---|
 | F1 | Ordering | Log versions come from a sequence: allocated at insert, visible at commit, so a late commit is skipped by readers | `f01-commit-order.integration.spec.ts` | fixed |
 | F2 | Ordering | Pull reads changes and `lastMutationId` in separate snapshots and reports it on non-final pages | `f02-pull-snapshot.integration.spec.ts` | fixed |
-| F3 | Ordering | A poke during an in-flight sync is dropped | `f03-lost-poke.spec.ts` | open |
+| F3 | Ordering | A poke during an in-flight sync is dropped | `f03-lost-poke.spec.ts` | fixed |
 | F4 | Duplicate push | Dedup check runs outside the transaction without a lock; parallel duplicates all apply | `f04-parallel-duplicate.integration.spec.ts` | fixed |
 | F5 | Poison mutation | A rejected mutation fails the whole push with 500 and blocks the queue forever | `f05-poison.integration.spec.ts` | fixed |
 | F6 | Poison mutation | `constructor` / `__proto__` resolve to prototype members of the mutator registry → 500 | `f06-proto-name.integration.spec.ts` | fixed |
@@ -90,8 +90,8 @@ in `packages/sync-core/test/repro/`.
 | F18 | Merge semantics | `ticket.update` overwrites title and description wholesale | `f18-field-merge.spec.ts` | fixed |
 | F19 | Merge semantics | `ticket.delete` leaves the ticket's parts behind | `f19-orphan-parts.spec.ts` | fixed |
 | F20 | Resource leak (server) | Stream subscribers never removed; no backpressure or heartbeat | `f20-stream-leak.integration.spec.ts` | open |
-| F21 | Resource leak (client) | `dispose()` does not abort requests; no request timeout; web effect has no cleanup | `f21-dispose.spec.ts` | open |
-| F22 | Resource / behaviour | Fixed 5 s retry without backoff or jitter; immediate re-push loop | `f22-backoff.spec.ts` | open |
+| F21 | Resource leak (client) | `dispose()` does not abort requests; no request timeout; web effect has no cleanup | `f21-dispose.spec.ts` | fixed |
+| F22 | Resource / behaviour | Fixed 5 s retry without backoff or jitter; immediate re-push loop | `f22-backoff.spec.ts` | fixed |
 | F23 | Input handling | Malformed cursor silently becomes a full-history pull | `f23-bad-cursor.integration.spec.ts` | fixed |
 | F24 | Vacuous test | Assertion inside `catch`: passes when nothing throws | `mutators.spec.ts` (rewritten) | fixed — see below |
 | F25 | Vacuous test | Mocked pool, SQL never inspected; passes with F9 present | replaced by `f09-read-access` | fixed — see below |
@@ -155,6 +155,27 @@ on the last page for mutation ids above `ackedMutationId`.
 **Alternatives considered.** Returning `lastMutationId` as "the highest mutation whose changes are all on this
 page" needs per-page bookkeeping of which client wrote which row, and still breaks when a mutation writes to a
 site the reader cannot see; deferring the acknowledgement to the end of paging is simpler and exact.
+
+### F3 — a poke during a sync is lost
+
+**What.** `sync()` returned the running promise when a sync was already in flight and then forgot the request.
+Afterwards it ran again only if local mutations were pending.
+
+**Why it is dangerous.** The stream pokes exactly when another device changed something. If that happens while
+this client is mid-pull (whose snapshot predates the change), the change stays invisible until some unrelated
+event triggers the next sync — possibly minutes, possibly never on a quiet device.
+
+**Reproduce.** `packages/sync-core/test/repro/f03-lost-poke.spec.ts`: a pull is held, `sync()` is called again,
+the pull is released; a second pull must follow.
+
+**Fix.** Single flight with a remembered request: a `sync()` during a run sets `rerun` and returns the running
+promise; when the run settles, `rerun` starts exactly one more. Every trigger goes through it: a stored
+mutation, a stream poke, `start()`, the browser's `online` and `visibilitychange` events and a background poll
+every 30 s × (0.5 + random), all injectable (`env`, `clock`, `random`) so tests need no DOM.
+
+**Alternatives considered.** Queuing every request would run one sync per poke during a burst; cancelling the
+running sync for a new one throws away a nearly finished pull. One extra run covers any number of requests
+that arrived during the current one.
 
 ### F4 — parallel duplicate pushes all apply
 
@@ -400,6 +421,47 @@ ticket.
 **Alternatives considered.** An `ON DELETE CASCADE` in Postgres would not reach the change log (clients would
 never hear about the deleted parts) and would not run on the client; soft-hiding orphans in the UI leaves the
 data and the replication cost in place.
+
+### F21 — disposing the client leaves requests and timers alive
+
+**What.** `dispose()` only cleared the retry timer. A request in flight was never aborted and had no timeout,
+and the web app created a client and an `EventSource` in an effect without any cleanup.
+
+**Why it is dangerous.** Every token change or remount leaked a syncing client and an open stream; a hung
+request (a dead TCP connection on a mobile network) kept the single sync slot busy forever, so the client
+silently stopped syncing.
+
+**Reproduce.** `packages/sync-core/test/repro/f21-dispose.spec.ts`: dispose during a held pull; the request's
+`AbortSignal` must be aborted and no timer may remain.
+
+**Fix.** The client owns an `AbortController`; every transport call receives its signal, and `HttpTransport`
+combines it with a 20 s timeout in a per-request controller whose timer is cleared when the call ends. A timeout
+is a `TransportError('timeout')` (retried with backoff); an abort by the caller is reported as such and ignored.
+`dispose()` aborts, clears the retry and poll timers, removes the `online`/`visibilitychange` listeners, closes
+storage and drops subscribers. The web effect now returns a cleanup that closes the stream and disposes the
+client.
+
+**Alternatives considered.** `AbortSignal.any` / `AbortSignal.timeout` are shorter but missing on older
+browsers, and the timeout's timer would outlive a finished request.
+
+### F22 — fixed 5 s retry and an immediate re-push loop
+
+**What.** Every failure was retried after exactly 5 s, and after every sync the client started another one at
+once if anything was still queued — including when the server had answered `200` without handling anything.
+
+**Why it is dangerous.** After an outage every client retries in lockstep every 5 s (a thundering herd on a
+recovering server); a server bug that returns empty results turns each client into a hot loop.
+
+**Reproduce.** `packages/sync-core/test/repro/f22-backoff.spec.ts`: with the server unreachable the delays must
+grow and stay capped; a push answered without results must not be resent in a loop.
+
+**Fix.** Full-jitter exponential backoff, `delay = random() × min(60 s, 500 ms × 2^attempt)` (`nextDelay`, unit
+tested), reset after a successful run; the unconditional re-run is gone (see F3); a push answered without any
+result counts as a failure (`502`) and goes through the same backoff. In a browser with the server stopped, the
+gaps between failed syncs were 0.3, 0.8, 1.0, 2.0, 0.9, 6.7, 1.5 and 8.6 s, each below its bound.
+
+**Alternatives considered.** Equal or decorrelated jitter spread load similarly; full jitter is the simplest
+with the lowest total load, and needs no state beyond the attempt counter.
 
 ### F23 — malformed cursor becomes a full-history pull
 

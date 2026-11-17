@@ -40,6 +40,10 @@ export class SimNetwork {
     else this.offline.delete(client);
   }
 
+  isOffline(client: number): boolean {
+    return this.offline.has(client);
+  }
+
   heal(): void {
     this.offline.clear();
     this.faults = { dropRequest: 0, dropResponse: 0, duplicate: 0, cut: 0, maxDelayMs: 5 };

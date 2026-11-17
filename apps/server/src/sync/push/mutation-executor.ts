@@ -53,6 +53,8 @@ class BufferedTx implements MutatorTx {
 }
 
 export interface ExecutorHooks {
+  /** Runs inside the transaction after the change_log insert, before the entity rows are written. */
+  afterLogInsert?(c: PoolClient, m: Mutation): Promise<void>;
   /** Runs inside the transaction after the mutation's writes, before commit. */
   afterWrites?(c: PoolClient, m: Mutation): Promise<void>;
 }
@@ -112,17 +114,17 @@ export class MutationExecutor {
       tx.writes.flatMap((w) => (w.op === 'put' ? [w.row?.siteId as string] : [])),
     );
 
-    const touched = await this.write(c, tx.writes, clientId, m.id);
+    const touched = await this.write(c, tx.writes, clientId, m);
     await this.hooks.afterWrites?.(c, m);
     return touched;
   }
 
-  private async write(c: PoolClient, writes: Write[], clientId: string, mutationId: number): Promise<string[]> {
+  private async write(c: PoolClient, writes: Write[], clientId: string, m: Mutation): Promise<string[]> {
     type Entry = Omit<LogRow, 'version' | 'txSeq'>;
     const entries: Entry[] = [];
     const versionIndex: number[] = []; // per write: index of the entry whose version the entity row takes
     for (const w of writes) {
-      const base = { entity: w.entity, entityId: w.id, clientId, mutationId };
+      const base = { entity: w.entity, entityId: w.id, clientId, mutationId: m.id };
       if (w.op === 'del') {
         versionIndex.push(entries.length);
         entries.push({ ...base, op: 'del', siteId: w.prevSite as string, data: null });
@@ -140,6 +142,7 @@ export class MutationExecutor {
     const first = await this.changeLog.allocateVersions(c, entries.length);
     const logRows: LogRow[] = entries.map((e, i) => ({ ...e, version: first + i, txSeq: first }));
     await this.changeLog.insert(c, logRows);
+    await this.hooks.afterLogInsert?.(c, m);
 
     for (const [i, w] of writes.entries()) {
       const version = logRows[versionIndex[i]].version;

@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import request from 'supertest';
 import { DEMO, TOKENS, createTicket, listen, push, seed } from '../support/api';
-import { createTestApp, describeDb, type TestApp } from '../support/pg';
+import { createTestApp, describeDb, waitersOn, type TestApp } from '../support/pg';
 
 /**
  * F4: the "already applied?" check reads clients.last_mutation_id outside the transaction and without a row
@@ -14,22 +14,6 @@ describeDb('F4 parallel duplicate push', () => {
     await seed(t.pool);
   });
   afterAll(() => t?.close());
-
-  /**
-   * Number of backends waiting, directly or through a chain, on a lock held by `pid`. Runs outside any
-   * transaction: pg_stat_activity is snapshotted once per transaction.
-   */
-  async function waitersOn(pid: number): Promise<number> {
-    const { rows } = await t.pool.query<{ n: number }>(
-      `WITH RECURSIVE w(pid) AS (
-         SELECT pid FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))
-         UNION
-         SELECT a.pid FROM pg_stat_activity a JOIN w ON w.pid = ANY(pg_blocking_pids(a.pid))
-       ) SELECT count(*)::int AS n FROM w`,
-      [pid],
-    );
-    return rows[0].n;
-  }
 
   it('applies a mutation once no matter how many identical requests race', async () => {
     const ticketId = await createTicket(t.http, {
@@ -59,7 +43,7 @@ describeDb('F4 parallel duplicate push', () => {
       const inFlight = Promise.all(Array.from({ length: 10 }, () => push(http, TOKENS.admin, 'racer', [adjust])));
 
       const deadline = Date.now() + 3_000;
-      while ((await waitersOn(rows[0].pid)) < 10) {
+      while ((await waitersOn(t.pool, rows[0].pid)) < 10) {
         if (Date.now() > deadline) throw new Error('setup: the 10 requests never queued behind the row lock');
         await new Promise((resolve) => setTimeout(resolve, 20));
       }

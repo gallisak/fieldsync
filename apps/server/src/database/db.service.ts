@@ -9,9 +9,21 @@ export interface TxOptions {
   readOnly?: boolean;
 }
 
-/** serialization_failure, deadlock_detected: the whole transaction can safely be run again. */
-const RETRYABLE = new Set(['40001', '40P01']);
+/** serialization_failure, deadlock_detected, admin_shutdown. */
+const TRANSIENT_SQLSTATES = new Set(['40001', '40P01', '57P01']);
+const NETWORK_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE']);
 const MAX_RETRIES = 3;
+
+/**
+ * Errors after which the whole transaction can safely be run again; they say nothing about the request
+ * itself. Class 08 is connection_exception; node-postgres reports a dropped or timed-out connection without
+ * any code.
+ */
+export function isTransient(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (typeof code === 'string') return TRANSIENT_SQLSTATES.has(code) || code.startsWith('08') || NETWORK_CODES.has(code);
+  return err instanceof Error && /Connection terminated|timeout exceeded when trying to connect/i.test(err.message);
+}
 
 @Injectable()
 export class Db implements OnModuleInit, OnModuleDestroy {
@@ -50,8 +62,7 @@ export class Db implements OnModuleInit, OnModuleDestroy {
         } catch {
           broken = true; // a dead connection must not hide the original error
         }
-        const code = (err as { code?: string }).code;
-        if (code && RETRYABLE.has(code) && attempt < MAX_RETRIES) continue;
+        if (isTransient(err) && attempt < MAX_RETRIES) continue;
         throw err;
       } finally {
         client.release(broken);

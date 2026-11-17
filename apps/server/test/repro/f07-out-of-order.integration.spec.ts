@@ -14,7 +14,7 @@ describeDb('F7 out-of-order mutation id', () => {
   });
   afterAll(() => t?.close());
 
-  it.failing('answers 409 OUT_OF_ORDER with the expected id', async () => {
+  it('answers 409 OUT_OF_ORDER with the expected id', async () => {
     const res = await push(t.http, TOKENS.admin, 'fresh-client', [
       { id: 5, name: 'ticket.create', args: { id: randomUUID(), siteId: DEMO.siteA, title: 'F7', description: '' } },
     ]);

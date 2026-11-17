@@ -68,13 +68,13 @@ in `packages/sync-core/test/repro/`.
 | F1 | Ordering | Log versions come from a sequence: allocated at insert, visible at commit, so a late commit is skipped by readers | `f01-commit-order.integration.spec.ts` | fixed |
 | F2 | Ordering | Pull reads changes and `lastMutationId` in separate snapshots and reports it on non-final pages | `f02-pull-snapshot.integration.spec.ts` | open |
 | F3 | Ordering | A poke during an in-flight sync is dropped | `f03-lost-poke.spec.ts` | open |
-| F4 | Duplicate push | Dedup check runs outside the transaction without a lock; parallel duplicates all apply | `f04-parallel-duplicate.integration.spec.ts` | open |
-| F5 | Poison mutation | A rejected mutation fails the whole push with 500 and blocks the queue forever | `f05-poison.integration.spec.ts` | open |
+| F4 | Duplicate push | Dedup check runs outside the transaction without a lock; parallel duplicates all apply | `f04-parallel-duplicate.integration.spec.ts` | fixed |
+| F5 | Poison mutation | A rejected mutation fails the whole push with 500 and blocks the queue forever | `f05-poison.integration.spec.ts` | fixed |
 | F6 | Poison mutation | `constructor` / `__proto__` resolve to prototype members of the mutator registry → 500 | `f06-proto-name.integration.spec.ts` | fixed |
-| F7 | Poison mutation | Out-of-order id answered with a generic 400 the client retries unchanged | `f07-out-of-order.integration.spec.ts` | open |
-| F8 | Write access | Authorization trusts the client-supplied `siteId` | `f08-write-access.integration.spec.ts` | open |
+| F7 | Poison mutation | Out-of-order id answered with a generic 400 the client retries unchanged | `f07-out-of-order.integration.spec.ts` | fixed |
+| F8 | Write access | Authorization trusts the client-supplied `siteId` | `f08-write-access.integration.spec.ts` | fixed for live rows; tombstoned ids open |
 | F9 | Read access | Site filter applied only when `cursor = 0` | `f09-read-access.integration.spec.ts` | open |
-| F10 | Authenticity | `clientId` ownership never checked on push or pull | `f10-client-ownership.integration.spec.ts` | open |
+| F10 | Authenticity | `clientId` ownership never checked on push or pull | `f10-client-ownership.integration.spec.ts` | push fixed; pull open |
 | F11 | Authenticity | Bearer token accepted in the SSE query string; tokens stored in plaintext | `f11-token-in-url.integration.spec.ts` | open |
 | F12 | Access lifecycle | Revoked access and site moves never remove data from clients | `f12-revocation-move.integration.spec.ts` | open |
 | F13 | Log lifecycle | GC by age with no floor or reload signal; new clients replay a truncated log | `f13-gc.integration.spec.ts` | open |
@@ -123,6 +123,55 @@ consumer that assigns versions after commit adds a moving part and a lag. The si
 only the short tail of each write transaction (allocation → commit), which is far below this system's write
 rate.
 
+### F4 — parallel duplicate pushes all apply
+
+**What.** The "already applied?" check read `clients.last_mutation_id` with a plain `SELECT` outside the
+mutation's transaction and without a lock, then the transaction applied the mutation and upserted the counter.
+Two identical requests in flight (a client retrying a push whose response was lost, while the original is still
+running) both saw the old counter and both applied. The upsert could also move the counter backwards.
+
+**Why it is dangerous.** Non-idempotent mutations run twice: a `part.adjust` doubles the stock change. Retries
+after timeouts are the normal case on a mobile network, so this is not a rare race.
+
+**Reproduce.** `apps/server/test/repro/f04-parallel-duplicate.integration.spec.ts`: the test holds the part's
+row lock, sends 10 identical `part.adjust` requests, waits until all 10 are queued inside Postgres, then
+releases. Exactly one must apply, nine must be `duplicate`, and the quantity must change once.
+
+**Fix.** Each mutation runs in one transaction that first creates (if needed) and locks the client's row
+(`INSERT … ON CONFLICT DO NOTHING`, then `SELECT … FOR UPDATE`). Every push of one client queues on that lock, so
+the duplicate check, the mutation and `last_mutation_id = id` happen atomically and in order. The counter is
+set with a plain `UPDATE` under the lock after `id = last + 1` was checked, so it can only move forward.
+
+**Alternatives considered.** A unique `(client_id, mutation_id)` constraint on the log alone would turn the
+second apply into a constraint error (a 500), not a `duplicate` answer, and does not cover mutations that write
+no log row. Serializable isolation would abort one of the racers and rely on retries for correctness.
+
+### F5 — one rejected mutation blocks the client's queue forever
+
+**What.** A mutator's `MutationRejected` (a business rule, e.g. a status conflict) was never caught: the
+transaction rolled back, the request ended with HTTP 500, and `last_mutation_id` stayed where it was.
+
+**Why it is dangerous.** The client cannot tell a rejection from an outage, so it retries the same queue head
+every few seconds forever, and nothing queued behind it ever reaches the server. One stale edit silently
+freezes a technician's device.
+
+**Reproduce.** `apps/server/test/repro/f05-poison.integration.spec.ts`: a batch of `applied`, a status
+conflict and another valid mutation must answer `applied, rejected (STATUS_CONFLICT), applied` with
+`lastMutationId = 3`.
+
+**Fix.** The mutation runs under `SAVEPOINT m`. On a rejection the savepoint is rolled back (no partial write
+survives), the reason is stored in `mutation_rejections`, and `last_mutation_id` advances anyway — a rejected
+mutation is consumed exactly like an applied one. The result is `rejected` with `code`, `message` and
+`details`; a retry of the same id answers `duplicate` with the stored reason, so it survives a lost response
+(pull will also report it, P2.6). Any other non-transient error takes the same path as `INTERNAL` (stack
+logged, generic message to the client). Transient database errors (serialization failure, deadlock,
+connection loss) are not rejections: the whole transaction is retried up to three times and then the request
+ends with `503 UNAVAILABLE`; the id is not consumed.
+
+**Alternatives considered.** Rejecting the whole batch and asking the client to drop the head moves the
+decision to the client, which cannot distinguish "rejected" from "failed" reliably; storing nothing and
+returning the reason only in the response loses it when the response is lost.
+
 ### F6 — prototype names reach the mutator registry
 
 **What.** Mutators lived in a plain object and were looked up with `MUTATORS[m.name]`. `constructor`,
@@ -144,6 +193,25 @@ names), and the server turns that into a `BAD_ARGS` rejection instead of a crash
 **Alternatives considered.** `Object.create(null)` or `hasOwnProperty` checks fix the lookup but keep the
 "index a bag of functions with client input" pattern that caused it; a `switch` over names duplicates the
 list the schema already owns.
+
+### F7 — out-of-order mutation id answered with a retryable 400
+
+**What.** A mutation id greater than `last + 1` was answered with `400 Bad Request` and a free-text message.
+The client treats any failed push as "offline" and retries the same request unchanged.
+
+**Why it is dangerous.** Once client and server disagree about the next id (reloads, two tabs — F14/F15), the
+client loops forever and nothing new reaches the server; the response gives it nothing to recover with.
+
+**Reproduce.** `apps/server/test/repro/f07-out-of-order.integration.spec.ts`: a fresh client sending id 5 must
+get `409 OUT_OF_ORDER` with `details.expected = 1`.
+
+**Fix.** The check runs inside the transaction under the client row lock and throws
+`409 { code: 'OUT_OF_ORDER', details: { expected } }`. The rest of the batch is not attempted; mutations
+committed earlier in the same request stay committed and are reported by the next pull. The client's recovery
+(renumbering from `expected`) is part of the client work in Phase 3.
+
+**Alternatives considered.** Silently skipping ahead would accept a gap and could reorder a client's own
+mutations; applying out-of-order ids would break the "one id, applied at most once" rule the dedup relies on.
 
 ### F17 — non-deterministic `ticket.create`
 

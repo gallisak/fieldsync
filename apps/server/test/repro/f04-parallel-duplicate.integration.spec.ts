@@ -31,7 +31,7 @@ describeDb('F4 parallel duplicate push', () => {
     return rows[0].n;
   }
 
-  it.failing('applies a mutation once no matter how many identical requests race', async () => {
+  it('applies a mutation once no matter how many identical requests race', async () => {
     const ticketId = await createTicket(t.http, {
       token: TOKENS.admin,
       clientId: 'setup',

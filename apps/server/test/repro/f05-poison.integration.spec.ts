@@ -14,7 +14,7 @@ describeDb('F5 rejected mutation inside a batch', () => {
   });
   afterAll(() => t?.close());
 
-  it.failing('rejects the bad mutation and applies the ones around it', async () => {
+  it('rejects the bad mutation and applies the ones around it', async () => {
     const ticketId = await createTicket(t.http, {
       token: TOKENS.admin,
       clientId: 'setup',

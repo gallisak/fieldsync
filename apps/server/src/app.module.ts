@@ -8,6 +8,8 @@ import { GcService } from './gc.service';
 import { HealthController } from './health.controller';
 import { PullService } from './pull.service';
 import { PushService } from './push.service';
+import { ClientRepository } from './sync/repositories/client.repository';
+import { RejectionRepository } from './sync/repositories/rejection.repository';
 import { MutationExecutor } from './sync/push/mutation-executor';
 import { ChangeLogRepository } from './sync/repositories/change-log.repository';
 import { StreamService } from './stream.service';
@@ -23,6 +25,8 @@ import { SyncController } from './sync.controller';
     PushService,
     MutationExecutor,
     ChangeLogRepository,
+    ClientRepository,
+    RejectionRepository,
     PullService,
     StreamService,
     GcService,

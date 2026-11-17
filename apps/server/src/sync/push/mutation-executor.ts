@@ -5,6 +5,8 @@ import { authorize } from '../../access';
 import type { AuthUser } from '../../auth';
 import { ChangeLogRepository, type LogRow } from '../repositories/change-log.repository';
 
+const LOCK_ORDER: Record<EntityName, number> = { ticket: 0, part: 1 };
+
 interface Loaded {
   row: Row | undefined;
   siteId?: string;
@@ -69,7 +71,11 @@ export class MutationExecutor {
     def.parse(m.args);
 
     const loaded = new Map<string, Loaded>();
-    for (const key of def.reads(m.args)) {
+    // One global lock order (tickets before parts, then by id) so concurrent mutations cannot deadlock.
+    const keys = [...def.reads(m.args)].sort(
+      (a, b) => LOCK_ORDER[a.entity] - LOCK_ORDER[b.entity] || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+    );
+    for (const key of keys) {
       const { rows } = await c.query<{ data: Row | null; site_id: string; deleted: boolean }>(
         `SELECT data, site_id, deleted FROM entities WHERE entity = $1 AND id = $2 FOR UPDATE`,
         [key.entity, key.id],

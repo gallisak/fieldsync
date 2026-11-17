@@ -14,7 +14,7 @@ describeDb('F8 write access is checked against the real row', () => {
   });
   afterAll(() => t?.close());
 
-  it.failing('rejects writes to another site even when the client claims its own site', async () => {
+  it('rejects writes to another site even when the client claims its own site', async () => {
     const ticketId = await createTicket(t.http, {
       token: TOKENS.admin,
       clientId: 'admin',

@@ -1,0 +1,22 @@
+{
+  "name": "fieldsync",
+  "private": true,
+  "workspaces": ["packages/*", "apps/*"],
+  "scripts": {
+    "build:core": "npm run build -w @fieldsync/sync-core",
+    "build": "npm run build:core && npm run build -w @fieldsync/server && npm run build -w @fieldsync/web",
+    "lint": "eslint \"packages/*/{src,test}/**/*.ts\" \"apps/server/{src,test}/**/*.ts\" && npm run lint -w @fieldsync/web",
+    "typecheck": "npm run build:core && tsc --noEmit -p packages/sync-core/tsconfig.json && tsc --noEmit -p apps/server/tsconfig.json",
+    "test": "npm run build:core && npm test -w @fieldsync/sync-core && npm test -w @fieldsync/server"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.12",
+    "@types/node": "^20.11.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.56.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.2",
+    "typescript": "^5.3.3"
+  }
+}

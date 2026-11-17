@@ -50,7 +50,7 @@ describeDb('F13 change-log GC vs stale and new clients', () => {
     await stale.sync();
     expect(stale.rows('ticket')).toHaveLength(10);
 
-    // Ten more changes: seven new tickets and three deletions of tickets the stale client holds.
+    // Include deletions so "equal to the server" also proves removed rows disappear from the stale client.
     for (let i = 0; i < 7; i++) {
       await createTicket(t.http, t.pool, {
         token: TOKENS.admin,

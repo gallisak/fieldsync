@@ -11,7 +11,7 @@ describeDb('F2 lastMutationId vs paged changes', () => {
   beforeAll(async () => {
     t = await createTestApp();
     await seed(t.pool);
-    // 600 existing tickets, consistent in both the log and the entity table.
+    // Seeded into both tables so the page-1 assertion still holds once the initial pull becomes a snapshot.
     await t.pool.query(
       `WITH rows AS (
          SELECT gen_random_uuid() AS id, g FROM generate_series(1, 600) AS g
@@ -45,7 +45,6 @@ describeDb('F2 lastMutationId vs paged changes', () => {
     expect(page1.body.changes.some((c: { data?: { title?: string } }) => c.data?.title === 'created by mutation 1')).toBe(
       false,
     );
-    // Mutation 1's ticket is not on this page, so the page must not acknowledge mutation 1.
     expect(page1.body.lastMutationId ?? 0).toBeLessThan(1);
   });
 });

@@ -16,7 +16,6 @@ export const TOKENS = {
 
 export { DEMO };
 
-/** Two sites, an admin, techA on site A and techB on site B — the same rows as `src/seed.ts`. */
 export function seed(pool: Pool): Promise<void> {
   return seedDemo(pool);
 }
@@ -68,7 +67,6 @@ export function openStream(baseUrl: string, opts: { token?: string; query?: stri
   });
 }
 
-/** Live (non-deleted) rows of one entity type, straight from the database. */
 export async function liveRows(pool: Pool, entity: 'ticket' | 'part'): Promise<Row[]> {
   const { rows } = await pool.query<{ data: Row }>(
     `SELECT data FROM entities WHERE entity = $1 AND NOT deleted ORDER BY id`,

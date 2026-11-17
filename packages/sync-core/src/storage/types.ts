@@ -48,5 +48,7 @@ export interface SyncStorage {
   dismissRejection(mutationId: number): Promise<void>;
   /** New client id; the queue is renumbered from 1; cursor and data are kept. */
   resetClient(): Promise<PersistedState>;
+  /** Optional: notifies when a newer app version (another tab) took the storage over; it is closed then. */
+  onVersionChange?(listener: () => void): () => void;
   close(): void;
 }

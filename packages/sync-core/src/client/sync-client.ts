@@ -159,6 +159,8 @@ export class SyncClient {
     this.random = opts.random ?? Math.random;
     this.env = opts.env ?? browserEnvironment();
     this.streamConfig = opts.stream;
+    const offVersionChange = this.storage.onVersionChange?.(() => this.block('upgrade'));
+    if (offVersionChange) this.unsubscribe.push(offVersionChange);
     this.ready = this.boot();
     this.writeChain = this.ready;
   }

@@ -315,7 +315,7 @@ describe('IdbStorage specifics', () => {
     newer.result.close();
 
     expect(notified).toHaveBeenCalledTimes(1);
-    expect(client.blocked).toBe('upgrade');
+    expect(client.facts.blocked).toBe('upgrade');
     await expect(storage.load()).rejects.toThrow(/upgraded/);
     client.dispose();
   });

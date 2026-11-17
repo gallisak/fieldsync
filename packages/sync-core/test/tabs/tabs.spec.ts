@@ -48,7 +48,7 @@ describe('several tabs on one storage', () => {
     expect(server.applied).toEqual(idsOneToTwenty(clientId));
     expect(followerTransport.calls).toBe(0);
     expect(a.rows('ticket')).toHaveLength(20);
-    expect(b.status).toBe('idle'); // mirrored from the leader
+    expect(b.facts).toMatchObject({ phase: 'idle', connection: 'online' }); // mirrored from the leader
   });
 
   it("sends a follower's mutation through the idle leader and shows it in every tab", async () => {
@@ -59,7 +59,7 @@ describe('several tabs on one storage', () => {
     const a = open(storage, server.transport(), hub.join());
     const b = open(storage, followerTransport, hub.join());
     await Promise.all([a.ready, b.ready]);
-    await eventually(() => a.status === 'idle' && b.status === 'idle', 'both tabs settled');
+    await eventually(() => a.facts.phase === 'idle' && b.facts.phase === 'idle', 'both tabs settled');
 
     await b.mutate('ticket.create', create('from the follower'));
     await eventually(() => server.applied.length === 1, 'the leader to push it');

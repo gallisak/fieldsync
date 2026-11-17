@@ -1,7 +1,13 @@
 'use client';
 
-import { createContext, useContext, useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
-import { HttpTransport, LocalStorageSyncStorage, SyncClient, WebLocksCoordinator } from '@fieldsync/sync-core';
+import { createContext, useCallback, useContext, useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
+import {
+  HttpTransport,
+  LocalStorageSyncStorage,
+  MutationRejected,
+  SyncClient,
+  WebLocksCoordinator,
+} from '@fieldsync/sync-core';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
@@ -56,6 +62,24 @@ export function Providers({ children }: { children: ReactNode }) {
 
 export function useSyncClient(): SyncClient | null {
   return useContext(ClientContext);
+}
+
+/**
+ * Runs an action that may call `client.mutate`; a mutation the client refuses up front (`MutationRejected`)
+ * becomes a message to show instead of an error thrown out of an event handler.
+ */
+export function useRefusal(): [string | null, (action: () => unknown) => void] {
+  const [message, setMessage] = useState<string | null>(null);
+  const act = useCallback((action: () => unknown) => {
+    try {
+      action();
+      setMessage(null);
+    } catch (err) {
+      if (!(err instanceof MutationRejected)) throw err;
+      setMessage(err.message);
+    }
+  }, []);
+  return [message, act];
 }
 
 /** Re-renders whenever the client state changes. */

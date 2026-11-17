@@ -1,11 +1,11 @@
-import type { BlockReason, SyncStatus } from '../client/sync-client';
+import type { SyncFacts } from '../client/status';
 
 /** What tabs sharing one storage tell each other. */
 export type TabMessage =
   | { t: 'queue-changed' } // a tab stored a new mutation
   | { t: 'state-changed' } // the leader committed a pull (or reset the client)
   | { t: 'sync-request' } // a follower wants the leader to sync
-  | { t: 'status'; status: SyncStatus; blocked: BlockReason | null }; // the leader's status, mirrored by followers
+  | { t: 'status'; facts: SyncFacts }; // the leader's connection, phase and blocking, mirrored by followers
 
 /**
  * Elects one tab to talk to the server and carries messages between tabs. Correctness never depends on it:

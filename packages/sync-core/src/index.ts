@@ -13,6 +13,7 @@ export * from './storage/legacy-localstorage';
 export * from './transport/errors';
 export * from './transport/http';
 export * from './client/sync-client';
+export * from './client/status';
 export * from './client/sse';
 export * from './client/backoff';
 export * from './tabs/coordinator';

@@ -87,7 +87,7 @@ export async function liveRows(pool: Pool, entity: 'ticket' | 'part'): Promise<R
   return rows.map((r) => r.data);
 }
 
-export function sortById(rows: Row[]): Row[] {
+export function sortById(rows: readonly Row[]): Row[] {
   return [...rows].sort((a, b) => String(a.id).localeCompare(String(b.id)));
 }
 

@@ -92,6 +92,7 @@ in `packages/sync-core/test/repro/`.
 | F25 | Vacuous test | Mocked pool, SQL never inspected; passes with F9 present | replaced by `f09-read-access` | fixed — see below |
 | F26 | Vacuous test | Fake DB ignores the query; encodes F8 | replaced by `f08-write-access` | fixed — see below |
 | F27 | Vacuous test | `SELECT 1` "integration", `it.todo`, silent skip without `DATABASE_URL`, web not type-checked | replaced by the repro suites; tooling | fixed — see below |
+| F28 | Resilience (server) | A dropped database connection raises an unhandled `'error'` event and crashes the server process | `f28-connection-loss.integration.spec.ts` | open |
 
 ### F1 — change versions visible out of commit order
 

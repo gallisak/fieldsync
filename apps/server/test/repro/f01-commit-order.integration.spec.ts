@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import request from 'supertest';
 import { MutationExecutor } from '../../src/sync/push/mutation-executor';
 import { DEMO, TOKENS, listen, pull, push, seed } from '../support/api';
-import { createTestApp, describeDb, type TestApp } from '../support/pg';
+import { createTestApp, describeDb, until, type TestApp } from '../support/pg';
 
 const PAUSE_KEY = 727101;
 
@@ -23,14 +23,6 @@ describeDb('F1 change order vs commit order', () => {
     name: 'ticket.create' as const,
     args: { id: randomUUID(), siteId: DEMO.siteA, title, description: '' },
   });
-
-  async function until(condition: () => Promise<boolean>, what: string): Promise<void> {
-    const deadline = Date.now() + 3_000;
-    while (!(await condition())) {
-      if (Date.now() > deadline) throw new Error(`setup: timed out waiting for ${what}`);
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-  }
 
   it('delivers a change whose transaction commits after a later-numbered one', async () => {
     const http = request(await listen(t.app));

@@ -22,6 +22,15 @@ export function describeDb(name: string, fn: () => void): void {
   (requireDatabaseUrl() ? describe : describe.skip)(name, fn);
 }
 
+/** Polls `condition` every 20 ms; a timeout is a setup failure, not a test result. */
+export async function until(condition: () => Promise<boolean>, what: string, timeoutMs = 3_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await condition())) {
+    if (Date.now() > deadline) throw new Error(`setup: timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
 export interface TestApp {
   app: INestApplication;
   http: ReturnType<typeof request>;

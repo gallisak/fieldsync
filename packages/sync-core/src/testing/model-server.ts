@@ -13,7 +13,7 @@ import type {
 } from '../protocol/types';
 import { TransportError } from '../transport/errors';
 import type { PullParams } from '../transport/http';
-import type { AuthUser, SyncServerPort } from './server-port';
+import type { AuthUser, SimServer } from './server-port';
 
 export type LogEntry = Change & { txSeq: number; clientId: string; mutationId: number };
 
@@ -91,7 +91,7 @@ const reason = (r: PulledRejection): Omit<PulledRejection, 'mutationId'> => ({
  * `PullService` taken in the same order. Each request runs to completion before the next, as the server's row
  * locks serialise them; writes reach the maps only after the last check has passed.
  */
-export class ModelServer implements SyncServerPort {
+export class ModelServer implements SimServer {
   lastVersion = 0;
   minRetained = 0;
   readonly log: LogEntry[] = [];
@@ -135,6 +135,14 @@ export class ModelServer implements SyncServerPort {
       lastMutationId: !final ? null : mine ? own.last : 0,
       rejections: final && mine ? this.rejectionsAfter(q.clientId, q.ackedMutationId) : [],
     };
+  }
+
+  get rejectedCount(): number {
+    return this.rejections.size;
+  }
+
+  addSite(siteId: string): void {
+    this.sites.add(siteId);
   }
 
   grant(userId: string, siteId: string): void {

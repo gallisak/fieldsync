@@ -11,7 +11,7 @@ const settle = async (): Promise<void> => {
 export class Scheduler {
   now = 0;
   private seq = 0;
-  private queue: { at: number; id: number; fn: () => void }[] = [];
+  private queue: { at: number; id: number; fn: () => unknown }[] = [];
 
   readonly clock: SyncClock = {
     now: () => this.now,
@@ -21,7 +21,7 @@ export class Scheduler {
     },
   };
 
-  at(time: number, fn: () => void): number {
+  at(time: number, fn: () => unknown): number {
     const id = ++this.seq;
     this.queue.push({ at: time, id, fn });
     return id;
@@ -36,7 +36,9 @@ export class Scheduler {
       if (!next || next.at > end) break;
       this.queue.shift();
       this.now = next.at;
-      next.fn();
+      const result = next.fn();
+      // A call into a real server is waited for: nothing else happens meanwhile, so runs stay repeatable.
+      if (result instanceof Promise) await result;
       await settle(); // let every promise chain started by the event finish before the next one
     }
     this.now = end;

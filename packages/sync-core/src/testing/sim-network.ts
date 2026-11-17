@@ -58,7 +58,7 @@ export class SimNetwork {
           () => this.server.push(user, structuredClone(req)),
           () => {
             const prefix = req.mutations.slice(0, int(this.rng, req.mutations.length));
-            this.server.push(user, { ...structuredClone(req), mutations: structuredClone(prefix) });
+            return this.server.push(user, { ...structuredClone(req), mutations: structuredClone(prefix) });
           },
         ),
       pull: (q, signal) => this.call(client, signal, () => this.server.pull(user, structuredClone(q))),
@@ -66,7 +66,12 @@ export class SimNetwork {
   }
 
   /** `partial` delivers part of the request to the server, as when the connection is cut mid-batch. */
-  private call<T>(client: number, signal: AbortSignal | undefined, exec: () => T, partial?: () => void): Promise<T> {
+  private call<T>(
+    client: number,
+    signal: AbortSignal | undefined,
+    exec: () => T | Promise<T>,
+    partial?: () => unknown,
+  ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       if (signal?.aborted) return reject(signal.reason);
       // Giving up does not unsend the request: the server may still execute it, only the answer is ignored.
@@ -88,32 +93,37 @@ export class SimNetwork {
       if (roll < edge) return void fail(d1); // the server never sees it
 
       s.at(s.now + d1, () => {
-        if (partial && roll < (edge += f.cut)) {
-          try {
-            partial();
-          } catch {
-            // its answer is lost with the connection
-          }
-          return void fail(d2);
-        }
-        let out: { ok: T } | { err: unknown };
-        try {
-          out = { ok: structuredClone(exec()) };
-        } catch (err) {
-          out = { err };
-        }
-        if (roll < (edge += f.dropResponse) || this.offline.has(client)) return void fail(d2);
-        if (roll < (edge += f.duplicate)) {
-          s.at(s.now + d3, () => {
-            try {
-              exec();
-            } catch {
-              // a replay's answer goes nowhere
-            }
-          });
-        }
-        s.at(s.now + d2, () => finish(() => ('err' in out ? reject(out.err) : resolve(out.ok))));
+        // its answer is lost with the connection
+        if (partial && roll < (edge += f.cut)) return after(partial, () => void fail(d2));
+        return after(exec, (outcome) => {
+          const out = 'ok' in outcome ? { ok: structuredClone(outcome.ok) } : outcome;
+          if (roll < (edge += f.dropResponse) || this.offline.has(client)) return void fail(d2);
+          // a replay's answer goes nowhere
+          if (roll < (edge += f.duplicate)) s.at(s.now + d3, () => after(exec, () => undefined));
+          s.at(s.now + d2, () => finish(() => ('err' in out ? reject(out.err) : resolve(out.ok))));
+        });
       });
     });
   }
+}
+
+type Outcome<T> = { ok: T } | { err: unknown };
+
+/**
+ * Runs `f` and hands its outcome to `then`: at once for a server in memory, or once the promise of a real one
+ * settles (that promise is returned, so the scheduler waits for it).
+ */
+function after<T>(f: () => T | Promise<T>, then: (out: Outcome<T>) => void): void | Promise<void> {
+  let result: T | Promise<T>;
+  try {
+    result = f();
+  } catch (err) {
+    return then({ err });
+  }
+  if (result instanceof Promise)
+    return result.then(
+      (ok: T) => then({ ok }),
+      (err: unknown) => then({ err }),
+    );
+  return then({ ok: result });
 }

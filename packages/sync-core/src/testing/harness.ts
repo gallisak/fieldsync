@@ -9,7 +9,7 @@ import { checkConvergence, checkSafety } from './invariants';
 import { ModelServer } from './model-server';
 import { chance, int, mulberry32, pick, uuidFrom } from './prng';
 import { Scheduler } from './scheduler';
-import type { AuthUser } from './server-port';
+import type { AuthUser, SimServer } from './server-port';
 import { SimNetwork, type Faults } from './sim-network';
 
 export interface SimConfig {
@@ -63,7 +63,7 @@ interface Sim {
   rng: () => number;
   s: Scheduler;
   net: SimNetwork;
-  server: ModelServer;
+  server: SimServer;
   world: World;
   devices: Device[];
   openTab(d: Device): void;
@@ -88,14 +88,14 @@ class DeviceStorage extends MemoryStorage {
 }
 
 /** Three sites, one admin and four technicians, each with a random non-empty set of sites. */
-function seedWorld(rng: () => number, server: ModelServer): World {
+async function seedWorld(rng: () => number, server: SimServer): Promise<World> {
   const sites = [uuidFrom(rng), uuidFrom(rng), uuidFrom(rng)];
-  for (const site of sites) server.sites.add(site);
+  for (const site of sites) await server.addSite(site);
   const users: AuthUser[] = [{ id: uuidFrom(rng), role: 'admin' }];
   for (let i = 0; i < 4; i++) {
     const user: AuthUser = { id: uuidFrom(rng), role: 'technician' };
     const own = sites.filter(() => chance(rng, 0.5));
-    for (const site of own.length ? own : [pick(rng, sites)]) server.grant(user.id, site);
+    for (const site of own.length ? own : [pick(rng, sites)]) await server.grant(user.id, site);
     users.push(user);
   }
   return { sites, users };
@@ -265,22 +265,25 @@ async function perform(a: Action, sim: Sim): Promise<void> {
     case 'long-offline':
       net.setOffline(a.device, true);
       await s.advance(60_000);
-      server.gc(server.lastVersion);
+      await server.gc(server.lastVersion);
       net.setOffline(a.device, false);
   }
 }
 
 /**
- * Runs `steps` random actions against `ModelServer` over a faulty network, checking safety after each, then heals
- * the network, lets every client settle and checks convergence; a violation throws `SimulationFailure`.
- * Everything random comes from one generator seeded with `seed`, and time is virtual, so a seed always replays
- * the same run.
+ * Runs `steps` random actions against a server (`ModelServer` unless `makeServer` gives another) over a faulty
+ * network, checking safety after each, then heals the network, lets every client settle and checks convergence;
+ * a violation throws `SimulationFailure`. Everything random comes from one generator seeded with `seed`, and
+ * time is virtual, so a seed always replays the same run.
  */
-export async function runSimulation(cfg: SimConfig): Promise<SimReport> {
+export async function runSimulation(
+  cfg: SimConfig,
+  makeServer: (clock: () => number) => SimServer = (clock) => new ModelServer(clock),
+): Promise<SimReport> {
   const rng = mulberry32(cfg.seed);
   const s = new Scheduler();
-  const server = new ModelServer(() => s.now);
-  const world = seedWorld(rng, server);
+  const server = makeServer(() => s.now);
+  const world = await seedWorld(rng, server);
   const net = new SimNetwork(rng, s, server, cfg.faults);
   const openTab = (d: Device) => {
     const network = net.transportFor(d.index, d.user);
@@ -332,13 +335,15 @@ export async function runSimulation(cfg: SimConfig): Promise<SimReport> {
       trace.push(`${step} t=${s.now} ${JSON.stringify(action)}`);
       await perform(action, sim);
       await s.advance(int(rng, 200));
+      if (server.refresh) await server.refresh();
       checkSafety(server, devices, { seed: cfg.seed, step, trace });
     }
 
     net.heal();
     await s.advance(600_000); // several times the backoff cap and the poll period
+    if (server.refresh) await server.refresh();
     checkConvergence(server, devices, { seed: cfg.seed, step: cfg.steps, trace });
-    return { applied: server.applied.length, rejected: server.rejections.size, endTime: s.now, trace };
+    return { applied: server.applied.length, rejected: server.rejectedCount, endTime: s.now, trace };
   } finally {
     for (const d of devices) for (const tab of d.tabs) tab.dispose();
   }

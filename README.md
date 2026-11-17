@@ -625,6 +625,14 @@ On a failure the runner binary-searches the step count down. It prints the small
 followed by the violated invariant and the last 30 steps. `npm test` includes the simulation; CI runs it as
 its own step (`test:sim`).
 
+The same simulation also runs against the real `PushService` and `PullService` on Postgres
+(`apps/server/test/sim/`): 50 seeds × 200 steps, plus a differential test. The differential test runs one seed
+against the model and against Postgres. It requires the same steps, which depend on every answer the server
+gives, and the same final state: rows with their sites and versions, each client's last mutation id, and the
+rejection codes. Timestamps are left out of the comparison, because the model uses virtual time and Postgres
+uses the transaction time. A server call is awaited in full before anything else happens, so a seed replays
+exactly on Postgres too.
+
 Access changes (F12) and change-log garbage collection (F13) are not simulated yet. With them switched on,
 every seed fails on invariant 1 or 4, which is those two defects.
 

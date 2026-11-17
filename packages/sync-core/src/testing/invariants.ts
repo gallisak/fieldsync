@@ -3,7 +3,7 @@ import type { SyncClient } from '../client/sync-client';
 import { decodeCursor } from '../protocol/cursor';
 import type { Cursor, Row } from '../protocol/types';
 import type { Device } from './harness';
-import type { ModelServer } from './model-server';
+import type { SimServer } from './server-port';
 
 /** Where a check ran: enough to replay the run. */
 export interface At {
@@ -70,7 +70,7 @@ const fail = (at: At, invariant: number, detail: string): never => {
 };
 
 /** Holds after every step, whatever the network does. */
-export function checkSafety(server: ModelServer, devices: Device[], at: At): void {
+export function checkSafety(server: SimServer, devices: Device[], at: At): void {
   // 2. effectively once: no (clientId, mutationId) applied twice
   const seen = new Set<string>();
   for (const key of server.applied) {
@@ -97,7 +97,7 @@ export function checkSafety(server: ModelServer, devices: Device[], at: At): voi
 }
 
 /** Holds once the network is healed and every client has settled. */
-export function checkConvergence(server: ModelServer, devices: Device[], at: At): void {
+export function checkConvergence(server: SimServer, devices: Device[], at: At): void {
   const applied = new Set(server.applied);
   for (const d of devices) {
     const sites = server.sitesOf(d.user);

@@ -32,7 +32,7 @@ describeDb('F4 parallel duplicate push', () => {
   }
 
   it.failing('applies a mutation once no matter how many identical requests race', async () => {
-    const ticketId = await createTicket(t.http, t.pool, {
+    const ticketId = await createTicket(t.http, {
       token: TOKENS.admin,
       clientId: 'setup',
       mutationId: 1,
@@ -41,7 +41,7 @@ describeDb('F4 parallel duplicate push', () => {
     });
     const partId = randomUUID();
     const added = await push(t.http, TOKENS.admin, 'setup', [
-      { id: 2, name: 'part.add', args: { id: partId, ticketId, siteId: DEMO.siteA, name: 'filter', quantity: 1 } },
+      { id: 2, name: 'part.add', args: { id: partId, ticketId, name: 'filter', quantity: 1 } },
     ]);
     expect(added.status).toBeLessThan(300);
 
@@ -55,7 +55,7 @@ describeDb('F4 parallel duplicate push', () => {
       const { rows } = await blocker.query<{ pid: number }>(`SELECT pg_backend_pid() AS pid`);
 
       const http = request(await listen(t.app));
-      const adjust = { id: 1, name: 'part.adjust' as const, args: { id: partId, siteId: DEMO.siteA, delta: 1 } };
+      const adjust = { id: 1, name: 'part.adjust' as const, args: { id: partId, delta: 1 } };
       const inFlight = Promise.all(Array.from({ length: 10 }, () => push(http, TOKENS.admin, 'racer', [adjust])));
 
       const deadline = Date.now() + 3_000;

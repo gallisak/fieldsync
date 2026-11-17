@@ -12,7 +12,7 @@ const TICKET = '11111111-1111-4111-8111-111111111111';
 describe('F17 deterministic mutators', () => {
   afterEach(() => jest.useRealTimers());
 
-  it.failing('produces the same ticket on every replay of the queue', () => {
+  it('produces the same ticket on every replay of the queue', () => {
     jest.useFakeTimers({ now: new Date('2026-01-01T10:00:00Z') });
     const client = new SyncClient({ clientId: 'c1', transport: new ScriptedTransport(), storage: new MemoryStorage() });
     try {

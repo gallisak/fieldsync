@@ -15,7 +15,7 @@ describeDb('F8 write access is checked against the real row', () => {
   afterAll(() => t?.close());
 
   it.failing('rejects writes to another site even when the client claims its own site', async () => {
-    const ticketId = await createTicket(t.http, t.pool, {
+    const ticketId = await createTicket(t.http, {
       token: TOKENS.admin,
       clientId: 'admin',
       mutationId: 1,
@@ -28,7 +28,7 @@ describeDb('F8 write access is checked against the real row', () => {
     const partId = randomUUID();
 
     const res = await push(t.http, TOKENS.techA, 'tech-a', [
-      { id: 1, name: 'ticket.update', args: { id: ticketId, siteId: DEMO.siteA, title: 'hijacked', description: '' } },
+      { id: 1, name: 'ticket.update', args: { id: ticketId, siteId: DEMO.siteA, patch: { title: 'hijacked' } } },
       {
         id: 2,
         name: 'part.add',
@@ -38,6 +38,7 @@ describeDb('F8 write access is checked against the real row', () => {
     ]);
 
     expect(res.body.results?.map((r: { status: string }) => r.status)).toEqual(['rejected', 'rejected', 'rejected']);
+    expect(res.body.results?.map((r: { code?: string }) => r.code)).toEqual(['NO_ACCESS', 'NO_ACCESS', 'NO_ACCESS']);
 
     const after = await t.pool.query(`SELECT data, deleted FROM entities WHERE entity = 'ticket' AND id = $1`, [
       ticketId,

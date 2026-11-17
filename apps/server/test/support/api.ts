@@ -1,5 +1,6 @@
 import type { INestApplication } from '@nestjs/common';
 import { PROTOCOL, PROTOCOL_HEADER, type Mutation, type Row } from '@fieldsync/sync-core';
+import { randomUUID } from 'crypto';
 import { request as httpRequest, type ClientRequest } from 'http';
 import type { AddressInfo } from 'net';
 import type { Pool } from 'pg';
@@ -87,23 +88,17 @@ export function sortById(rows: Row[]): Row[] {
   return [...rows].sort((a, b) => String(a.id).localeCompare(String(b.id)));
 }
 
-/**
- * Creates a ticket through the push endpoint and returns its id. The starter generates ticket ids on the
- * server (F17), so the id is looked up by its (unique per test) title.
- */
+/** Creates a ticket through the push endpoint and returns its id; throws unless the mutation was applied. */
 export async function createTicket(
   http: Http,
-  pool: Pool,
   opts: { token: string; clientId: string; mutationId: number; siteId: string; title: string },
 ): Promise<string> {
+  const id = randomUUID();
   const res = await push(http, opts.token, opts.clientId, [
-    { id: opts.mutationId, name: 'ticket.create', args: { siteId: opts.siteId, title: opts.title, description: '' } },
+    { id: opts.mutationId, name: 'ticket.create', args: { id, siteId: opts.siteId, title: opts.title, description: '' } },
   ]);
-  if (res.status >= 300) throw new Error(`createTicket: HTTP ${res.status} ${JSON.stringify(res.body)}`);
-  const { rows } = await pool.query<{ id: string }>(
-    `SELECT id FROM entities WHERE entity = 'ticket' AND data->>'title' = $1`,
-    [opts.title],
-  );
-  if (rows.length !== 1) throw new Error(`createTicket: expected one ticket titled ${opts.title}`);
-  return rows[0].id;
+  if (res.status >= 300 || res.body.results?.[0]?.status !== 'applied') {
+    throw new Error(`createTicket: HTTP ${res.status} ${JSON.stringify(res.body)}`);
+  }
+  return id;
 }

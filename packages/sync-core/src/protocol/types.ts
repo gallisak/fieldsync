@@ -9,6 +9,7 @@ export const MUTATOR_NAMES = [
   'ticket.update',
   'ticket.setStatus',
   'ticket.delete',
+  'ticket.move',
   'part.add',
   'part.adjust',
 ] as const;

@@ -20,6 +20,10 @@ export class MapTx implements MutatorTx {
     this.rows.delete(`${entity}/${id}`);
   }
 
+  scan(entity: 'part', by: { ticketId: string }): Row[] {
+    return this.all(entity).filter((row) => row.ticketId === by.ticketId);
+  }
+
   all(entity: EntityName): Row[] {
     return [...this.rows].filter(([key]) => key.startsWith(`${entity}/`)).map(([, row]) => row);
   }

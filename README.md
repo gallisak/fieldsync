@@ -70,7 +70,7 @@ in `packages/sync-core/test/repro/`.
 | F3 | Ordering | A poke during an in-flight sync is dropped | `f03-lost-poke.spec.ts` | open |
 | F4 | Duplicate push | Dedup check runs outside the transaction without a lock; parallel duplicates all apply | `f04-parallel-duplicate.integration.spec.ts` | open |
 | F5 | Poison mutation | A rejected mutation fails the whole push with 500 and blocks the queue forever | `f05-poison.integration.spec.ts` | open |
-| F6 | Poison mutation | `constructor` / `__proto__` resolve to prototype members of the mutator registry → 500 | `f06-proto-name.integration.spec.ts` | partly fixed (P2.2) |
+| F6 | Poison mutation | `constructor` / `__proto__` resolve to prototype members of the mutator registry → 500 | `f06-proto-name.integration.spec.ts` | fixed |
 | F7 | Poison mutation | Out-of-order id answered with a generic 400 the client retries unchanged | `f07-out-of-order.integration.spec.ts` | open |
 | F8 | Write access | Authorization trusts the client-supplied `siteId` | `f08-write-access.integration.spec.ts` | open |
 | F9 | Read access | Site filter applied only when `cursor = 0` | `f09-read-access.integration.spec.ts` | open |
@@ -81,9 +81,9 @@ in `packages/sync-core/test/repro/`.
 | F14 | Client data loss | Pending queue not persisted; `lastMutationId` persisted only after pull | `f14-reload.spec.ts` | open |
 | F15 | Client data loss | Tabs share one `clientId` and storage blob with separate id counters | `f15-two-tabs.spec.ts` | open |
 | F16 | Client data loss | Pending mutations dropped on push ack, before the pull delivers their effects | `f16-ack-flicker.spec.ts` | open |
-| F17 | Determinism | `ticket.create` generates its id and timestamps inside the mutator | `f17-determinism.spec.ts` | open |
-| F18 | Merge semantics | `ticket.update` overwrites title and description wholesale | `f18-field-merge.spec.ts` | open |
-| F19 | Merge semantics | `ticket.delete` leaves the ticket's parts behind | `f19-orphan-parts.spec.ts` | open |
+| F17 | Determinism | `ticket.create` generates its id and timestamps inside the mutator | `f17-determinism.spec.ts` | fixed |
+| F18 | Merge semantics | `ticket.update` overwrites title and description wholesale | `f18-field-merge.spec.ts` | fixed |
+| F19 | Merge semantics | `ticket.delete` leaves the ticket's parts behind | `f19-orphan-parts.spec.ts` | fixed |
 | F20 | Resource leak (server) | Stream subscribers never removed; no backpressure or heartbeat | `f20-stream-leak.integration.spec.ts` | open |
 | F21 | Resource leak (client) | `dispose()` does not abort requests; no request timeout; web effect has no cleanup | `f21-dispose.spec.ts` | open |
 | F22 | Resource / behaviour | Fixed 5 s retry without backoff or jitter; immediate re-push loop | `f22-backoff.spec.ts` | open |
@@ -92,6 +92,88 @@ in `packages/sync-core/test/repro/`.
 | F25 | Vacuous test | Mocked pool, SQL never inspected; passes with F9 present | replaced by `f09-read-access` | fixed — see below |
 | F26 | Vacuous test | Fake DB ignores the query; encodes F8 | replaced by `f08-write-access` | fixed — see below |
 | F27 | Vacuous test | `SELECT 1` "integration", `it.todo`, silent skip without `DATABASE_URL`, web not type-checked | replaced by the repro suites; tooling | fixed — see below |
+
+### F6 — prototype names reach the mutator registry
+
+**What.** Mutators lived in a plain object and were looked up with `MUTATORS[m.name]`. `constructor`,
+`__proto__`, `toString` … are truthy properties of every object, so the lookup "found" a mutator, then
+`def.reads` was not a function and the request died with a `TypeError` (500).
+
+**Why it is dangerous.** The name is client-controlled. One such mutation at the head of a queue makes every
+retry fail the same way, so a single bad (or malicious) client entry blocks that client's queue forever; the
+generic 500 also hid the cause.
+
+**Reproduce.** `apps/server/test/repro/f06-proto-name.integration.spec.ts` (both names; a following valid
+mutation must apply).
+
+**Fix.** Two independent layers. The wire schema validates `name` with `z.enum(MUTATOR_NAMES)`, so an unknown
+name is a `400 BAD_REQUEST` before anything runs. The registry is a `ReadonlyMap` behind `getMutator(name)`,
+which returns `undefined` for anything not registered (`test/mutators/registry.spec.ts` checks the prototype
+names), and the server turns that into a `BAD_ARGS` rejection instead of a crash.
+
+**Alternatives considered.** `Object.create(null)` or `hasOwnProperty` checks fix the lookup but keep the
+"index a bag of functions with client input" pattern that caused it; a `switch` over names duplicates the
+list the schema already owns.
+
+### F17 — non-deterministic `ticket.create`
+
+**What.** `ticket.create` called `crypto.randomUUID()` and `new Date()` inside the mutator.
+
+**Why it is dangerous.** The client replays its queue on every `view()`, so each render produced a different
+ticket id (React keys and `/tickets/:id` links changed per render), and the server created yet another id.
+Every follow-up mutation that referenced the optimistic id was rejected, i.e. offline work on a new ticket was
+lost.
+
+**Reproduce.** `packages/sync-core/test/repro/f17-determinism.spec.ts`: two `view()` calls, five minutes of
+fake time apart, must show the same id and `createdAt`.
+
+**Fix.** Ids come from the arguments (the caller generates a UUID once); time comes from `ctx.now` — on the
+client the mutation's `createdAt`, stamped once at enqueue time and reused on every replay; on the server the
+transaction timestamp. An ESLint override bans `Date`, `Math.random`, `crypto` and `performance` inside
+`packages/sync-core/src/mutators/**`, and `test/mutators/registry.spec.ts` checks that identical inputs give
+identical rows.
+
+**Alternatives considered.** Generating the id on the server and mapping temporary ids afterwards (the
+classic "temp id" approach) needs an id-rewrite step for every queued mutation and every UI reference; with
+UUIDs a client-chosen id is collision-safe, and the server rejects reuse with `ALREADY_EXISTS`.
+
+### F18 — concurrent edits of different fields overwrite each other
+
+**What.** `ticket.update` took `title` and `description` and wrote both; the edit form sent both from state
+initialised once when the page opened.
+
+**Why it is dangerous.** Two technicians editing different fields of the same ticket: whoever syncs last
+silently restores the other field to the value it had when their form opened. Nothing is rejected, so nobody
+notices the loss.
+
+**Reproduce.** `packages/sync-core/test/repro/f18-field-merge.spec.ts`.
+
+**Fix.** `ticket.update` takes `{ id, patch }` and writes only the keys present in the patch (`title`,
+`description`, `assigneeId`; anything else, or an empty patch, is `BAD_ARGS`). Concurrent edits of different
+fields both survive; edits of the same field resolve last-writer-wins in server order. The edit form sends
+only the fields that differ from the ticket it was opened on.
+
+**Alternatives considered.** Optimistic concurrency (send the version you edited, reject on mismatch) is
+safer for same-field conflicts but turns every unrelated concurrent edit into a rejection the user must
+resolve; a per-field CRDT/register is more machinery than one text field per ticket needs.
+
+### F19 — deleting a ticket leaves its parts behind
+
+**What.** `ticket.delete` removed the ticket row only.
+
+**Why it is dangerous.** The parts stayed live forever: replicated to every client of the site, counted in any
+inventory view, and pointing at a ticket that no longer exists.
+
+**Reproduce.** `packages/sync-core/test/repro/f19-orphan-parts.spec.ts`.
+
+**Fix.** Mutators can declare `scans()` — rows found by a secondary attribute (`part` by `ticketId`). The
+server loads and locks them `FOR UPDATE` like `reads()` keys, the client scans its view, and `ticket.delete`
+deletes every scanned part before the ticket. `ticket.move` uses the same scan to move the parts with the
+ticket.
+
+**Alternatives considered.** An `ON DELETE CASCADE` in Postgres would not reach the change log (clients would
+never hear about the deleted parts) and would not run on the client; soft-hiding orphans in the UI leaves the
+data and the replication cost in place.
 
 ### F23 — malformed cursor becomes a full-history pull
 
@@ -126,6 +208,13 @@ called `ticket.setStatus` inside `try { … } catch (err) { expect(err)… }`. I
 added to the transition table the old test still passed. It now asserts with `expect(act).toThrow(MutationRejected)`,
 checks `code === 'INVALID_TRANSITION'`, and checks the ticket keeps its status; with the same sabotage it fails.
 
+**`packages/sync-core/test/mutators.spec.ts` — every test (protocol v2).** The mutator API changed: the
+registry is a `Map` (`getMutator(name)`), `apply` takes a `ctx`, `ticket.create` takes its `id`, `ticket.update`
+takes a `patch`, and no mutator except `ticket.create`/`ticket.move` takes a `siteId`. The calls were updated
+to the new shape; every assertion is unchanged. The new suites in `packages/sync-core/test/mutators/`
+additionally pin the exact rejection code of every case, so a `BAD_ARGS` cannot stand in for the expected
+rejection.
+
 **`apps/server/test/pull.spec.ts` — "only returns changes for sites the user can access" (F25).** The mocked
 pool returned `{ rows: [] }` for every query and the test asserted `changes` was empty, so it passed for any SQL
 and any parameters — including the starter's, which drops the site filter whenever `cursor > 0` (F9). Removed.
@@ -149,7 +238,8 @@ missing in CI (`requireDatabaseUrl()`), and `npm run typecheck` now type-checks 
 **`packages/sync-core/test/client.spec.ts` — two `it.todo` (F27).** "keeps unsynced mutations across a
 reload" and "does not lose mutations when two tabs share one clientId" were placeholders that always report
 as todo. Removed; replaced by `packages/sync-core/test/repro/f14-reload.spec.ts` and
-`packages/sync-core/test/repro/f15-two-tabs.spec.ts`, which assert exactly those behaviours.
+`packages/sync-core/test/repro/f15-two-tabs.spec.ts`, which assert exactly those behaviours. The two remaining
+tests now pass an `id` to `ticket.create` (required since F17); their assertions are unchanged.
 
 ## Simulation
 

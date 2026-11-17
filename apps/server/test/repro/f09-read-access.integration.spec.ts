@@ -14,7 +14,7 @@ describeDb('F9 read access on every pull path', () => {
 
   it.failing('never returns another site to a technician, initial or incremental', async () => {
     const ticket = (mutationId: number, siteId: string, title: string) =>
-      createTicket(t.http, t.pool, { token: TOKENS.admin, clientId: 'admin', mutationId, siteId, title });
+      createTicket(t.http, { token: TOKENS.admin, clientId: 'admin', mutationId, siteId, title });
 
     await ticket(1, DEMO.siteA, 'F9 A1');
     await ticket(2, DEMO.siteB, 'F9 B1');

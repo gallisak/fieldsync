@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { MemoryStorage, SyncClient } from '../../src';
 import { ScriptedTransport, flush } from '../support/scripted-transport';
 
@@ -26,8 +27,8 @@ describe('F14 reload', () => {
     const storage = new MemoryStorage();
     const a = open(storage, new ScriptedTransport());
     await ready(a);
-    await a.mutate('ticket.create', { siteId: SITE, title: 'A', description: '' });
-    await a.mutate('ticket.create', { siteId: SITE, title: 'B', description: '' });
+    await a.mutate('ticket.create', { id: randomUUID(), siteId: SITE, title: 'A', description: '' });
+    await a.mutate('ticket.create', { id: randomUUID(), siteId: SITE, title: 'B', description: '' });
     await flush();
     a.dispose();
 
@@ -43,7 +44,7 @@ describe('F14 reload', () => {
     const first = new ScriptedTransport().replyPush({ results: [{ id: 1, status: 'applied' }], lastMutationId: 1 });
     const a = open(storage, first); // its pull is unscripted, so it fails after the push succeeded
     await ready(a);
-    await a.mutate('ticket.create', { siteId: SITE, title: 'before reload', description: '' });
+    await a.mutate('ticket.create', { id: randomUUID(), siteId: SITE, title: 'before reload', description: '' });
     await flush();
     expect(first.callsOf('push')).toHaveLength(1);
     expect(first.callsOf('pull')).toHaveLength(1);
@@ -52,7 +53,7 @@ describe('F14 reload', () => {
     const second = new ScriptedTransport();
     const b = open(storage, second);
     await ready(b);
-    await b.mutate('ticket.create', { siteId: SITE, title: 'after reload', description: '' });
+    await b.mutate('ticket.create', { id: randomUUID(), siteId: SITE, title: 'after reload', description: '' });
     await flush();
 
     const seenByServer = Math.max(...first.pushedMutations().map((m) => m.id));

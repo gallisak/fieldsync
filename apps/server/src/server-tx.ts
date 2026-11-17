@@ -1,9 +1,7 @@
-import { MUTATORS, MutationRejected, type EntityName, type Mutation, type MutatorTx, type Row } from '@fieldsync/sync-core';
+import { MutationRejected, getMutator, type EntityName, type Mutation, type MutatorTx, type Row } from '@fieldsync/sync-core';
 import type { PoolClient } from 'pg';
 import { authorize } from './access';
 import type { AuthUser } from './auth';
-
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 interface Loaded {
   row: Row | undefined;
@@ -20,10 +18,18 @@ interface Write {
 class BufferedTx implements MutatorTx {
   readonly writes: Write[] = [];
 
-  constructor(private readonly loaded: Map<string, Loaded>) {}
+  constructor(
+    private readonly loaded: Map<string, Loaded>,
+    private readonly scanned: Map<string, string[]>,
+  ) {}
 
   get(entity: EntityName, id: string): Row | undefined {
     return this.loaded.get(`${entity}/${id}`)?.row;
+  }
+
+  scan(entity: 'part', by: { ticketId: string }): Row[] {
+    const ids = this.scanned.get(`${entity}/${by.ticketId}`) ?? [];
+    return ids.map((id) => this.get(entity, id)).filter((row): row is Row => row !== undefined);
   }
 
   put(entity: EntityName, id: string, row: Row): void {
@@ -42,21 +48,11 @@ class BufferedTx implements MutatorTx {
   }
 }
 
-function assertUuids(args: Record<string, unknown>): void {
-  for (const field of ['id', 'ticketId', 'siteId']) {
-    const value = args[field];
-    if (value !== undefined && (typeof value !== 'string' || !UUID.test(value))) {
-      throw new MutationRejected('BAD_ARGS', `${field} must be a UUID`);
-    }
-  }
-}
-
 /** Applies one mutation inside the caller's transaction; returns the site ids it touched. */
 export async function applyMutation(c: PoolClient, user: AuthUser, m: Mutation): Promise<string[]> {
-  const def = MUTATORS[m.name];
-  if (!def) throw new MutationRejected('UNKNOWN_MUTATOR', `Unknown mutator ${String(m.name)}`);
-  assertUuids(m.args);
-  await authorize(c, user, m);
+  const def = getMutator(m.name);
+  if (!def) throw new MutationRejected('BAD_ARGS', `Unknown mutator ${String(m.name)}`);
+  def.parse(m.args);
 
   const loaded = new Map<string, Loaded>();
   for (const key of def.reads(m.args)) {
@@ -71,8 +67,30 @@ export async function applyMutation(c: PoolClient, user: AuthUser, m: Mutation):
     });
   }
 
-  const tx = new BufferedTx(loaded);
-  def.apply(tx, m.args);
+  const scanned = new Map<string, string[]>();
+  for (const spec of def.scans(m.args)) {
+    const { rows } = await c.query<{ id: string; data: Row; site_id: string }>(
+      `SELECT id, data, site_id FROM entities
+        WHERE entity = $1 AND NOT deleted AND data->>'ticketId' = $2
+        ORDER BY id FOR UPDATE`,
+      [spec.entity, spec.by.ticketId],
+    );
+    scanned.set(`${spec.entity}/${spec.by.ticketId}`, rows.map((r) => r.id));
+    for (const r of rows) loaded.set(`${spec.entity}/${r.id}`, { row: r.data, siteId: r.site_id });
+  }
+
+  // Sites come from the rows as stored, never from the arguments (v2 args carry no siteId to trust).
+  const existingSites = [...loaded.values()].filter((l) => l.row !== undefined).map((l) => l.siteId as string);
+  await authorize(c, user, existingSites);
+
+  const { rows: clock } = await c.query<{ now: Date }>(`SELECT transaction_timestamp() AS now`);
+  const tx = new BufferedTx(loaded, scanned);
+  def.apply(tx, m.args, { now: clock[0].now.toISOString() });
+  await authorize(
+    c,
+    user,
+    tx.writes.flatMap((w) => (w.op === 'put' ? [w.row?.siteId as string] : [])),
+  );
 
   const touched = new Set<string>();
   for (const w of tx.writes) {

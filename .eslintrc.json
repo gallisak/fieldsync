@@ -1,10 +1,89 @@
 {
   "root": true,
   "parser": "@typescript-eslint/parser",
-  "parserOptions": { "sourceType": "module" },
-  "plugins": ["@typescript-eslint"],
-  "extends": ["eslint:recommended", "plugin:@typescript-eslint/recommended"],
-  "env": { "node": true, "jest": true, "browser": true },
-  "ignorePatterns": ["dist", ".next", "node_modules"],
-  "rules": { "@typescript-eslint/no-unused-vars": ["warn", { "argsIgnorePattern": "^_" }] }
+  "parserOptions": {
+    "sourceType": "module"
+  },
+  "plugins": [
+    "@typescript-eslint"
+  ],
+  "extends": [
+    "eslint:recommended",
+    "plugin:@typescript-eslint/recommended"
+  ],
+  "env": {
+    "node": true,
+    "jest": true,
+    "browser": true
+  },
+  "ignorePatterns": [
+    "dist",
+    ".next",
+    "node_modules"
+  ],
+  "rules": {
+    "@typescript-eslint/no-unused-vars": [
+      "warn",
+      {
+        "argsIgnorePattern": "^_"
+      }
+    ]
+  },
+  "overrides": [
+    {
+      "files": [
+        "packages/sync-core/src/mutators/**/*.ts"
+      ],
+      "rules": {
+        "no-restricted-globals": [
+          "error",
+          {
+            "name": "Date",
+            "message": "Mutators must be deterministic: time comes from ctx.now, ids from args."
+          },
+          {
+            "name": "crypto",
+            "message": "Mutators must be deterministic: time comes from ctx.now, ids from args."
+          },
+          {
+            "name": "performance",
+            "message": "Mutators must be deterministic: time comes from ctx.now, ids from args."
+          }
+        ],
+        "no-restricted-properties": [
+          "error",
+          {
+            "object": "Math",
+            "property": "random",
+            "message": "Mutators must be deterministic: time comes from ctx.now, ids from args."
+          },
+          {
+            "object": "globalThis",
+            "property": "crypto",
+            "message": "Mutators must be deterministic: time comes from ctx.now, ids from args."
+          },
+          {
+            "object": "globalThis",
+            "property": "Date",
+            "message": "Mutators must be deterministic: time comes from ctx.now, ids from args."
+          }
+        ],
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "crypto",
+                "message": "Mutators must be deterministic: time comes from ctx.now, ids from args."
+              },
+              {
+                "name": "node:crypto",
+                "message": "Mutators must be deterministic: time comes from ctx.now, ids from args."
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
 }

@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import type { Mutation } from '@fieldsync/sync-core';
 import { DEMO, TOKENS, push, seed } from '../support/api';
 import { createTestApp, describeDb, type TestApp } from '../support/pg';
@@ -15,12 +16,11 @@ describeDb('F6 prototype-property mutator names', () => {
   });
   afterAll(() => t?.close());
 
-  // `siteId` makes the starter's authorization pass, so the request reaches the registry lookup.
   it.each(['constructor', '__proto__'])(
     'answers "%s" with 400 or a rejection, and the queue keeps moving',
     async (name) => {
       const clientId = `c-${name}`;
-      const bad = { id: 1, name, args: { siteId: DEMO.siteA } } as unknown as Mutation;
+      const bad = { id: 1, name, args: {} } as unknown as Mutation;
       const res = await push(t.http, TOKENS.admin, clientId, [bad]);
 
       expect(res.status).not.toBe(500);
@@ -29,7 +29,7 @@ describeDb('F6 prototype-property mutator names', () => {
 
       const nextId = res.status < 300 ? 2 : 1;
       const next = await push(t.http, TOKENS.admin, clientId, [
-        { id: nextId, name: 'ticket.create', args: { siteId: DEMO.siteA, title: `after ${name}`, description: '' } },
+        { id: nextId, name: 'ticket.create', args: { id: randomUUID(), siteId: DEMO.siteA, title: `after ${name}`, description: '' } },
       ]);
       expect(next.status).toBeLessThan(300);
       expect(next.body.results[0].status).toBe('applied');

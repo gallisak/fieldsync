@@ -1,4 +1,4 @@
-import { MUTATORS, MutationRejected, type MutatorTx } from '../src/mutators';
+import { MutationRejected, getMutator, type MutatorTx } from '../src/mutators';
 import type { EntityName, Row } from '../src/protocol/types';
 
 class FakeTx implements MutatorTx {
@@ -19,7 +19,14 @@ class FakeTx implements MutatorTx {
   del(entity: EntityName, id: string) {
     this.rows.delete(`${entity}/${id}`);
   }
+
+  scan(entity: 'part', by: { ticketId: string }) {
+    return [...this.rows].filter(([k, r]) => k.startsWith(`${entity}/`) && r.ticketId === by.ticketId).map(([, r]) => r);
+  }
 }
+
+const ctx = { now: '2026-01-01T00:00:00.000Z' };
+const run = (name: string, tx: MutatorTx, args: Record<string, unknown>) => getMutator(name)!.apply(tx, args, ctx);
 
 const TICKET = '11111111-1111-4111-8111-111111111111';
 const PART = '22222222-2222-4222-8222-222222222222';
@@ -30,7 +37,7 @@ const ticket = (status: string): Row => ({ id: TICKET, siteId: SITE, title: 't',
 describe('ticket mutators', () => {
   it('creates a ticket in the open status', () => {
     const tx = new FakeTx();
-    MUTATORS['ticket.create'].apply(tx, { siteId: SITE, title: 'Broken pump', description: '' });
+    run('ticket.create', tx, { id: TICKET, siteId: SITE, title: 'Broken pump', description: '' });
     const [created] = [...tx.rows.values()];
     expect(created.status).toBe('open');
     expect(created.siteId).toBe(SITE);
@@ -38,21 +45,18 @@ describe('ticket mutators', () => {
 
   it('rejects an update for a ticket that does not exist', () => {
     const tx = new FakeTx();
-    expect(() =>
-      MUTATORS['ticket.update'].apply(tx, { id: TICKET, siteId: SITE, title: 'x', description: '' }),
-    ).toThrow(MutationRejected);
+    expect(() => run('ticket.update', tx, { id: TICKET, patch: { title: 'x' } })).toThrow(MutationRejected);
   });
 
   it('moves a ticket along an allowed transition', () => {
     const tx = new FakeTx([['ticket', TICKET, ticket('open')]]);
-    MUTATORS['ticket.setStatus'].apply(tx, { id: TICKET, siteId: SITE, from: 'open', to: 'in_progress' });
+    run('ticket.setStatus', tx, { id: TICKET, from: 'open', to: 'in_progress' });
     expect(tx.get('ticket', TICKET)?.status).toBe('in_progress');
   });
 
   it('rejects an invalid status transition', () => {
     const tx = new FakeTx([['ticket', TICKET, ticket('done')]]);
-    const act = () =>
-      MUTATORS['ticket.setStatus'].apply(tx, { id: TICKET, siteId: SITE, from: 'done', to: 'in_progress' });
+    const act = () => run('ticket.setStatus', tx, { id: TICKET, from: 'done', to: 'in_progress' });
     expect(act).toThrow(MutationRejected);
     expect(act).toThrow(expect.objectContaining({ code: 'INVALID_TRANSITION' }));
     expect(tx.get('ticket', TICKET)?.status).toBe('done');
@@ -62,14 +66,12 @@ describe('ticket mutators', () => {
 describe('part mutators', () => {
   it('does not let a quantity go below zero', () => {
     const tx = new FakeTx([['part', PART, { id: PART, quantity: 1 }]]);
-    expect(() => MUTATORS['part.adjust'].apply(tx, { id: PART, siteId: SITE, delta: -2 })).toThrow(
-      MutationRejected,
-    );
+    expect(() => run('part.adjust', tx, { id: PART, delta: -2 })).toThrow(MutationRejected);
   });
 
   it('adds to the quantity', () => {
     const tx = new FakeTx([['part', PART, { id: PART, quantity: 1 }]]);
-    MUTATORS['part.adjust'].apply(tx, { id: PART, siteId: SITE, delta: 3 });
+    run('part.adjust', tx, { id: PART, delta: 3 });
     expect(tx.get('part', PART)?.quantity).toBe(4);
   });
 });

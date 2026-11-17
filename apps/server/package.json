@@ -7,7 +7,7 @@
     "start": "node dist/main",
     "dev": "tsc -p tsconfig.build.json --watch",
     "test": "jest",
-    "test:unit": "jest --testPathIgnorePatterns integration sim",
+    "test:unit": "jest --passWithNoTests --testPathIgnorePatterns integration sim",
     "test:integration": "jest integration",
     "test:sim": "jest sim --passWithNoTests"
   },

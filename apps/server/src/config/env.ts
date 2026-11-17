@@ -56,7 +56,6 @@ export class ConfigError extends Error {
   }
 }
 
-/** Validates an environment map. Pure: tests pass their own map. */
 export function parseConfig(env: Record<string, string | undefined>): AppConfig {
   const result = envSchema.safeParse(env);
   if (!result.success) {
@@ -67,7 +66,7 @@ export function parseConfig(env: Record<string, string | undefined>): AppConfig 
 
 let cached: AppConfig | undefined;
 
-/** The process configuration, parsed from `process.env` once. The only place that reads `process.env`. */
+/** Memoised: the only place in the server that reads `process.env`. */
 export function loadConfig(): AppConfig {
   cached ??= parseConfig(process.env);
   return cached;

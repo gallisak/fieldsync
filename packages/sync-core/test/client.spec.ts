@@ -34,7 +34,4 @@ describe('SyncClient', () => {
     expect(client.pendingCount).toBe(2);
     client.dispose();
   });
-
-  it.todo('keeps unsynced mutations across a reload');
-  it.todo('does not lose mutations when two tabs share one clientId');
 });

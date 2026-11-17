@@ -18,7 +18,6 @@ export function requireDatabaseUrl(): string | undefined {
   return url || undefined;
 }
 
-/** `describe` when a database is available, `describe.skip` otherwise. */
 export function describeDb(name: string, fn: () => void): void {
   (requireDatabaseUrl() ? describe : describe.skip)(name, fn);
 }

@@ -1,11 +1,14 @@
 import { randomUUID } from 'crypto';
-import type { PoolClient } from 'pg';
-import { DEMO, TOKENS, pull, seed } from '../support/api';
+import request from 'supertest';
+import { MutationExecutor } from '../../src/sync/push/mutation-executor';
+import { DEMO, TOKENS, listen, pull, push, seed } from '../support/api';
 import { createTestApp, describeDb, type TestApp } from '../support/pg';
 
+const PAUSE_KEY = 727101;
+
 /**
- * F1: change_log.version is a bigserial — allocated at INSERT, visible at COMMIT. A transaction that took a
- * lower version but commits later is skipped by any reader whose cursor already moved past it.
+ * F1: change_log.version came from a sequence — allocated at INSERT, visible at COMMIT. A transaction that
+ * took a lower version but commits later is skipped by any reader whose cursor already moved past it.
  */
 describeDb('F1 change order vs commit order', () => {
   let t: TestApp;
@@ -15,38 +18,69 @@ describeDb('F1 change order vs commit order', () => {
   });
   afterAll(() => t?.close());
 
-  const insertChange = (c: PoolClient, id: string) =>
-    c.query(
-      `INSERT INTO change_log (site_id, entity, entity_id, op, data) VALUES ($1, 'ticket', $2, 'put', $3)`,
-      [DEMO.siteA, id, JSON.stringify({ id, siteId: DEMO.siteA, title: id, description: '', status: 'open' })],
-    );
+  const create = (title: string) => ({
+    id: 1,
+    name: 'ticket.create' as const,
+    args: { id: randomUUID(), siteId: DEMO.siteA, title, description: '' },
+  });
+
+  async function until(condition: () => Promise<boolean>, what: string): Promise<void> {
+    const deadline = Date.now() + 3_000;
+    while (!(await condition())) {
+      if (Date.now() > deadline) throw new Error(`setup: timed out waiting for ${what}`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
 
   it.failing('delivers a change whose transaction commits after a later-numbered one', async () => {
-    const a = await t.pool.connect();
-    const b = await t.pool.connect();
-    const idA = randomUUID();
-    const idB = randomUUID();
+    const http = request(await listen(t.app));
+    const executor = t.app.get(MutationExecutor);
+    let pausedPid: number | undefined;
+    executor.hooks.afterWrites = async (c, m) => {
+      if (m.args.title !== 'F1 A') return;
+      pausedPid = (await c.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+      await c.query('SELECT pg_advisory_xact_lock($1)', [PAUSE_KEY]);
+    };
+
+    const gate = await t.pool.connect();
     try {
-      await a.query('BEGIN');
-      await insertChange(a, idA); // lower version, still uncommitted
-      await b.query('BEGIN');
-      await insertChange(b, idB);
-      await b.query('COMMIT');
+      await gate.query('SELECT pg_advisory_lock($1)', [PAUSE_KEY]);
+
+      // A writes its change, then stops before COMMIT.
+      const a = create('F1 A');
+      const pushA = push(http, TOKENS.admin, 'client-a', [a]).then((r) => r);
+      await until(async () => pausedPid !== undefined, 'A to pause');
+
+      // B starts while A is open. It either commits (versions from a sequence) or queues behind A.
+      const b = create('F1 B');
+      let bDone = false;
+      const pushB = push(http, TOKENS.admin, 'client-b', [b]).then((r) => ((bDone = true), r));
+      await until(async () => {
+        if (bDone) return true;
+        const { rows } = await t.pool.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))`,
+          [pausedPid],
+        );
+        return rows[0].n > 0;
+      }, 'B to commit or to queue behind A');
 
       const first = await pull(t.http, TOKENS.admin);
       expect(first.status).toBe(200);
 
-      await a.query('COMMIT');
+      await gate.query('SELECT pg_advisory_unlock($1)', [PAUSE_KEY]);
+      expect((await pushA).status).toBeLessThan(300);
+      expect((await pushB).status).toBeLessThan(300);
+
       const second = await pull(t.http, TOKENS.admin, { cursor: first.body.cursor });
       expect(second.status).toBe(200);
 
       const seen = [...first.body.changes, ...second.body.changes].map((c: { id: string }) => c.id);
-      expect(seen).toContain(idB);
-      expect(seen).toContain(idA);
+      expect(seen).toContain(b.args.id);
+      expect(seen).toContain(a.args.id);
     } finally {
-      await a.query('ROLLBACK').catch(() => undefined);
-      a.release();
-      b.release();
+      executor.hooks.afterWrites = undefined;
+      await gate.query('SELECT pg_advisory_unlock_all()');
+      gate.release();
     }
   });
 });

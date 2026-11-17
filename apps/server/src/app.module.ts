@@ -8,6 +8,7 @@ import { GcService } from './gc.service';
 import { HealthController } from './health.controller';
 import { PullService } from './pull.service';
 import { PushService } from './push.service';
+import { MutationExecutor } from './sync/push/mutation-executor';
 import { StreamService } from './stream.service';
 import { SyncController } from './sync.controller';
 
@@ -19,6 +20,7 @@ import { SyncController } from './sync.controller';
     Db,
     AuthGuard,
     PushService,
+    MutationExecutor,
     PullService,
     StreamService,
     GcService,

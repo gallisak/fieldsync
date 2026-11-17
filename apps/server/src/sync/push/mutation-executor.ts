@@ -1,7 +1,8 @@
 import { MutationRejected, getMutator, type EntityName, type Mutation, type MutatorTx, type Row } from '@fieldsync/sync-core';
+import { Injectable } from '@nestjs/common';
 import type { PoolClient } from 'pg';
-import { authorize } from './access';
-import type { AuthUser } from './auth';
+import { authorize } from '../../access';
+import type { AuthUser } from '../../auth';
 
 interface Loaded {
   row: Row | undefined;
@@ -48,8 +49,7 @@ class BufferedTx implements MutatorTx {
   }
 }
 
-/** Applies one mutation inside the caller's transaction; returns the site ids it touched. */
-export async function applyMutation(c: PoolClient, user: AuthUser, m: Mutation): Promise<string[]> {
+async function applyMutation(c: PoolClient, user: AuthUser, m: Mutation): Promise<string[]> {
   const def = getMutator(m.name);
   if (!def) throw new MutationRejected('BAD_ARGS', `Unknown mutator ${String(m.name)}`);
   def.parse(m.args);
@@ -118,4 +118,22 @@ export async function applyMutation(c: PoolClient, user: AuthUser, m: Mutation):
     }
   }
   return [...touched];
+}
+
+export interface ExecutorHooks {
+  /** Runs inside the transaction after the mutation's writes, before commit. */
+  afterWrites?(c: PoolClient, m: Mutation): Promise<void>;
+}
+
+@Injectable()
+export class MutationExecutor {
+  /** Test-only seam for pausing or failing a transaction at a precise point; empty in production. */
+  readonly hooks: ExecutorHooks = {};
+
+  /** Applies one mutation inside the caller's transaction; returns the site ids it touched. */
+  async execute(c: PoolClient, user: AuthUser, m: Mutation): Promise<string[]> {
+    const touched = await applyMutation(c, user, m);
+    await this.hooks.afterWrites?.(c, m);
+    return touched;
+  }
 }

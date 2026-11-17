@@ -178,7 +178,12 @@ export class SyncClient {
 
   private async pull(): Promise<void> {
     for (;;) {
-      const resp = await this.transport.pull(this.cursor, this.clientId, 500);
+      const resp = await this.transport.pull({
+        cursor: this.cursor,
+        clientId: this.clientId,
+        ackedMutationId: this.lastMutationId,
+        limit: 500,
+      });
       for (const change of resp.changes) {
         const key = `${change.entity}/${change.id}`;
         if (change.op === 'put' && change.data) this.base.set(key, change.data);

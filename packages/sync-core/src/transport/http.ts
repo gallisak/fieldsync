@@ -1,9 +1,19 @@
 import type { Cursor, PullResponse, PushRequest, PushResponse } from '../protocol/types';
 import { PROTOCOL, PROTOCOL_HEADER } from '../protocol/version';
+import { TransportError } from './errors';
 
+export interface PullParams {
+  cursor: Cursor | null;
+  clientId: string;
+  /** Rejections of mutations up to this id are already known to the client and are not sent again. */
+  ackedMutationId: number;
+  limit: number;
+}
+
+/** Both methods reject with a `TransportError`. */
 export interface Transport {
   push(req: PushRequest): Promise<PushResponse>;
-  pull(cursor: Cursor | null, clientId: string, limit?: number): Promise<PullResponse>;
+  pull(params: PullParams): Promise<PullResponse>;
 }
 
 export class HttpTransport implements Transport {
@@ -13,27 +23,46 @@ export class HttpTransport implements Transport {
     private readonly fetchImpl: typeof fetch = (...args) => fetch(...args),
   ) {}
 
-  async push(req: PushRequest): Promise<PushResponse> {
-    const res = await this.fetchImpl(`${this.baseUrl}/sync/push`, {
+  push(req: PushRequest): Promise<PushResponse> {
+    return this.call<PushResponse>('/sync/push', {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${this.token}`,
-        [PROTOCOL_HEADER]: String(PROTOCOL),
-      },
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify(req),
     });
-    if (!res.ok) throw new Error(`push failed: HTTP ${res.status}`);
-    return (await res.json()) as PushResponse;
   }
 
-  async pull(cursor: Cursor | null, clientId: string, limit = 500): Promise<PullResponse> {
-    const qs = new URLSearchParams({ clientId, limit: String(limit) });
-    if (cursor) qs.set('cursor', cursor);
-    const res = await this.fetchImpl(`${this.baseUrl}/sync/pull?${qs}`, {
-      headers: { authorization: `Bearer ${this.token}`, [PROTOCOL_HEADER]: String(PROTOCOL) },
+  pull(params: PullParams): Promise<PullResponse> {
+    const qs = new URLSearchParams({
+      clientId: params.clientId,
+      ackedMutationId: String(params.ackedMutationId),
+      limit: String(params.limit),
     });
-    if (!res.ok) throw new Error(`pull failed: HTTP ${res.status}`);
-    return (await res.json()) as PullResponse;
+    if (params.cursor) qs.set('cursor', params.cursor);
+    return this.call<PullResponse>(`/sync/pull?${qs}`, {});
+  }
+
+  private async call<T>(path: string, init: RequestInit): Promise<T> {
+    let res: Response;
+    try {
+      res = await this.fetchImpl(`${this.baseUrl}${path}`, {
+        ...init,
+        headers: { ...init.headers, authorization: `Bearer ${this.token}`, [PROTOCOL_HEADER]: String(PROTOCOL) },
+      });
+    } catch (err) {
+      throw new TransportError('network', undefined, undefined, undefined, undefined, { cause: err });
+    }
+    if (!res.ok) {
+      const body = (await res.json().catch(() => undefined)) as
+        | { code?: unknown; message?: unknown; details?: unknown }
+        | undefined;
+      throw new TransportError(
+        'http',
+        res.status,
+        typeof body?.code === 'string' ? body.code : undefined,
+        body?.details,
+        typeof body?.message === 'string' ? body.message : undefined,
+      );
+    }
+    return (await res.json()) as T;
   }
 }

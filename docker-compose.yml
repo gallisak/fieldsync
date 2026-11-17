@@ -17,7 +17,16 @@ services:
     environment:
       PORT: 3001
       DATABASE_URL: postgres://fieldsync:fieldsync@postgres:5432/fieldsync
+      DB_POOL_MAX: 20
       SEED_DEMO: "true"
+      CORS_ORIGINS: http://localhost:3000
+      CHANGELOG_RETENTION_SECONDS: 604800
+      CLIENT_RETENTION_DAYS: 90
+      GC_INTERVAL_MS: 3600000
+      STREAM_HEARTBEAT_MS: 25000
+      STREAM_MAX_PER_USER: 10
+      LOG_LEVEL: info
+      METRICS_TOKEN: ""
     depends_on:
       postgres:
         condition: service_healthy

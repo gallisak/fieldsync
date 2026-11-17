@@ -1,9 +1,13 @@
 import { MutationRejected, getMutator, type MutatorTx } from '../mutators';
 import type { PersistedState, StoredMutation, SyncStorage } from '../storage/types';
+import { TransportError } from '../transport/errors';
 import type { Transport } from '../transport/http';
 import type { Cursor, EntityName, Mutation, MutatorName, Row } from '../protocol/types';
 
-export type SyncStatus = 'idle' | 'syncing' | 'offline';
+export type SyncStatus = 'idle' | 'syncing' | 'offline' | 'blocked';
+
+/** Why syncing stopped; the queue is kept. `auth`: sign in again; `upgrade`: reload newer code. */
+export type BlockReason = 'auth' | 'upgrade' | 'error';
 
 export interface Rejection {
   mutation: Mutation;
@@ -62,6 +66,10 @@ export class SyncClient {
   private cursor: Cursor | null = null;
   private lastMutationId = 0;
   private pending: StoredMutation[] = [];
+  /** Highest id this client has had answered by a push; entries stay in `pending` until a pull acknowledges them. */
+  private pushedUpTo = 0;
+  private outOfOrderRetried = false;
+  private blockedBy: BlockReason | null = null;
   private unsaved: UnsavedMutation[] = [];
   /** Every step that reads or writes storage and updates memory from it runs here, one at a time. */
   private writeChain: Promise<unknown>;
@@ -87,6 +95,10 @@ export class SyncClient {
 
   get status(): SyncStatus {
     return this.currentStatus;
+  }
+
+  get blocked(): BlockReason | null {
+    return this.blockedBy;
   }
 
   get pendingCount(): number {
@@ -146,11 +158,11 @@ export class SyncClient {
   }
 
   sync(): Promise<void> {
-    if (this.disposed) return Promise.resolve();
+    if (this.disposed || this.blockedBy) return Promise.resolve();
     if (!this.inFlight) {
       this.inFlight = this.runSync().finally(() => {
         this.inFlight = undefined;
-        if (this.pending.length > 0 && this.currentStatus !== 'offline') void this.sync();
+        if (this.unpushed().length > 0 && this.currentStatus === 'idle') void this.sync();
       });
     }
     return this.inFlight;
@@ -173,7 +185,7 @@ export class SyncClient {
     this.cursor = s.cursor;
     this.lastMutationId = s.lastMutationId;
     this.pending = s.pending;
-    for (const r of s.rejections) this.addRejection(r.mutation, r.message);
+    this.rejected = s.rejections.map((r) => ({ mutation: r.mutation, error: r.message }));
   }
 
   private serial<T>(step: () => Promise<T>): Promise<T> {
@@ -190,29 +202,80 @@ export class SyncClient {
       await this.push();
       await this.pull();
       this.setStatus('idle');
-    } catch {
-      this.setStatus('offline');
-      this.scheduleRetry();
+    } catch (err) {
+      await this.onSyncError(err);
     }
   }
 
+  private unpushed(): StoredMutation[] {
+    const from = Math.max(this.lastMutationId, this.pushedUpTo);
+    return this.pending.filter((m) => m.id > from);
+  }
+
+  /**
+   * Sends what the server has not answered yet. Nothing leaves `pending` here: a mutation leaves the queue only
+   * in the storage commit of the pull page that contains its effect (F16).
+   */
   private async push(): Promise<void> {
-    if (this.pending.length === 0) return;
-    const batch = this.pending.slice(0, 100);
-    const resp = await this.transport.push({
-      clientId: this.id,
-      mutations: batch.map(({ id, name, args }) => ({ id, name, args })),
-    });
-    const handled = new Set(resp.results.map((r) => r.id));
-    for (const r of resp.results) {
-      if (r.status === 'rejected') {
-        const mutation = batch.find((m) => m.id === r.id);
-        if (mutation) this.addRejection(mutation, r.message ?? r.code ?? 'rejected');
+    for (;;) {
+      const batch = this.unpushed().slice(0, 100);
+      if (batch.length === 0) return;
+      const resp = await this.transport.push({
+        clientId: this.id,
+        mutations: batch.map(({ id, name, args }) => ({ id, name, args })),
+      });
+      this.outOfOrderRetried = false;
+      const top = Math.max(0, ...resp.results.map((r) => r.id));
+      if (top <= Math.max(this.lastMutationId, this.pushedUpTo)) return; // the server handled nothing new
+      this.pushedUpTo = top;
+    }
+  }
+
+  /** Decides from the error what happens to the queue and whether syncing goes on. */
+  private async onSyncError(err: unknown): Promise<void> {
+    if (this.disposed) return;
+    const e = err instanceof TransportError ? err : undefined;
+    if (e?.status === 401) return this.block('auth');
+    if (e?.status === 426) return this.block('upgrade');
+    if (e?.code === 'CLIENT_MISMATCH') return this.resetClient();
+    if (e?.code === 'OUT_OF_ORDER') {
+      const expected = (e.details as { expected?: unknown } | undefined)?.expected;
+      if (typeof expected === 'number') {
+        // The server has no record of this client (e.g. a restored database): start over as a new client.
+        if (expected === 1 && this.lastMutationId > 0) return this.resetClient();
+        const highest = Math.max(this.lastMutationId, ...this.pending.map((m) => m.id));
+        if (expected <= highest + 1 && !this.outOfOrderRetried) {
+          this.outOfOrderRetried = true;
+          this.pushedUpTo = expected - 1; // resend from what the server expects; `sync()` reruns at once
+          this.setStatus('idle');
+          return;
+        }
       }
     }
-    // Only the in-memory copy is dropped here (F16); storage keeps it until a pull reports it applied.
-    this.pending = this.pending.filter((m) => !handled.has(m.id));
-    this.emit();
+    const retryable = !e || e.kind !== 'http' || e.status! >= 500 || e.status === 408 || e.status === 429;
+    if (!retryable) {
+      console.error('sync stopped:', err);
+      return this.block('error');
+    }
+    this.setStatus('offline');
+    this.scheduleRetry();
+  }
+
+  private block(reason: BlockReason): void {
+    this.blockedBy = reason;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.setStatus('blocked');
+  }
+
+  /** New client id, queue renumbered from 1; the next sync pushes everything again under the new id. */
+  private async resetClient(): Promise<void> {
+    await this.serial(async () => {
+      this.adopt(await this.storage.resetClient());
+      this.pushedUpTo = 0;
+      this.outOfOrderRetried = false;
+      this.emit();
+    });
+    this.setStatus('idle');
   }
 
   private async pull(): Promise<void> {
@@ -238,11 +301,6 @@ export class SyncClient {
       });
       if (committed && !resp.hasMore) break;
     }
-  }
-
-  private addRejection(mutation: Mutation, error: string): void {
-    if (this.rejected.some((r) => r.mutation.id === mutation.id)) return;
-    this.rejected.push({ mutation, error });
   }
 
   private setStatus(status: SyncStatus): void {

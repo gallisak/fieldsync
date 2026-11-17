@@ -9,7 +9,7 @@ const TICKET = '11111111-1111-4111-8111-111111111111';
  * effects into `base`. The user's change disappears until the pull lands (and is lost if the app dies then).
  */
 describe('F16 acknowledgement before the pull', () => {
-  it.failing('keeps showing an acknowledged change until the pull delivers it', async () => {
+  it('keeps showing an acknowledged change until the pull delivers it', async () => {
     const held = deferred<PullResponse>();
     const transport = new ScriptedTransport()
       .replyPush({ results: [{ id: 1, status: 'applied' }], lastMutationId: 1 })

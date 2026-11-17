@@ -82,9 +82,11 @@ export abstract class WholeStateStorage implements SyncStorage {
         });
       }
       s.pending = s.pending.filter((m) => m.id > acked);
-      s.lastMutationId = acked;
+      // Never backwards: a lower value means the server lost this client or does not own it. The next push then
+      // gets OUT_OF_ORDER / CLIENT_MISMATCH and the client starts over under a new id.
+      s.lastMutationId = Math.max(s.lastMutationId, acked);
       // An id the server has acknowledged is never handed out again (F14).
-      s.nextMutationId = Math.max(s.nextMutationId, acked + 1);
+      s.nextMutationId = Math.max(s.nextMutationId, s.lastMutationId + 1);
     }
     this.write(s);
     return true;

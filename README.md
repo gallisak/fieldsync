@@ -85,7 +85,7 @@ in `packages/sync-core/test/repro/`.
 | F13 | Log lifecycle | GC by age with no floor or reload signal; new clients replay a truncated log | `f13-gc.integration.spec.ts` | open |
 | F14 | Client data loss | Pending queue not persisted; `lastMutationId` persisted only after pull | `f14-reload.spec.ts` | fixed |
 | F15 | Client data loss | Tabs share one `clientId` and storage blob with separate id counters | `f15-two-tabs.spec.ts` | ids fixed; real tabs open (IndexedDB, one syncing tab) |
-| F16 | Client data loss | Pending mutations dropped on push ack, before the pull delivers their effects | `f16-ack-flicker.spec.ts` | open |
+| F16 | Client data loss | Pending mutations dropped on push ack, before the pull delivers their effects | `f16-ack-flicker.spec.ts` | fixed |
 | F17 | Determinism | `ticket.create` generates its id and timestamps inside the mutator | `f17-determinism.spec.ts` | fixed |
 | F18 | Merge semantics | `ticket.update` overwrites title and description wholesale | `f18-field-merge.spec.ts` | fixed |
 | F19 | Merge semantics | `ticket.delete` leaves the ticket's parts behind | `f19-orphan-parts.spec.ts` | fixed |
@@ -310,6 +310,36 @@ a browser: the next mutation is accepted as number 5 of the old client).
 **Alternatives considered.** Persisting the in-memory structures after every change (the starter's `save`)
 keeps the race between "id handed out" and "id saved"; ids derived from a timestamp or random value would
 break the server's gap-free per-client ordering that duplicate detection relies on.
+
+### F16 — an acknowledged change disappears until the pull arrives
+
+**What.** The client removed a mutation from its queue as soon as the push response said `applied`, but the
+change itself reaches `base` only with the next pull. In between, the view (base + queue) contained the change
+in neither place.
+
+**Why it is dangerous.** The user's edit visibly reverts for the length of a pull, and if the pull fails or the
+app is closed in that window, it is gone from the device until some later sync happens to deliver it.
+
+**Reproduce.** `packages/sync-core/test/repro/f16-ack-flicker.spec.ts`: the push is answered `applied`, the
+pull is held; the view must still show the created ticket.
+
+**Fix.** The push response no longer removes anything. The client keeps an in-memory `pushedUpTo` so it does
+not resend what the server has answered, and a mutation leaves the queue only inside `storage.commitPull` of
+the pull page that also writes its effect into `base` (the last page, which carries `lastMutationId`). After
+every committed page the client reloads base and queue from storage and replays the queue, so the view is
+always base + every unacknowledged mutation (`test/client/rebase.spec.ts`: a base change under a pending
+patch, a row deleted underneath, a snapshot replacing the base with three mutations queued, a pull that
+acknowledges two of three). Push failures are now decided by `TransportError`: network / 5xx retry; `401` and
+`426` block syncing with the queue kept; `OUT_OF_ORDER` resends from `expected` once; `OUT_OF_ORDER` with
+`expected = 1` after earlier acknowledgements, or `CLIENT_MISMATCH`, start over under a new client id with
+the queue renumbered; any other 4xx blocks instead of looping. The stored `lastMutationId` never goes
+backwards, so a server that lost the client is detected on the next push (checked in a browser against a
+server that had never seen the client: `409`, reset, the change is accepted as mutation 1 of the new client).
+
+**Alternatives considered.** Keeping acknowledged mutations in a separate "applied, not yet pulled" list
+duplicates the queue and still needs the same commit to retire them; applying the push result to `base`
+directly would put an unconfirmed server state into `base` and break the rule that `base` only ever holds
+what the server sent.
 
 ### F17 — non-deterministic `ticket.create`
 

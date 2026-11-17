@@ -6,9 +6,9 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/main",
     "dev": "tsc -p tsconfig.build.json --watch",
-    "test": "jest --passWithNoTests",
+    "test": "jest",
     "test:unit": "jest --passWithNoTests --testPathIgnorePatterns integration sim",
-    "test:integration": "jest integration --passWithNoTests",
+    "test:integration": "jest integration",
     "test:sim": "jest sim --passWithNoTests"
   },
   "dependencies": {

@@ -16,7 +16,7 @@ describe('F16 acknowledgement before the pull', () => {
       .replyPull(held.promise);
     const client = new SyncClient({ clientId: 'c1', transport, storage: new MemoryStorage() });
     try {
-      await (client as unknown as { ready?: Promise<unknown> }).ready;
+      await client.ready;
       await client.mutate('ticket.create', { id: TICKET, siteId: SITE, title: 'Leaking valve', description: '' });
       await flush();
       expect(transport.callsOf('push')).toHaveLength(1);

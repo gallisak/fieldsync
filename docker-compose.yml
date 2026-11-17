@@ -2,31 +2,27 @@ services:
   postgres:
     image: postgres:16
     environment:
-      POSTGRES_USER: fieldsync
-      POSTGRES_PASSWORD: fieldsync
-      POSTGRES_DB: fieldsync
+      POSTGRES_USER: ${POSTGRES_USER:-fieldsync}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fieldsync}
+      POSTGRES_DB: ${POSTGRES_DB:-fieldsync}
     ports: ["5432:5432"]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U fieldsync"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER}"]
       interval: 3s
       retries: 20
   server:
     build:
       context: .
       dockerfile: apps/server/Dockerfile
+    # Settings come from .env (optional: a fresh clone runs on the defaults). Only what differs inside the
+    # compose network is set here.
+    env_file:
+      - path: .env
+        required: false
     environment:
       PORT: 3001
-      DATABASE_URL: postgres://fieldsync:fieldsync@postgres:5432/fieldsync
-      DB_POOL_MAX: 20
-      SEED_DEMO: "true"
-      CORS_ORIGINS: http://localhost:3000
-      CHANGELOG_RETENTION_SECONDS: 604800
-      CLIENT_RETENTION_DAYS: 90
-      GC_INTERVAL_MS: 3600000
-      STREAM_HEARTBEAT_MS: 25000
-      STREAM_MAX_PER_USER: 10
-      LOG_LEVEL: info
-      METRICS_TOKEN: ""
+      DATABASE_URL: postgres://${POSTGRES_USER:-fieldsync}:${POSTGRES_PASSWORD:-fieldsync}@postgres:5432/${POSTGRES_DB:-fieldsync}
+      SEED_DEMO: ${SEED_DEMO:-true}
     depends_on:
       postgres:
         condition: service_healthy
@@ -36,6 +32,6 @@ services:
       context: .
       dockerfile: apps/web/Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: http://localhost:3001
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
     depends_on: [server]
     ports: ["3000:3000"]

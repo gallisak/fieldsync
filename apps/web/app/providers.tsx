@@ -7,15 +7,6 @@ const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
 const ClientContext = createContext<SyncClient | null>(null);
 
-function getClientId(): string {
-  let id = localStorage.getItem('fs_client_id');
-  if (!id) {
-    id = crypto.randomUUID();
-    localStorage.setItem('fs_client_id', id);
-  }
-  return id;
-}
-
 export function Providers({ children }: { children: ReactNode }) {
   const [client, setClient] = useState<SyncClient | null>(null);
   const [token, setToken] = useState<string | null>(null);
@@ -27,7 +18,6 @@ export function Providers({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!token) return;
     const c = new SyncClient({
-      clientId: getClientId(),
       transport: new HttpTransport(API, token),
       storage: new LocalStorageSyncStorage('fs_state'),
     });

@@ -5,26 +5,31 @@ parts used) without connectivity; changes sync to an authoritative Postgres-back
 
 ## Run
 
+    cp .env.example .env             # local configuration, git-ignored
     docker compose up --build        # web :3000, api :3001, postgres :5432
 
 or locally:
 
+    cp .env.example .env
+    docker compose up -d postgres
     npm install
     npm run build:core
-    DATABASE_URL=postgres://... SEED_DEMO=true npm run build -w @fieldsync/server && npm start -w @fieldsync/server
+    npm run build -w @fieldsync/server && npm start -w @fieldsync/server
     npm run dev -w @fieldsync/web
 
-Server configuration: `apps/server/.env.example`. Demo tokens (with `SEED_DEMO=true`): `admin-token` (all
-sites), `tech-a-token` (North Plant), `tech-b-token` (South Plant).
+Configuration lives in one `.env` at the repository root; `.env.example` lists every variable with its meaning.
+The server, its integration tests, the web app and docker compose all read it, and a variable that is set in the
+real environment wins over the file (that is how CI and the containers are configured). Docker images never
+contain a `.env`. Demo tokens (with `SEED_DEMO=true`): `admin-token` (all sites), `tech-a-token` (North Plant),
+`tech-b-token` (South Plant).
 
 ### Checks
 
     docker compose up -d postgres
-    export DATABASE_URL=postgres://fieldsync:fieldsync@localhost:5432/fieldsync
     npm run lint && npm run typecheck && npm test
 
-Integration tests need `DATABASE_URL`. Without it they are skipped locally; in CI (`CI` set) a missing
-`DATABASE_URL` fails the run.
+Integration tests take `DATABASE_URL` from `.env` (or the environment). Without it they are skipped locally; in
+CI (`CI` set) a missing `DATABASE_URL` fails the run.
 
 ## Architecture
 
@@ -78,8 +83,8 @@ in `packages/sync-core/test/repro/`.
 | F11 | Authenticity | Bearer token accepted in the SSE query string; tokens stored in plaintext | `f11-token-in-url.integration.spec.ts` | open |
 | F12 | Access lifecycle | Revoked access and site moves never remove data from clients | `f12-revocation-move.integration.spec.ts` | moves fixed; revocation open |
 | F13 | Log lifecycle | GC by age with no floor or reload signal; new clients replay a truncated log | `f13-gc.integration.spec.ts` | open |
-| F14 | Client data loss | Pending queue not persisted; `lastMutationId` persisted only after pull | `f14-reload.spec.ts` | open |
-| F15 | Client data loss | Tabs share one `clientId` and storage blob with separate id counters | `f15-two-tabs.spec.ts` | open |
+| F14 | Client data loss | Pending queue not persisted; `lastMutationId` persisted only after pull | `f14-reload.spec.ts` | fixed |
+| F15 | Client data loss | Tabs share one `clientId` and storage blob with separate id counters | `f15-two-tabs.spec.ts` | ids fixed; real tabs open (IndexedDB, one syncing tab) |
 | F16 | Client data loss | Pending mutations dropped on push ack, before the pull delivers their effects | `f16-ack-flicker.spec.ts` | open |
 | F17 | Determinism | `ticket.create` generates its id and timestamps inside the mutator | `f17-determinism.spec.ts` | fixed |
 | F18 | Merge semantics | `ticket.update` overwrites title and description wholesale | `f18-field-merge.spec.ts` | fixed |
@@ -277,6 +282,34 @@ otherwise), and the push response's `lastMutationId` is read with the same condi
 
 **Alternatives considered.** Deriving the client id on the server (e.g. `userId + device`) would remove the
 check but breaks the client's ability to create its id offline before it has ever talked to the server.
+
+### F14 — a reload loses offline work and reuses mutation ids
+
+**What.** The queue of unsynced mutations lived only in memory, and `lastMutationId` was saved only after a
+successful pull. Mutation ids were computed as `lastMutationId + pending + 1`.
+
+**Why it is dangerous.** Closing the tab or a crash while offline silently discards everything the technician
+did since the last sync. Worse, a reload between "push acknowledged" and "pull done" starts numbering again
+from the old `lastMutationId`: the server answers `duplicate` for the new work and it is lost without any
+error.
+
+**Reproduce.** `packages/sync-core/test/repro/f14-reload.spec.ts`: two mutations, dispose, reopen on the same
+storage → both must still be queued and visible; a push is acknowledged, the pull fails, reopen, mutate → the
+new id must be above every id the server has seen.
+
+**Fix.** Storage became an asynchronous, transactional interface (`load`, `enqueue`, `commitPull`,
+`dismissRejection`, `resetClient`), and it owns the queue, the client id and the id counter. `enqueue` takes
+`nextMutationId` and appends the mutation in one atomic step, so an id is durable before it is ever sent and is
+never handed out twice. `commitPull` applies a page, moves the cursor and — on the last page only — drops
+acknowledged mutations and keeps rejected ones with their reason, all in one step guarded by the expected
+cursor. `mutate()` stays synchronous for the UI: the mutation shows at once from an in-memory "unsaved" list and
+gets its id when it is stored; nothing is pushed before that. The web app's `localStorage` backend migrates the
+starter's blob and adopts its `fs_client_id`, so an upgraded browser keeps its server-side identity (checked in
+a browser: the next mutation is accepted as number 5 of the old client).
+
+**Alternatives considered.** Persisting the in-memory structures after every change (the starter's `save`)
+keeps the race between "id handed out" and "id saved"; ids derived from a timestamp or random value would
+break the server's gap-free per-client ordering that duplicate detection relies on.
 
 ### F17 — non-deterministic `ticket.create`
 

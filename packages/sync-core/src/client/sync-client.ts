@@ -1,5 +1,5 @@
 import { MutationRejected, getMutator, type MutatorTx } from '../mutators';
-import type { SyncStorage } from '../storage/memory';
+import type { PersistedState, StoredMutation, SyncStorage } from '../storage/types';
 import type { Transport } from '../transport/http';
 import type { Cursor, EntityName, Mutation, MutatorName, Row } from '../protocol/types';
 
@@ -10,13 +10,12 @@ export interface Rejection {
   error: string;
 }
 
-/** `createdAt` is stamped once at enqueue time and reused as `ctx.now` on every replay. */
-interface PendingMutation extends Mutation {
-  createdAt: string;
-}
+/** Applied to the local view at once, but not yet in storage: it gets its id when it is stored. */
+type UnsavedMutation = Omit<StoredMutation, 'id'>;
 
 export interface SyncClientOptions {
-  clientId: string;
+  /** @deprecated Ignored: the storage owns the client id. Kept so existing callers still compile. */
+  clientId?: string;
   transport: Transport;
   storage: SyncStorage;
 }
@@ -45,7 +44,7 @@ class MapTx implements MutatorTx {
   }
 }
 
-function applyLocally(state: Map<string, Row>, m: PendingMutation): void {
+function applyLocally(state: Map<string, Row>, m: UnsavedMutation): void {
   try {
     getMutator(m.name)?.apply(new MapTx(state), m.args, { now: m.createdAt });
   } catch (err) {
@@ -54,13 +53,18 @@ function applyLocally(state: Map<string, Row>, m: PendingMutation): void {
 }
 
 export class SyncClient {
-  readonly clientId: string;
+  /** Resolves once the persisted state is loaded. Nothing is pushed or pulled before that. */
+  readonly ready: Promise<void>;
   private readonly transport: Transport;
   private readonly storage: SyncStorage;
+  private id = '';
   private base = new Map<string, Row>();
   private cursor: Cursor | null = null;
   private lastMutationId = 0;
-  private pending: PendingMutation[] = [];
+  private pending: StoredMutation[] = [];
+  private unsaved: UnsavedMutation[] = [];
+  /** Every step that reads or writes storage and updates memory from it runs here, one at a time. */
+  private writeChain: Promise<unknown>;
   private listeners = new Set<() => void>();
   private currentStatus: SyncStatus = 'idle';
   private rejected: Rejection[] = [];
@@ -70,16 +74,15 @@ export class SyncClient {
   private disposed = false;
 
   constructor(opts: SyncClientOptions) {
-    this.clientId = opts.clientId;
     this.transport = opts.transport;
     this.storage = opts.storage;
-    const saved = this.storage.load();
-    if (saved) {
-      // A v1 numeric cursor is meaningless to a v2 server: start over with a full pull.
-      this.cursor = typeof saved.cursor === 'string' ? saved.cursor : null;
-      this.lastMutationId = saved.lastMutationId;
-      this.base = new Map(Object.entries(saved.base));
-    }
+    this.ready = this.boot();
+    this.writeChain = this.ready;
+  }
+
+  /** Empty until `ready` has resolved. */
+  get clientId(): string {
+    return this.id;
   }
 
   get status(): SyncStatus {
@@ -87,7 +90,7 @@ export class SyncClient {
   }
 
   get pendingCount(): number {
-    return this.pending.length;
+    return this.pending.length + this.unsaved.length;
   }
 
   get rejections(): readonly Rejection[] {
@@ -104,22 +107,36 @@ export class SyncClient {
     return () => this.listeners.delete(listener);
   }
 
-  mutate(name: MutatorName, args: Record<string, unknown>): void {
-    const mutation: PendingMutation = {
-      id: this.lastMutationId + this.pending.length + 1,
-      name,
-      args,
-      createdAt: new Date().toISOString(),
-    };
-    this.pending.push(mutation);
+  /**
+   * Shows the mutation in the local view at once and queues it. Invalid arguments throw here. The returned
+   * promise resolves when the mutation is durable (stored with its id); callers may ignore it.
+   */
+  mutate(name: MutatorName, args: Record<string, unknown>): Promise<void> {
+    const def = getMutator(name);
+    if (!def) throw new MutationRejected('BAD_ARGS', `Unknown mutator ${String(name)}`);
+    def.parse(args);
+
+    const entry: UnsavedMutation = { name, args, createdAt: new Date().toISOString() };
+    this.unsaved.push(entry);
     this.emit();
-    void this.sync();
+    const durable = this.serial(async () => {
+      const stored = await this.storage.enqueue(entry);
+      this.unsaved = this.unsaved.filter((u) => u !== entry);
+      this.pending.push(stored);
+      this.emit();
+    });
+    durable.then(
+      () => void this.sync(),
+      () => undefined,
+    );
+    return durable;
   }
 
-  /** Server state with all unacknowledged local mutations applied on top. */
+  /** Server state, then the stored queue, then mutations still being stored. */
   view(): Map<string, Row> {
     const state = new Map(this.base);
     for (const m of this.pending) applyLocally(state, m);
+    for (const m of this.unsaved) applyLocally(state, m);
     return state;
   }
 
@@ -145,9 +162,31 @@ export class SyncClient {
     this.listeners.clear();
   }
 
+  private async boot(): Promise<void> {
+    this.adopt(await this.storage.load());
+    this.emit();
+  }
+
+  private adopt(s: PersistedState): void {
+    this.id = s.clientId;
+    this.base = s.base;
+    this.cursor = s.cursor;
+    this.lastMutationId = s.lastMutationId;
+    this.pending = s.pending;
+    for (const r of s.rejections) this.addRejection(r.mutation, r.message);
+  }
+
+  private serial<T>(step: () => Promise<T>): Promise<T> {
+    const run = this.writeChain.then(step);
+    this.writeChain = run.catch(() => undefined); // a failed step must not block the ones after it
+    return run;
+  }
+
   private async runSync(): Promise<void> {
     this.setStatus('syncing');
     try {
+      await this.ready;
+      await this.writeChain; // every local mutation is stored and has its id
       await this.push();
       await this.pull();
       this.setStatus('idle');
@@ -161,18 +200,18 @@ export class SyncClient {
     if (this.pending.length === 0) return;
     const batch = this.pending.slice(0, 100);
     const resp = await this.transport.push({
-      clientId: this.clientId,
+      clientId: this.id,
       mutations: batch.map(({ id, name, args }) => ({ id, name, args })),
     });
     const handled = new Set(resp.results.map((r) => r.id));
     for (const r of resp.results) {
       if (r.status === 'rejected') {
         const mutation = batch.find((m) => m.id === r.id);
-        if (mutation) this.rejected.push({ mutation, error: r.message ?? r.code ?? 'rejected' });
+        if (mutation) this.addRejection(mutation, r.message ?? r.code ?? 'rejected');
       }
     }
+    // Only the in-memory copy is dropped here (F16); storage keeps it until a pull reports it applied.
     this.pending = this.pending.filter((m) => !handled.has(m.id));
-    this.lastMutationId = Math.max(this.lastMutationId, resp.lastMutationId);
     this.emit();
   }
 
@@ -180,30 +219,30 @@ export class SyncClient {
     for (;;) {
       const resp = await this.transport.pull({
         cursor: this.cursor,
-        clientId: this.clientId,
+        clientId: this.id,
         ackedMutationId: this.lastMutationId,
         limit: 500,
       });
-      for (const change of resp.changes) {
-        const key = `${change.entity}/${change.id}`;
-        if (change.op === 'put' && change.data) this.base.set(key, change.data);
-        else this.base.delete(key);
-      }
-      this.cursor = resp.cursor;
-      if (resp.lastMutationId !== null) this.lastMutationId = Math.max(this.lastMutationId, resp.lastMutationId);
-      this.pending = this.pending.filter((m) => m.id > this.lastMutationId);
-      this.persist();
-      this.emit();
-      if (!resp.hasMore) break;
+      const committed = await this.serial(async () => {
+        const ok = await this.storage.commitPull({
+          expectedCursor: this.cursor,
+          cursor: resp.cursor,
+          changes: resp.changes,
+          lastMutationId: resp.lastMutationId,
+          rejections: resp.rejections,
+        });
+        // Also when the commit was refused: another client sharing the storage moved on; continue from there.
+        this.adopt(await this.storage.load());
+        this.emit();
+        return ok;
+      });
+      if (committed && !resp.hasMore) break;
     }
   }
 
-  private persist(): void {
-    this.storage.save({
-      cursor: this.cursor,
-      lastMutationId: this.lastMutationId,
-      base: Object.fromEntries(this.base),
-    });
+  private addRejection(mutation: Mutation, error: string): void {
+    if (this.rejected.some((r) => r.mutation.id === mutation.id)) return;
+    this.rejected.push({ mutation, error });
   }
 
   private setStatus(status: SyncStatus): void {

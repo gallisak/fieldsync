@@ -1,45 +1,14 @@
-import type { Cursor, Row } from '../protocol/types';
+import { WholeStateStorage, type WholeState } from './whole-state-storage';
 
-export interface Persisted {
-  cursor: Cursor | null;
-  lastMutationId: number;
-  base: Record<string, Row>;
-}
+/** In-memory storage. State is deep-copied in and out, so callers cannot change it through shared references. */
+export class MemoryStorage extends WholeStateStorage {
+  private state: WholeState | undefined;
 
-export interface SyncStorage {
-  load(): Persisted | null;
-  save(state: Persisted): void;
-}
-
-export class MemoryStorage implements SyncStorage {
-  private state: Persisted | null = null;
-
-  load(): Persisted | null {
-    return this.state ? structuredClone(this.state) : null;
+  protected read(): WholeState | undefined {
+    return this.state && structuredClone(this.state);
   }
 
-  save(state: Persisted): void {
+  protected write(state: WholeState): void {
     this.state = structuredClone(state);
-  }
-}
-
-export class LocalStorageSyncStorage implements SyncStorage {
-  constructor(private readonly key: string) {}
-
-  load(): Persisted | null {
-    try {
-      const raw = globalThis.localStorage.getItem(this.key);
-      return raw ? (JSON.parse(raw) as Persisted) : null;
-    } catch {
-      return null;
-    }
-  }
-
-  save(state: Persisted): void {
-    try {
-      globalThis.localStorage.setItem(this.key, JSON.stringify(state));
-    } catch {
-      // Storage may be full or unavailable; the client keeps working in memory.
-    }
   }
 }

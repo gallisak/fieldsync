@@ -51,11 +51,11 @@ describe('ticket mutators', () => {
 
   it('rejects an invalid status transition', () => {
     const tx = new FakeTx([['ticket', TICKET, ticket('done')]]);
-    try {
+    const act = () =>
       MUTATORS['ticket.setStatus'].apply(tx, { id: TICKET, siteId: SITE, from: 'done', to: 'in_progress' });
-    } catch (err) {
-      expect(err).toBeInstanceOf(MutationRejected);
-    }
+    expect(act).toThrow(MutationRejected);
+    expect(act).toThrow(expect.objectContaining({ code: 'INVALID_TRANSITION' }));
+    expect(tx.get('ticket', TICKET)?.status).toBe('done');
   });
 });
 

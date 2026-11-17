@@ -6,7 +6,9 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "test": "jest"
+    "test": "jest",
+    "test:unit": "jest --testPathIgnorePatterns sim",
+    "test:sim": "jest sim --passWithNoTests"
   },
   "jest": {
     "moduleFileExtensions": ["js", "json", "ts"],

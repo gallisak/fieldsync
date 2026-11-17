@@ -12,13 +12,16 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 10
     env:
+      CI: "true"
       DATABASE_URL: postgres://postgres:x@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 20 }
-      - run: npm install
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
-      - run: npm test
+      - run: npm run test:unit --workspaces --if-present
+      - run: npm run test:integration -w @fieldsync/server
+      - run: npm run test:sim --workspaces --if-present
       - run: npm run build

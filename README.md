@@ -65,6 +65,21 @@ CI (`CI` set) a missing `DATABASE_URL` fails the run.
 
 ### 7. Schema evolution
 
+**Protocol version on every request, not a handshake.** Every request carries `x-fieldsync-protocol`. When the
+version is outside `[MIN_PROTOCOL, PROTOCOL]`, `ProtocolGuard` answers `426 UPGRADE_REQUIRED` with
+`details: { min, current }`, before authentication. A missing or non-numeric header counts as version 1. The
+client then blocks with `blocked: 'upgrade'`: its timers and its stream stop, and storage, including the queue,
+is not touched. A newer build opened on the same storage pushes the queue.
+- *Why per request.* It is stateless: any instance behind a load balancer decides on its own, and no client can
+  skip the check. A deploy in the middle of a session is noticed at the very next request.
+- *Handshake endpoint* (ask once at start-up): one header less per request. But the server would have to
+  remember or trust what the client said, and an app left open across a deploy would keep using the old
+  protocol until it reloads.
+- *Cost:* a few bytes per request.
+
+Tests: `apps/server/test/protocol/upgrade.integration.spec.ts`, which sends old, missing, newer and malformed
+versions, with and without a token, to every guarded endpoint; and `packages/sync-core/test/client/upgrade.spec.ts`.
+
 ## Found issues
 
 Each issue is reproduced by an automated test that is committed as `it.failing` before the fix (red against

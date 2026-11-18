@@ -85,7 +85,7 @@ in `packages/sync-core/test/repro/`.
 | F10 | Authenticity | `clientId` ownership never checked on push or pull | `f10-client-ownership.integration.spec.ts` | fixed |
 | F11 | Authenticity | Bearer token accepted in the SSE query string; tokens stored in plaintext | `f11-token-in-url.integration.spec.ts` | fixed |
 | F12 | Access lifecycle | Revoked access and site moves never remove data from clients | `f12-revocation-move.integration.spec.ts` | fixed |
-| F13 | Log lifecycle | GC by age with no floor or reload signal; new clients replay a truncated log | `f13-gc.integration.spec.ts` | partly fixed |
+| F13 | Log lifecycle | GC by age with no floor or reload signal; new clients replay a truncated log | `f13-gc.integration.spec.ts` | fixed |
 | F14 | Client data loss | Pending queue not persisted; `lastMutationId` persisted only after pull | `f14-reload.spec.ts` | fixed |
 | F15 | Client data loss | Tabs share one `clientId` and storage blob with separate id counters | `f15-two-tabs.spec.ts` | fixed |
 | F16 | Client data loss | Pending mutations dropped on push ack, before the pull delivers their effects | `f16-ack-flicker.spec.ts` | fixed |
@@ -418,8 +418,12 @@ is missing.
 **Reproduce.** `apps/server/test/repro/f13-gc.integration.spec.ts`:
 - a database with 2 000 entities and an empty log: a new client must end with all 2 000. Before the fix it
   ended with 0;
-- after GC, a stale client and a new client must both equal the server. This one stays `it.failing` until part 2
-  (safe compaction).
+- after GC, a stale client and a new client must both equal the server;
+- a pull whose transaction started before GC keeps the page it read, and the next pull from its cursor must be
+  told that the cursor expired. Before the fix it got an empty delta and lost versions 6–10 without a sign.
+
+The simulation against Postgres with GC on fails 39 of 50 seeds (invariant 4) and every differential seed with
+the old `GcService`.
 
 **Fix, part 1: paged snapshot.**
 - *When.* `snapshotReason` (`packages/sync-core/src/protocol/cursor.ts`, shared by the server and the model)
@@ -456,6 +460,27 @@ is missing.
   `(entity, id) > (…)`.
 - Writing each page to storage as it arrives would let a reload resume, but would leave the base half replaced
   in between. Keeping the pages in memory costs one restart after a reload.
+
+**Fix, part 2: safe compaction.** `GcService.collect(cutoff = now − CHANGELOG_RETENTION_SECONDS)` runs as one
+transaction:
+- `pg_try_advisory_xact_lock(727002, hashtext(current_schema()))`; when another run holds it, this one returns.
+  The lock is per schema, so a run in one schema never makes another schema's run skip;
+- `cut = max(version)` of the log rows older than the cutoff. When there is one, the log rows and the entity
+  tombstones up to `cut` are deleted, and `min_retained_version` is raised to `cut` (never lowered). A pull reads
+  the floor and the log in one snapshot, so it sees either the old log or the new floor, never a gap;
+- rejections and `clients` rows are deleted after `CLIENT_RETENTION_DAYS` (90), not after the log retention (7
+  days). A client that was offline longer than the log is kept still learns why its mutation was refused, in the
+  same pull that answers it with a `cursor_expired` snapshot;
+- `sync_state` is updated last: writers take it last and hold it to commit, so taking it first would stall every
+  push for the whole collection.
+
+The interval timer skips a tick while a run is still going.
+
+**Alternatives considered.**
+- Keeping tombstones forever would let a stale client learn every deletion from the log, but the log is gone
+  anyway; the snapshot replaces the base, so tombstones older than the floor have no reader.
+- Deleting rejections with the log would make a long-offline client drop a refused mutation as if it had been
+  applied.
 
 ### F14 — a reload loses offline work and reuses mutation ids
 

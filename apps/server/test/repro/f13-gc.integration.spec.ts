@@ -26,7 +26,7 @@ describeDb('F13 change-log GC vs stale and new clients', () => {
     return c;
   };
 
-  it.failing('brings a stale client and a new client to the server state after GC', async () => {
+  it('brings a stale client and a new client to the server state after GC', async () => {
     const baseUrl = await listen(t.app);
     let mutationId = 0;
     const ids: string[] = [];
@@ -133,7 +133,7 @@ describeDb('F13 a pull racing GC', () => {
   });
   afterAll(() => t?.close());
 
-  it.failing('keeps the page it read, and the next pull learns that its cursor expired', async () => {
+  it('keeps the page it read, and the next pull learns that its cursor expired', async () => {
     for (let i = 1; i <= 10; i++) {
       await createTicket(t.http, {
         token: TOKENS.admin,

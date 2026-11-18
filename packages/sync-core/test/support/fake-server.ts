@@ -39,6 +39,7 @@ export class FakeServer {
       const writes: Change[] = [];
       const tx: MutatorTx = {
         get: (entity, id) => this.state.get(`${entity}/${id}`),
+        exists: (entity, id) => this.state.has(`${entity}/${id}`),
         scan: (entity, by) => [...this.state.values()].filter((r) => r.ticketId === by.ticketId && entity === 'part'),
         put: (entity: EntityName, id, row) => writes.push(this.change(entity, id, 'put', row)),
         del: (entity: EntityName, id) => writes.push(this.change(entity, id, 'del', null)),

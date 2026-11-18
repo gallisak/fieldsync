@@ -31,7 +31,10 @@ export interface MutatorCtx {
 
 /** State access given to a mutator. Reads are served only from rows loaded up front via reads()/scans(). */
 export interface MutatorTx {
+  /** `undefined` for a row that is missing or deleted. */
   get(entity: EntityName, id: string): Row | undefined;
+  /** Whether the id was ever written, even if the row has since been deleted (a client knows only live rows). */
+  exists(entity: EntityName, id: string): boolean;
   scan(entity: 'part', by: { ticketId: string }): Row[];
   put(entity: EntityName, id: string, row: Row): void;
   del(entity: EntityName, id: string): void;

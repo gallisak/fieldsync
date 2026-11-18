@@ -86,6 +86,22 @@ describe('ModelServer', () => {
     expect(s.lastVersion).toBe(2);
   });
 
+  it('keeps a deleted row in its site and its id taken', () => {
+    const s = model();
+    s.push(ADMIN, {
+      clientId: 'admin',
+      mutations: [
+        create(1, T1, B),
+        m(2, 'ticket.delete', { id: T1 }),
+        create(3, T2, A),
+        m(4, 'ticket.delete', { id: T2 }),
+      ],
+    });
+    const res = s.push(TECH, { clientId: 'c1', mutations: [create(1, T1, A), create(2, T2, A)] });
+    expect(res.results.map((r) => r.code)).toEqual(['NO_ACCESS', 'ALREADY_EXISTS']);
+    expect(s.liveRows()).toEqual([]);
+  });
+
   it('logs a move as a delete at the old site and a put at the new one, parts included, in one transaction', () => {
     const s = model();
     s.push(ADMIN, {
@@ -160,6 +176,26 @@ describe('ModelServer', () => {
       status: 400,
       code: 'BAD_REQUEST',
     });
+  });
+
+  it('answers with an access_changed snapshot when the sites changed since the cursor', () => {
+    const s = model();
+    s.push(ADMIN, { clientId: 'admin', mutations: [create(1, T1, A), create(2, T2, B)] });
+    const first = pull(s, TECH, 'c1');
+    expect(first).toMatchObject({ mode: 'delta' });
+
+    s.grant(TECH.id, B);
+    const granted = pull(s, TECH, 'c1', first.cursor);
+    expect(granted).toMatchObject({ mode: 'snapshot', reason: 'access_changed', hasMore: false });
+    expect(granted.changes.map((c) => [c.id, c.op, c.version])).toEqual([
+      [T1, 'put', 1],
+      [T2, 'put', 2],
+    ]);
+    expect(pull(s, TECH, 'c1', granted.cursor)).toMatchObject({ mode: 'delta', changes: [] });
+
+    s.revoke(TECH.id, A);
+    s.revoke(TECH.id, B);
+    expect(pull(s, TECH, 'c1', granted.cursor)).toMatchObject({ mode: 'snapshot', changes: [] });
   });
 
   it('gc drops the log up to the cut and the tombstones written there', () => {

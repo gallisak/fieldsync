@@ -1,5 +1,6 @@
-import { HttpTransport, MemoryStorage, SyncClient, type Mutation } from '@fieldsync/sync-core';
-import { DEMO, TOKENS, createTicket, listen, push, seed } from '../support/api';
+import { HttpTransport, MemoryStorage, SyncClient, type Change, type Mutation } from '@fieldsync/sync-core';
+import { randomUUID } from 'crypto';
+import { DEMO, TOKENS, createTicket, listen, pull, push, seed } from '../support/api';
 import { createTestApp, describeDb, type TestApp } from '../support/pg';
 
 /**
@@ -37,7 +38,7 @@ describeDb('F12 revocation and site moves reach the client', () => {
     return { client: c, ticketId };
   }
 
-  it.failing('removes all rows of a site whose access was revoked', async () => {
+  it('removes all rows of a site whose access was revoked', async () => {
     ({ client } = await techAClientWithOneTicket());
 
     await t.pool.query(`DELETE FROM user_sites WHERE user_id = $1 AND site_id = $2`, [DEMO.techA, DEMO.siteA]);
@@ -57,5 +58,48 @@ describeDb('F12 revocation and site moves reach the client', () => {
 
     await client.sync();
     expect(client.rows('ticket').map((r) => r.id)).not.toContain(ticketId);
+  });
+
+  it('delivers a move as deletes to the old site, puts to the new one, and both to a client that sees both', async () => {
+    const ticketId = await createTicket(t.http, {
+      token: TOKENS.admin,
+      clientId: 'admin',
+      mutationId: 1,
+      siteId: DEMO.siteA,
+      title: 'moving ticket',
+    });
+    const parts = [randomUUID(), randomUUID()].sort(); // the server visits parts in id order
+    await push(
+      t.http,
+      TOKENS.admin,
+      'admin',
+      parts.map((id, i) => ({
+        id: 2 + i,
+        name: 'part.add' as const,
+        args: { id, ticketId, name: `part ${i}`, quantity: 1 },
+      })),
+    );
+    const cursors = {
+      techA: (await pull(t.http, TOKENS.techA)).body.cursor,
+      techB: (await pull(t.http, TOKENS.techB)).body.cursor,
+      admin: (await pull(t.http, TOKENS.admin)).body.cursor,
+    };
+
+    await push(t.http, TOKENS.admin, 'admin', [
+      { id: 4, name: 'ticket.move', args: { id: ticketId, toSiteId: DEMO.siteB } },
+    ]);
+
+    const changes = async (token: string, cursor: string) =>
+      ((await pull(t.http, token, { cursor })).body.changes as Change[]).map((c) => [c.id, c.op, c.siteId]);
+    const ids = [ticketId, ...parts];
+    expect(await changes(TOKENS.techA, cursors.techA)).toEqual(ids.map((id) => [id, 'del', DEMO.siteA]));
+    expect(await changes(TOKENS.techB, cursors.techB)).toEqual(ids.map((id) => [id, 'put', DEMO.siteB]));
+    // Delete under the old site first, then put under the new one: applied in order, the row survives.
+    expect(await changes(TOKENS.admin, cursors.admin)).toEqual(
+      ids.flatMap((id) => [
+        [id, 'del', DEMO.siteA],
+        [id, 'put', DEMO.siteB],
+      ]),
+    );
   });
 });

@@ -59,6 +59,8 @@ export async function listen(app: INestApplication): Promise<string> {
 export interface OpenStream {
   status: number;
   req: ClientRequest;
+  /** Everything the stream has sent so far. */
+  received(): string;
 }
 
 /** Opens `GET /sync/stream` and resolves as soon as the response headers arrive; the body is left open. */
@@ -71,8 +73,10 @@ export function openStream(baseUrl: string, opts: { token?: string; query?: stri
       },
     });
     req.on('response', (res) => {
-      res.resume();
-      resolve({ status: res.statusCode ?? 0, req });
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk: string) => (body += chunk));
+      resolve({ status: res.statusCode ?? 0, req, received: () => body });
     });
     req.on('error', reject);
     req.end();
@@ -98,7 +102,11 @@ export async function createTicket(
 ): Promise<string> {
   const id = randomUUID();
   const res = await push(http, opts.token, opts.clientId, [
-    { id: opts.mutationId, name: 'ticket.create', args: { id, siteId: opts.siteId, title: opts.title, description: '' } },
+    {
+      id: opts.mutationId,
+      name: 'ticket.create',
+      args: { id, siteId: opts.siteId, title: opts.title, description: '' },
+    },
   ]);
   if (res.status >= 300 || res.body.results?.[0]?.status !== 'applied') {
     throw new Error(`createTicket: HTTP ${res.status} ${JSON.stringify(res.body)}`);

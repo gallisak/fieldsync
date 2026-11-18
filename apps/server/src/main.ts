@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import { PROTOCOL_HEADER } from '@fieldsync/sync-core';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ConfigError, loadConfig } from './config/env';
@@ -15,7 +16,10 @@ async function bootstrap() {
     process.exit(1);
   }
   const app = await NestFactory.create(AppModule);
-  app.enableCors({ origin: config.CORS_ORIGINS });
+  app.enableCors({
+    origin: config.CORS_ORIGINS,
+    allowedHeaders: ['authorization', 'content-type', PROTOCOL_HEADER, 'x-request-id'],
+  });
   app.enableShutdownHooks();
   await app.listen(config.PORT);
   // eslint-disable-next-line no-console

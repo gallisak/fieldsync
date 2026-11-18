@@ -38,7 +38,7 @@ interface Write {
   prevSite?: string;
 }
 
-type Page = Pick<PullResponse, 'mode' | 'changes' | 'cursor' | 'hasMore'>;
+type Page = Pick<PullResponse, 'mode' | 'reason' | 'changes' | 'cursor' | 'hasMore'>;
 
 class BufferedTx implements MutatorTx {
   readonly writes: Write[] = [];
@@ -50,6 +50,10 @@ class BufferedTx implements MutatorTx {
 
   get(entity: EntityName, id: string): Row | undefined {
     return this.loaded.get(`${entity}/${id}`)?.row;
+  }
+
+  exists(entity: EntityName, id: string): boolean {
+    return this.loaded.get(`${entity}/${id}`)?.siteId !== undefined;
   }
 
   scan(entity: 'part', by: { ticketId: string }): Row[] {
@@ -119,13 +123,12 @@ export class ModelServer implements SimServer {
   pull(user: AuthUser, q: PullParams): PullResponse {
     const sites = this.sitesOf(user);
     const fp = `${user.role === 'admin' ? '*' : ''}|${[...sites].sort().join(',')}`;
-    let cur: CursorData = { k: 'd', v: 0, fp };
+    let cur: CursorData | undefined;
     if (q.cursor) {
-      const decoded = decodeCursor(q.cursor);
-      if (!decoded) throw new TransportError('http', 400, 'BAD_REQUEST', undefined, 'Malformed cursor');
-      cur = decoded;
+      cur = decodeCursor(q.cursor) ?? undefined;
+      if (!cur) throw new TransportError('http', 400, 'BAD_REQUEST', undefined, 'Malformed cursor');
     }
-    const page = this.deltaPage(sites, cur.v, fp, q.limit);
+    const page = cur && cur.fp !== fp ? this.snapshotPage(sites, fp) : this.deltaPage(sites, cur?.v ?? 0, fp, q.limit);
 
     const own = q.clientId ? this.clients.get(q.clientId) : undefined;
     const mine = own !== undefined && own.userId === user.id;
@@ -257,9 +260,10 @@ export class ModelServer implements SimServer {
       }
     }
 
+    // A deleted row still belongs to its site.
     this.authorize(
       user,
-      [...loaded.values()].filter((l) => l.row !== undefined).map((l) => l.siteId as string),
+      [...loaded.values()].filter((l) => l.siteId !== undefined).map((l) => l.siteId as string),
     );
     const tx = new BufferedTx(loaded, scanned);
     def.apply(tx, m.args, { now: new Date(this.clock()).toISOString() });
@@ -320,6 +324,23 @@ export class ModelServer implements SimServer {
           : { row: undefined, siteId: w.prevSite as string, version },
       );
     });
+  }
+
+  /** `PullService.snapshotPage`: every live row of the user's sites, in version order, in one page. */
+  private snapshotPage(sites: Set<string>, fp: string): Page {
+    const live = [...this.entities]
+      .filter(([, e]) => e.row && sites.has(e.siteId))
+      .sort(([, a], [, b]) => a.version - b.version);
+    return {
+      mode: 'snapshot',
+      reason: 'access_changed',
+      changes: live.map(([key, e]) => {
+        const [entity, id] = key.split('/') as [EntityName, string];
+        return { version: e.version, entity, id, siteId: e.siteId, op: 'put', data: e.row ?? null };
+      }),
+      cursor: encodeCursor({ k: 'd', v: this.lastVersion, fp }),
+      hasMore: false,
+    };
   }
 
   /** `PullService.deltaPage`: a page never splits a transaction; the last page's cursor is `lastVersion`. */

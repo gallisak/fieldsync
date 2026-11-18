@@ -42,6 +42,13 @@ describe('ticket.create', () => {
     expect(tx.get('ticket', TICKET)).toEqual(ticket());
   });
 
+  it('rejects the id of a deleted ticket with ALREADY_EXISTS instead of reviving it', () => {
+    const tx = new MapTx();
+    tx.exists = (entity, id) => entity === 'ticket' && id === TICKET; // a tombstone: it exists, get() is undefined
+    expectRejected(tx, 'ticket.create', args, 'ALREADY_EXISTS');
+    expect(tx.all('ticket')).toEqual([]);
+  });
+
   it.each([
     ['a non-uuid id', { ...args, id: 'x' }],
     ['an empty title', { ...args, title: '   ' }],
@@ -95,7 +102,12 @@ describe('ticket.setStatus', () => {
 
   it('rejects a stale "from" with STATUS_CONFLICT and reports the current status', () => {
     const tx = new MapTx([['ticket', ticket({ status: 'done' })]]);
-    const err = expectRejected(tx, 'ticket.setStatus', { id: TICKET, from: 'open', to: 'in_progress' }, 'STATUS_CONFLICT');
+    const err = expectRejected(
+      tx,
+      'ticket.setStatus',
+      { id: TICKET, from: 'open', to: 'in_progress' },
+      'STATUS_CONFLICT',
+    );
     expect(err.details).toEqual({ current: 'done' });
   });
 
@@ -112,7 +124,12 @@ describe('ticket.setStatus', () => {
 describe('ticket.delete', () => {
   it('deletes the ticket and only its parts', () => {
     const other = part(3, { ticketId: '11111111-1111-4111-8111-999999999999' });
-    const tx = new MapTx([['ticket', ticket()], ['part', part(1)], ['part', part(2)], ['part', other]]);
+    const tx = new MapTx([
+      ['ticket', ticket()],
+      ['part', part(1)],
+      ['part', part(2)],
+      ['part', other],
+    ]);
     run(tx, 'ticket.delete', { id: TICKET });
     expect(tx.get('ticket', TICKET)).toBeUndefined();
     expect(tx.all('part')).toEqual([other]);
@@ -131,7 +148,11 @@ describe('ticket.delete', () => {
 
 describe('ticket.move', () => {
   it('moves the ticket and its parts to the target site', () => {
-    const tx = new MapTx([['ticket', ticket()], ['part', part(1)], ['part', part(2)]]);
+    const tx = new MapTx([
+      ['ticket', ticket()],
+      ['part', part(1)],
+      ['part', part(2)],
+    ]);
     run(tx, 'ticket.move', { id: TICKET, toSiteId: SITE_B }, LATER);
     expect(tx.get('ticket', TICKET)).toEqual(ticket({ siteId: SITE_B, updatedAt: LATER.now }));
     expect(tx.all('part')).toEqual([part(1, { siteId: SITE_B }), part(2, { siteId: SITE_B })]);

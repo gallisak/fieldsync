@@ -1,15 +1,16 @@
 import { Injectable } from '@nestjs/common';
 import type { Change, PullQuery, PullResponse } from '@fieldsync/sync-core';
 import type { PoolClient } from 'pg';
-import { accessibleSites } from './access';
-import type { AuthUser } from './auth';
+import { AccessService } from './access/access.service';
+import type { AuthUser } from './auth/auth.guard';
 import { Db } from './database/db.service';
-import { decodeCursor, encodeCursor, siteFingerprint, type CursorData } from './sync/pull/cursor';
+import { decodeCursor, encodeCursor } from './sync/pull/cursor';
 import { ChangeLogRepository, type LogState, type StoredLogRow } from './sync/repositories/change-log.repository';
 import { ClientRepository } from './sync/repositories/client.repository';
+import { EntityRepository } from './sync/repositories/entity.repository';
 import { RejectionRepository } from './sync/repositories/rejection.repository';
 
-type Page = Pick<PullResponse, 'mode' | 'changes' | 'cursor' | 'hasMore'>;
+type Page = Pick<PullResponse, 'mode' | 'reason' | 'changes' | 'cursor' | 'hasMore'>;
 
 const toChange = (r: StoredLogRow): Change => ({
   version: r.version,
@@ -24,7 +25,9 @@ const toChange = (r: StoredLogRow): Change => ({
 export class PullService {
   constructor(
     private readonly db: Db,
+    private readonly access: AccessService,
     private readonly log: ChangeLogRepository,
+    private readonly entities: EntityRepository,
     private readonly clients: ClientRepository,
     private readonly rejections: RejectionRepository,
   ) {}
@@ -36,12 +39,17 @@ export class PullService {
   async pull(user: AuthUser, q: PullQuery): Promise<PullResponse> {
     return this.db.tx(
       async (c) => {
-        const sites = await accessibleSites(c, user);
-        const fp = siteFingerprint(user, sites);
+        const sites = [...(await this.access.accessibleSites(c, user))];
+        const fp = this.access.fingerprint(user, sites);
         const state = await this.log.state(c);
-        // Snapshot mode (P6.1) is not there yet: no cursor means a delta from 0, still filtered by site.
-        const cur = q.cursor ? decodeCursor(q.cursor) : { k: 'd' as const, v: 0, fp };
-        const page = await this.deltaPage(c, sites, cur, state, fp, q.limit);
+        // No cursor is still a delta from 0, filtered by site; P6.1 makes it a snapshot.
+        const cur = q.cursor ? decodeCursor(q.cursor) : undefined;
+        // The user's sites changed since the cursor was issued: the base may hold rows that are no longer
+        // visible or lack rows that now are, which no delta can say, so the client gets a snapshot (F12).
+        const page =
+          cur && cur.fp !== fp
+            ? await this.snapshotPage(c, sites, state, fp)
+            : await this.deltaPage(c, sites, cur?.v ?? 0, state, fp, q.limit);
 
         const own = q.clientId ? await this.clients.find(c, q.clientId) : undefined;
         const mine = own !== undefined && own.userId === user.id;
@@ -57,10 +65,21 @@ export class PullService {
     );
   }
 
+  /** Every live row of the user's sites in one page. P6.1 replaces it with a paged snapshot. */
+  private async snapshotPage(c: PoolClient, sites: string[], state: LogState, fp: string): Promise<Page> {
+    return {
+      mode: 'snapshot',
+      reason: 'access_changed',
+      changes: await this.entities.live(c, sites),
+      cursor: encodeCursor({ k: 'd', v: state.lastVersion, fp }),
+      hasMore: false,
+    };
+  }
+
   private async deltaPage(
     c: PoolClient,
     sites: string[],
-    cur: CursorData,
+    after: number,
     state: LogState,
     fp: string,
     limit: number,
@@ -73,7 +92,7 @@ export class PullService {
     });
     if (sites.length === 0) return done(state.lastVersion, [], false);
 
-    let rows = await this.log.after(c, sites, cur.v, limit + 1);
+    let rows = await this.log.after(c, sites, after, limit + 1);
     const hasMore = rows.length > limit;
     if (hasMore) {
       rows = rows.slice(0, limit);

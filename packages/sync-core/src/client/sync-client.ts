@@ -93,6 +93,10 @@ class MapTx implements MutatorTx {
     return this.state.get(`${entity}/${id}`);
   }
 
+  exists(entity: EntityName, id: string): boolean {
+    return this.state.has(`${entity}/${id}`);
+  }
+
   put(entity: EntityName, id: string, row: Row): void {
     this.state.set(`${entity}/${id}`, row);
   }
@@ -516,7 +520,8 @@ export class SyncClient {
         const ok = await this.storage.commitPull({
           expectedCursor: this.cursor,
           cursor: resp.cursor,
-          changes: resp.changes,
+          // A snapshot replaces the base (rows of a site the user lost disappear); the queue stays on top.
+          ...(resp.mode === 'snapshot' ? { snapshot: resp.changes } : { changes: resp.changes }),
           lastMutationId: resp.lastMutationId,
           rejections: resp.rejections,
         });

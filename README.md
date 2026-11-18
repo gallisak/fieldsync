@@ -78,11 +78,11 @@ in `packages/sync-core/test/repro/`.
 | F5 | Poison mutation | A rejected mutation fails the whole push with 500 and blocks the queue forever | `f05-poison.integration.spec.ts` | fixed |
 | F6 | Poison mutation | `constructor` / `__proto__` resolve to prototype members of the mutator registry → 500 | `f06-proto-name.integration.spec.ts` | fixed |
 | F7 | Poison mutation | Out-of-order id answered with a generic 400 the client retries unchanged | `f07-out-of-order.integration.spec.ts` | fixed |
-| F8 | Write access | Authorization trusts the client-supplied `siteId` | `f08-write-access.integration.spec.ts` | fixed for live rows; tombstoned ids open |
+| F8 | Write access | Authorization trusts the client-supplied `siteId` | `f08-write-access.integration.spec.ts` | fixed |
 | F9 | Read access | Site filter applied only when `cursor = 0` | `f09-read-access.integration.spec.ts` | fixed |
 | F10 | Authenticity | `clientId` ownership never checked on push or pull | `f10-client-ownership.integration.spec.ts` | fixed |
-| F11 | Authenticity | Bearer token accepted in the SSE query string; tokens stored in plaintext | `f11-token-in-url.integration.spec.ts` | open |
-| F12 | Access lifecycle | Revoked access and site moves never remove data from clients | `f12-revocation-move.integration.spec.ts` | moves fixed; revocation open |
+| F11 | Authenticity | Bearer token accepted in the SSE query string; tokens stored in plaintext | `f11-token-in-url.integration.spec.ts` | fixed |
+| F12 | Access lifecycle | Revoked access and site moves never remove data from clients | `f12-revocation-move.integration.spec.ts` | fixed |
 | F13 | Log lifecycle | GC by age with no floor or reload signal; new clients replay a truncated log | `f13-gc.integration.spec.ts` | open |
 | F14 | Client data loss | Pending queue not persisted; `lastMutationId` persisted only after pull | `f14-reload.spec.ts` | fixed |
 | F15 | Client data loss | Tabs share one `clientId` and storage blob with separate id counters | `f15-two-tabs.spec.ts` | fixed |
@@ -268,6 +268,37 @@ committed earlier in the same request stay committed and are reported by the nex
 **Alternatives considered.** Silently skipping ahead would accept a gap and could reorder a client's own
 mutations; applying out-of-order ids would break the "one id, applied at most once" rule the dedup relies on.
 
+### F8 — writes authorized against the site the client names
+
+**What.** The starter authorized a mutation by the `siteId` in its arguments, before any row was loaded. A
+site-A technician could update, extend or delete a site-B ticket by sending `siteId: A`. Once that was fixed
+for live rows, a deleted row was still skipped. `ticket.create` with the id of a deleted site-B ticket revived
+it in site A, and the id of one's own deleted ticket revived it as well.
+
+**Why it is dangerous.** Any technician can rewrite or destroy any site's data just by knowing an id. A revived
+id hands an old ticket's identity, its parts' `ticketId` and the clients' memory of it, to unrelated content.
+
+**Reproduce.** `apps/server/test/repro/f08-write-access.integration.spec.ts`:
+- update, part.add and delete of a site-B ticket with `siteId: A` must all be `NO_ACCESS`, with the row
+  unchanged;
+- `ticket.create` with the id of a site-B ticket, live or deleted, must be `NO_ACCESS`;
+- `ticket.create` with the id of one's own deleted ticket must be `ALREADY_EXISTS`;
+- creating in, or moving to, a site the user cannot see must be `NO_ACCESS`.
+
+**Fix.** `AccessService` reads the user's sites once per mutation, inside its transaction and after the row
+locks, so a revocation committed earlier is always seen. Before the mutator runs, every loaded row that
+exists must be in those sites, deleted rows included: the site is the one stored with the row, never one from
+the arguments. After it runs, every row it writes must be in them; that covers the target site of a create
+or a move. The executor gives the mutator `undefined` for a deleted row, but `MutatorTx.exists()` still
+reports the id as taken, and `ticket.create` refuses any id that exists in any state. Every refusal is
+`NO_ACCESS` with the same message as "not found", so ids of other sites cannot be probed. The same rules are in
+the simulation's `ModelServer`. `AccessService.fingerprint()` replaces the cursor module's copy, so there is
+one format.
+
+**Alternatives considered.** Checking access in each mutator would repeat it seven times and could not see
+deleted rows. Allowing a revived id would need a new identity in the log (a `del` and a `put` of unrelated
+content) that clients cannot tell apart from an edit.
+
 ### F9 — incremental pulls return every site
 
 **What.** The site filter was `cursor = 0 ? sites : null`: only the very first pull was restricted to the
@@ -277,7 +308,8 @@ user's sites; every pull with a cursor returned all sites' changes.
 a data leak that looks correct in a quick test, because the initial load is filtered.
 
 **Reproduce.** `apps/server/test/repro/f09-read-access.integration.spec.ts`: a site-A technician pulls, a
-site-B ticket is created, the incremental pull must not contain site B.
+site-B ticket is created, the incremental pull must not contain site B. A technician with no sites gets an
+empty last page without the log being read.
 
 **Fix.** There is one delta query and it always takes the site list: a `LATERAL` per accessible site
 (`site_id = s AND version > cursor ORDER BY version LIMIT n`), merged by version. A user with no sites gets an
@@ -296,7 +328,9 @@ user's `clientId` and pull with it.
 real mutations are later answered `duplicate` and silently lost; pulling with it leaked the owner's
 `lastMutationId`.
 
-**Reproduce.** `apps/server/test/repro/f10-client-ownership.integration.spec.ts`.
+**Reproduce.** `apps/server/test/repro/f10-client-ownership.integration.spec.ts`: another user pushing under a
+technician's `clientId` gets `403 CLIENT_MISMATCH`. Pulling with it shows neither the owner's `lastMutationId`
+nor the owner's rejections.
 
 **Fix.** Push locks the client row and answers `403 CLIENT_MISMATCH` when it belongs to another user, before
 anything else. Pull reports `lastMutationId` and rejections only for the caller's own client (`0` and `[]`
@@ -304,6 +338,71 @@ otherwise), and the push response's `lastMutationId` is read with the same condi
 
 **Alternatives considered.** Deriving the client id on the server (e.g. `userId + device`) would remove the
 check but breaks the client's ability to create its id offline before it has ever talked to the server.
+
+### F11 — the stream token in the URL, every token in plaintext
+
+**What.** `/sync/stream` accepted the bearer token as `?token=`, because `EventSource` cannot send headers.
+`users.token` held every token as plain text.
+
+**Why it is dangerous.** A token in a URL is written to access logs and proxy logs, kept in browser history
+and sent on as `Referer`. With plaintext storage, a database dump, a backup or a read-only SQL login hands out
+every account.
+
+**Reproduce.** `apps/server/test/repro/f11-token-in-url.integration.spec.ts`:
+- a stream opened with `?token=` must get `401`;
+- no `users` row may contain a token;
+- the app's log output during a push and a stream connect must contain no token.
+
+**Fix.** `AuthGuard` (`src/auth/`) reads the token only from `Authorization: Bearer`, and the query-string branch
+is gone. Users are looked up by `sha256(token)`. Migration `004_token_hash.sql` hashes the existing tokens in
+place and drops the plaintext column; checked on a database that had plaintext users. The demo seed stores
+hashes too. CORS allows exactly the headers the clients send: `authorization`, `content-type`,
+`x-fieldsync-protocol` and `x-request-id`. The web client has opened its stream with `fetch` and the header
+since the poke-stream work. A headless-Chrome run against the rebuilt containers shows the stream request with
+the header and no token in the URL, a poke arriving in under 200 ms, and no CORS errors. Controllers take the
+user from `@CurrentUser()`.
+
+**Alternatives considered.** A short-lived, single-use stream ticket in the URL would keep `EventSource` but adds
+an endpoint and server state. A cookie would bring CSRF and cross-site `SameSite` concerns. A slow password
+hash (bcrypt, argon2) protects low-entropy secrets; the tokens are random, so a fast hash is enough and costs
+nothing per request. The demo tokens are guessable on purpose.
+
+### F12 — revoked access and site moves never leave the client
+
+**What.** Pull only ever sent changes from the log. When a technician lost a site, no change said so, and its
+rows stayed on the device. When the technician gained a site, its existing rows were older than the cursor and
+never arrived. A ticket moved to another site kept appearing in the old site's clients.
+
+**Why it is dangerous.** A revoked user keeps reading, and showing, data they no longer may see. A new
+assignment looks empty until rows happen to change.
+
+**Reproduce.** `apps/server/test/repro/f12-revocation-move.integration.spec.ts`:
+- a client whose site is revoked must end with none of its rows;
+- a client that loses a ticket to a site move must drop it;
+- a move must reach the old site as deletes of the ticket and each part, the new site as puts, and a client
+  that sees both as a delete followed by a put, so the row survives.
+
+`apps/server/test/access/admin.integration.spec.ts` drives the same flow through the admin endpoints. The
+simulation runs with access changes on.
+
+**Fix.**
+- *Moves.* A write that changes a row's site logs a delete under the old site before the put under the new
+  one, in the same transaction.
+- *Access changes.* Every cursor carries a fingerprint of the site set it was issued for. When the user's
+  current sites give a different fingerprint, pull answers `mode: 'snapshot', reason: 'access_changed'` with
+  every live row of the current sites, in version order. A paged snapshot replaces this single page later.
+- *Client.* A snapshot page replaces the client's base entirely. Queued mutations stay and are replayed on
+  top; one that touches a row now out of reach is rejected `NO_ACCESS` and lands in rejections.
+- *Admin endpoints.* `POST`/`DELETE /admin/users/:userId/sites/:siteId` (admin only, each in a transaction)
+  change access. They then re-read the user's sites for their open streams and poke them, so the snapshot
+  arrives at once.
+- *Model.* `ModelServer` answers snapshots the same way; the differential test against Postgres covers them.
+
+**Alternatives considered.**
+- Logging a `del` for every row of a revoked site would write one log row per entity per revocation, and
+  still give a granted site nothing to send.
+- Revocation tombstones keyed by user would need their own lifecycle.
+- A snapshot costs one read of the user's sites when access changes, which is rare.
 
 ### F14 — a reload loses offline work and reuses mutation ids
 
@@ -597,13 +696,14 @@ Each step is one random action:
 - the passage of time;
 - a network partition;
 - a device crash and restart on the same storage;
-- opening or closing a second tab.
+- opening or closing a second tab;
+- granting or revoking a technician's site, or an admin moving a ticket to another site.
 
 The network loses requests and responses, delivers duplicates, cuts a batch midway and delays every hop by up to
 400 ms, so answers overtake each other. After the last step the network heals and every client settles.
 
 Checked after every step:
-1. no client holds a row of a site its user could not see;
+1. after a pull, no client holds a row outside the sites its user had when the server computed that pull;
 2. no mutation is applied twice;
 3. a client's cursor never goes backwards, except through a snapshot.
 
@@ -633,19 +733,21 @@ rejection codes. Timestamps are left out of the comparison, because the model us
 uses the transaction time. A server call is awaited in full before anything else happens, so a seed replays
 exactly on Postgres too.
 
-Access changes (F12) and change-log garbage collection (F13) are not simulated yet. With them switched on,
-every seed fails on invariant 1 or 4, which is those two defects.
+Change-log garbage collection (F13) is not simulated yet: with it switched on, every seed fails on
+invariant 4, which is that defect.
 
 **Regression seeds** (`packages/sync-core/test/sim/regression-seeds.ts`). They run first. Each entry is the
 smallest failing run found when that one fix was reverted on its own, which is evidence that the simulation
-catches it. The second column shows how many of seeds 1–100 failed with that fix reverted.
+catches it. Each entry also keeps the flags it was found with. The "Seeds 1–100 failing" column shows how
+many of seeds 1–100 failed with that fix reverted.
 
-| Seed | Steps | Seeds 1–100 failing | Found |
-|---|---|---|---|
-| 30 | 1 | 100 | F4: a server that does not deduplicate applies a retried mutation twice |
-| 56 | 3 | 100 | F5: a rejection that does not advance the client blocks its queue |
-| 91 | 2 | 68 | F15: a follower tab that ignores `state-changed` keeps a stale base |
-| 86 | 27 | 41 | F15: a leader that ignores `queue-changed` never pushes another tab's mutation |
+| Seed | Steps | Access changes | Seeds 1–100 failing | Found |
+|---|---|---|---|---|
+| 30 | 1 | off | 100 | F4: a server that does not deduplicate applies a retried mutation twice |
+| 56 | 3 | off | 100 | F5: a rejection that does not advance the client blocks its queue |
+| 91 | 2 | off | 68 | F15: a follower tab that ignores `state-changed` keeps a stale base |
+| 86 | 27 | off | 41 | F15: a leader that ignores `queue-changed` never pushes another tab's mutation |
+| 31 | 12 | on | 100 | F12: without a snapshot on an access change, a client keeps revoked rows and misses granted ones (server or client side reverted) |
 
 ## Load results
 

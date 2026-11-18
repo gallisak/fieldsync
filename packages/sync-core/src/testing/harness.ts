@@ -1,6 +1,6 @@
 import { SyncClient } from '../client/sync-client';
 import { ALLOWED_TRANSITIONS, MutationRejected } from '../mutators';
-import type { MutatorName, Row, TicketStatus } from '../protocol/types';
+import type { MutatorName, PullResponse, Row, TicketStatus } from '../protocol/types';
 import { MemoryStorage } from '../storage/memory';
 import type { StoredMutation } from '../storage/types';
 import { MemoryTabHub } from '../tabs/memory';
@@ -9,7 +9,7 @@ import { checkConvergence, checkSafety } from './invariants';
 import { ModelServer } from './model-server';
 import { chance, int, mulberry32, pick, uuidFrom } from './prng';
 import { Scheduler } from './scheduler';
-import type { AuthUser, SimServer } from './server-port';
+import type { AuthUser, SimServer, SyncServerPort } from './server-port';
 import { SimNetwork, type Faults } from './sim-network';
 
 export interface SimConfig {
@@ -41,7 +41,7 @@ export interface Device {
   tabs: SyncClient[];
   /** `clientId/mutationId` of every mutation this device stored, under the client id in force at the time. */
   issued: string[];
-  /** The user's sites when a pull response was last delivered to this device. */
+  /** The user's sites as the server saw them when it computed the last pull page this device received. */
   sitesAtLastPull: Set<string>;
   /** Bookkeeping for invariant 3. */
   lastCursorVersion: number;
@@ -284,14 +284,31 @@ export async function runSimulation(
   const s = new Scheduler();
   const server = makeServer(() => s.now);
   const world = await seedWorld(rng, server);
-  const net = new SimNetwork(rng, s, server, cfg.faults);
+  // Each page's cursor carries the fingerprint of the site set it was computed for, so equal cursors mean equal
+  // sets: the sites recorded here by cursor are the ones "as of that pull" for invariant 1.
+  const served = new Map<string, Set<string>>();
+  const port: SyncServerPort = {
+    push: (user, req) => server.push(user, req),
+    pull: (user, q) => {
+      const sites = server.sitesOf(user);
+      const record = (res: PullResponse) => {
+        served.set(res.cursor, sites);
+        return res;
+      };
+      const res = server.pull(user, q);
+      return res instanceof Promise ? res.then(record) : record(res);
+    },
+  };
+  const net = new SimNetwork(rng, s, port, cfg.faults);
   const openTab = (d: Device) => {
     const network = net.transportFor(d.index, d.user);
     const transport: Transport = {
       push: (req, signal) => network.push(req, signal),
       pull: async (q, signal) => {
         const res = await network.pull(q, signal);
-        d.sitesAtLastPull = server.sitesOf(d.user);
+        const sites = served.get(res.cursor);
+        if (!sites) throw new Error(`a pull answered with a cursor the server never issued: ${res.cursor}`);
+        d.sitesAtLastPull = sites;
         if (res.mode === 'snapshot') d.snapshotSinceLastCheck = true;
         return res;
       },

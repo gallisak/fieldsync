@@ -8,7 +8,7 @@ import { CLIENT_INTERNALS, type ClientInternals } from './internals';
 import { openPokeStream } from './sse';
 import type { BlockReason, SyncFacts } from './status';
 import type { Transport } from '../transport/http';
-import type { Cursor, EntityName, MutatorName, Row } from '../protocol/types';
+import type { Change, Cursor, EntityName, MutatorName, Row } from '../protocol/types';
 
 /** A mutation the server refused, with the full mutation so the UI can offer to fix and retry it. */
 export type Rejection = StoredRejection;
@@ -508,20 +508,39 @@ export class SyncClient {
     void this.sync();
   }
 
+  /**
+   * Pulls until the client holds the server's state. The pages of a snapshot are collected in memory and
+   * committed with its last one, so storage never holds part of a snapshot (a reload starts it over). A delta
+   * pull always follows a snapshot: it brings what changed while the snapshot was paged.
+   */
   private async pull(): Promise<void> {
+    let cursor = this.cursor;
+    let staged: Change[] | undefined;
     for (;;) {
-      this.setFacts({ phase: 'pulling' });
+      this.setFacts({ phase: staged ? 'resyncing' : 'pulling' });
       const resp = await this.transport.pull(
-        { cursor: this.cursor, clientId: this.id, ackedMutationId: this.lastMutationId, limit: 500 },
+        { cursor, clientId: this.id, ackedMutationId: this.lastMutationId, limit: 500 },
         this.abort.signal,
       );
       this.setFacts({ connection: 'online' });
+      let snapshot: Change[] | undefined;
+      if (resp.mode === 'snapshot') {
+        // A first page (it has a reason) starts over: rows staged from a snapshot the server restarted are dropped.
+        if (resp.reason || !staged) staged = [...resp.changes];
+        else staged.push(...resp.changes);
+        if (resp.hasMore) {
+          cursor = resp.cursor;
+          continue;
+        }
+        snapshot = staged;
+      }
+      staged = undefined;
       const committed = await this.serial(async () => {
         const ok = await this.storage.commitPull({
           expectedCursor: this.cursor,
           cursor: resp.cursor,
           // A snapshot replaces the base (rows of a site the user lost disappear); the queue stays on top.
-          ...(resp.mode === 'snapshot' ? { snapshot: resp.changes } : { changes: resp.changes }),
+          ...(snapshot ? { snapshot } : { changes: resp.changes }),
           lastMutationId: resp.lastMutationId,
           rejections: resp.rejections,
         });
@@ -530,8 +549,9 @@ export class SyncClient {
         this.emit();
         return ok;
       });
+      cursor = this.cursor;
       if (committed) this.tabs?.post({ t: 'state-changed' });
-      if (committed && !resp.hasMore) break;
+      if (committed && !resp.hasMore && !snapshot) break;
     }
   }
 

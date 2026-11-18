@@ -270,6 +270,9 @@ async function perform(a: Action, sim: Sim): Promise<void> {
   }
 }
 
+/** The page size clients ask for: small, so snapshots and deltas take several pulls and writes land between them. */
+const PAGE_LIMIT = 3;
+
 /**
  * Runs `steps` random actions against a server (`ModelServer` unless `makeServer` gives another) over a faulty
  * network, checking safety after each, then heals the network, lets every client settle and checks convergence;
@@ -305,10 +308,11 @@ export async function runSimulation(
     const transport: Transport = {
       push: (req, signal) => network.push(req, signal),
       pull: async (q, signal) => {
-        const res = await network.pull(q, signal);
+        const res = await network.pull({ ...q, limit: PAGE_LIMIT }, signal);
         const sites = served.get(res.cursor);
         if (!sites) throw new Error(`a pull answered with a cursor the server never issued: ${res.cursor}`);
-        d.sitesAtLastPull = sites;
+        // A snapshot page with more to come is only staged in memory; the base still reflects the earlier sites.
+        if (res.mode === 'delta' || !res.hasMore) d.sitesAtLastPull = sites;
         if (res.mode === 'snapshot') d.snapshotSinceLastCheck = true;
         return res;
       },

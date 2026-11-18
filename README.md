@@ -41,7 +41,9 @@ CI (`CI` set) a missing `DATABASE_URL` fails the run.
 
 1. The client queues named mutations with a per-client monotonic id and applies them optimistically.
 2. `POST /sync/push` sends the queue; the server applies each mutation in a transaction.
-3. `GET /sync/pull?cursor=N&clientId=…` returns changes with `version > N` for accessible sites.
+3. `GET /sync/pull?cursor=…&clientId=…` answers for the user's sites with the changes after the cursor
+   (`mode: 'delta'`). When no delta can bring the client up to date (no cursor, changed sites, a collected log, an
+   unknown version), it answers with a paged snapshot of every live row (`mode: 'snapshot'`), then a delta.
 4. `GET /sync/stream` emits `poke` events so clients pull promptly. The client reads it with `fetch` (the token goes
    in the `Authorization` header, never in the URL), reconnects with backoff and syncs after every reconnect.
 
@@ -83,7 +85,7 @@ in `packages/sync-core/test/repro/`.
 | F10 | Authenticity | `clientId` ownership never checked on push or pull | `f10-client-ownership.integration.spec.ts` | fixed |
 | F11 | Authenticity | Bearer token accepted in the SSE query string; tokens stored in plaintext | `f11-token-in-url.integration.spec.ts` | fixed |
 | F12 | Access lifecycle | Revoked access and site moves never remove data from clients | `f12-revocation-move.integration.spec.ts` | fixed |
-| F13 | Log lifecycle | GC by age with no floor or reload signal; new clients replay a truncated log | `f13-gc.integration.spec.ts` | open |
+| F13 | Log lifecycle | GC by age with no floor or reload signal; new clients replay a truncated log | `f13-gc.integration.spec.ts` | partly fixed |
 | F14 | Client data loss | Pending queue not persisted; `lastMutationId` persisted only after pull | `f14-reload.spec.ts` | fixed |
 | F15 | Client data loss | Tabs share one `clientId` and storage blob with separate id counters | `f15-two-tabs.spec.ts` | fixed |
 | F16 | Client data loss | Pending mutations dropped on push ack, before the pull delivers their effects | `f16-ack-flicker.spec.ts` | fixed |
@@ -390,7 +392,7 @@ simulation runs with access changes on.
   one, in the same transaction.
 - *Access changes.* Every cursor carries a fingerprint of the site set it was issued for. When the user's
   current sites give a different fingerprint, pull answers `mode: 'snapshot', reason: 'access_changed'` with
-  every live row of the current sites, in version order. A paged snapshot replaces this single page later.
+  every live row of the current sites. Since F13 the snapshot is paged.
 - *Client.* A snapshot page replaces the client's base entirely. Queued mutations stay and are replayed on
   top; one that touches a row now out of reach is rejected `NO_ACCESS` and lands in rejections.
 - *Admin endpoints.* `POST`/`DELETE /admin/users/:userId/sites/:siteId` (admin only, each in a transaction)
@@ -403,6 +405,57 @@ simulation runs with access changes on.
   still give a granted site nothing to send.
 - Revocation tombstones keyed by user would need their own lifecycle.
 - A snapshot costs one read of the user's sites when access changes, which is rare.
+
+### F13 — a collected change log leaves new and stale clients incomplete
+
+**What.** GC deleted log rows by age, with no floor and no signal to clients. A client built its base only from
+the log. A new client (no cursor) replayed the log from version 0, which no longer held the older entities. A
+client whose cursor predated the cut silently missed whatever had been collected.
+
+**Why it is dangerous.** A new device shows only the rows that changed recently, and nothing says that the rest
+is missing.
+
+**Reproduce.** `apps/server/test/repro/f13-gc.integration.spec.ts`:
+- a database with 2 000 entities and an empty log: a new client must end with all 2 000. Before the fix it
+  ended with 0;
+- after GC, a stale client and a new client must both equal the server. This one stays `it.failing` until part 2
+  (safe compaction).
+
+**Fix, part 1: paged snapshot.**
+- *When.* `snapshotReason` (`packages/sync-core/src/protocol/cursor.ts`, shared by the server and the model)
+  decides, in this order:
+  - no cursor → `initial`;
+  - the cursor's site fingerprint differs → `access_changed`;
+  - `v < min_retained_version` → `cursor_expired`;
+  - `v > last_version` → `cursor_ahead`;
+  - otherwise the pull goes on from the cursor: a delta, or the next page of a snapshot.
+
+  A snapshot in progress restarts from its first page for the same reasons: the sites changed, or GC collected
+  the log that its delta would need.
+- *Pages.* `SnapshotService` pins the first page at `v = last_version`, read in the same transaction. It reads
+  the live rows of the user's sites in primary-key order `(entity, id)`, starting after the previous page's
+  key. A middle page's cursor is `{ k: 's', v, after: [entity, id], fp }`, and the last page's is the delta
+  cursor `{ k: 'd', v, fp }`. `reason` is set on the first page only.
+- *Acknowledgement.* Each page is read in its own transaction, so later pages may hold rows newer than `v`.
+  Mutations committed after `v` are delivered only by the delta that follows. So the last page acknowledges
+  (`lastMutationId`, rejections) only when nothing was committed since `v`. Otherwise it sends
+  `lastMutationId: null` and the delta acknowledges, the same rule as F2 and F16.
+- *Client.* The pages are collected in memory (`phase: 'resyncing'`); storage is not touched until the last
+  page. That page commits the whole snapshot as the new base, with the queue on top. A reload mid-snapshot
+  starts over, and a page with a `reason` starts the collection over. After a snapshot the client always pulls
+  once more: the delta from `v` replays what changed while the pages were read. Every change is a full row, so
+  a replayed one is harmless.
+- *Model.* `ModelServer` pages in the same order with the same rules. In the simulation clients ask for 3-row
+  pages, so snapshots span several pulls with writes landing between them.
+
+**Alternatives considered.**
+- One transaction held across all pages (a `WITH HOLD` cursor or an exported snapshot) would make every page
+  consistent with `v`. But it keeps a transaction open, and holds back vacuum, for as long as a slow client
+  pages.
+- Paging in version order needs another index on `entities`; the primary key already serves
+  `(entity, id) > (…)`.
+- Writing each page to storage as it arrives would let a reload resume, but would leave the base half replaced
+  in between. Keeping the pages in memory costs one restart after a reload.
 
 ### F14 — a reload loses offline work and reuses mutation ids
 
@@ -603,7 +656,8 @@ depended on how the garbage happened to parse. It also made any client bug in cu
 answered 200.
 
 **Fix.** The cursor is now opaque: `base64url(JSON)` of `{ k: 'd', v, fp }` (`fp` identifies the site set it
-was issued for). `decodeCursor` validates it with zod and anything else is `400 BAD_REQUEST`. All query
+was issued for). Inside a paged snapshot it is `{ k: 's', v, after, fp }`, where `after` must be an entity key
+(F13). `decodeCursor` validates it with zod and anything else is `400 BAD_REQUEST`. All query
 parameters go through `pullQuerySchema` (`limit` 1–500, `ackedMutationId` ≥ 0), so other garbage is a 400 as
 well instead of being clamped or defaulted.
 
@@ -700,7 +754,8 @@ Each step is one random action:
 - granting or revoking a technician's site, or an admin moving a ticket to another site.
 
 The network loses requests and responses, delivers duplicates, cuts a batch midway and delays every hop by up to
-400 ms, so answers overtake each other. After the last step the network heals and every client settles.
+400 ms, so answers overtake each other. Clients pull 3 rows per page, so snapshots and deltas span several pulls
+and writes land between the pages. After the last step the network heals and every client settles.
 
 Checked after every step:
 1. after a pull, no client holds a row outside the sites its user had when the server computed that pull;

@@ -179,7 +179,8 @@ describe('rebase of pending mutations', () => {
         }),
         mode: 'snapshot',
         reason: 'access_changed',
-      });
+      })
+      .replyPull(page([], 's2', { hasMore: false, lastMutationId: 0 }));
     const client = open(storage, transport);
     await client.ready;
 
@@ -190,6 +191,67 @@ describe('rebase of pending mutations', () => {
     expect(state.pending.map((m) => m.id)).toEqual([1]);
     expect([...client.view().keys()].sort()).toEqual([`ticket/${A}`, `ticket/${D}`]);
     expect(client.view().get(`ticket/${A}`)).toMatchObject({ title: 'mine', description: 'server text' });
+  });
+
+  it('stages a paged snapshot in memory, commits it with the last page, then pulls the delta after it', async () => {
+    const storage = await seeded([ticket(A, { title: 'old title' }), ticket(B)]);
+    const lastPage = deferred<PullResponse>();
+    const transport = new ScriptedTransport().replyPull(
+      {
+        ...page([put(3, ticket(D))], 's1', { hasMore: true, lastMutationId: null }),
+        mode: 'snapshot',
+        reason: 'cursor_expired',
+      },
+      () => lastPage.promise,
+      page([put(9, ticket(D, { title: 'changed while paging' }))], 'd2', { hasMore: false, lastMutationId: 0 }),
+    );
+    const client = open(storage, transport);
+    await client.ready;
+
+    const synced = client.sync();
+    await flush();
+    // Mid-snapshot: nothing is stored, the old base is still shown, and the client says it is resyncing.
+    expect(client.facts.phase).toBe('resyncing');
+    expect((await storage.load()).cursor).toBe('c0');
+    expect([...client.view().keys()].sort()).toEqual([`ticket/${A}`, `ticket/${B}`]);
+
+    lastPage.resolve({
+      ...page([put(5, ticket(A, { title: 'server title' }))], 'd1', { hasMore: false, lastMutationId: 0 }),
+      mode: 'snapshot',
+    });
+    await synced;
+
+    expect(transport.callsOf('pull').map((c) => (c.args[0] as { cursor: string }).cursor)).toEqual(['c0', 's1', 'd1']);
+    const state = await storage.load();
+    expect(state.cursor).toBe('d2');
+    expect([...state.base.keys()].sort()).toEqual([`ticket/${A}`, `ticket/${D}`]);
+    expect(state.base.get(`ticket/${A}`)).toMatchObject({ title: 'server title' });
+    expect(state.base.get(`ticket/${D}`)).toMatchObject({ title: 'changed while paging' });
+    expect(client.facts.phase).toBe('idle');
+  });
+
+  it('drops the rows staged from a snapshot the server restarted', async () => {
+    const storage = await seeded([ticket(A)]);
+    const transport = new ScriptedTransport().replyPull(
+      {
+        ...page([put(2, ticket(B))], 's1', { hasMore: true, lastMutationId: null }),
+        mode: 'snapshot',
+        reason: 'initial',
+      },
+      // The user's sites changed between the pages: the server starts over, with a reason on the new first page.
+      {
+        ...page([put(3, ticket(D))], 'd1', { hasMore: false, lastMutationId: 0 }),
+        mode: 'snapshot',
+        reason: 'access_changed',
+      },
+      page([], 'd1', { hasMore: false, lastMutationId: 0 }),
+    );
+    const client = open(storage, transport);
+    await client.ready;
+
+    await client.sync();
+
+    expect([...(await storage.load()).base.keys()]).toEqual([`ticket/${D}`]);
   });
 
   it('drops exactly the acknowledged mutations and replays the rest on the new base', async () => {

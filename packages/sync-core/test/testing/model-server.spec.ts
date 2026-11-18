@@ -1,4 +1,12 @@
-import { TransportError, type Cursor, type Mutation, type MutatorName, type PullResponse } from '../../src';
+import {
+  TransportError,
+  decodeCursor,
+  encodeCursor,
+  type Cursor,
+  type Mutation,
+  type MutatorName,
+  type PullResponse,
+} from '../../src';
 import { ModelServer, type AuthUser } from '../../src/testing';
 
 const A = '11111111-1111-4111-8111-111111111111';
@@ -25,6 +33,9 @@ const create = (id: number, ticket: string, siteId: string) =>
   m(id, 'ticket.create', { id: ticket, siteId, title: 'title', description: '' });
 const pull = (s: ModelServer, user: AuthUser, clientId: string, cursor: Cursor | null = null, limit = 500, acked = 0) =>
   s.pull(user, { cursor, clientId, ackedMutationId: acked, limit });
+/** A delta cursor at version 0 for the user's current sites: the pull reads the whole log, not a snapshot. */
+const fromZero = (s: ModelServer, user: AuthUser): Cursor =>
+  encodeCursor({ k: 'd', v: 0, fp: decodeCursor(pull(s, user, 'probe').cursor)!.fp });
 const failure = (fn: () => unknown): TransportError => {
   try {
     fn();
@@ -117,13 +128,13 @@ describe('ModelServer', () => {
       [6, 3, 'part', 'put', B],
     ]);
     expect(s.entities.get(`ticket/${T1}`)).toMatchObject({ siteId: B, version: 4 });
-    expect(pull(s, TECH, 'c1').changes.map((c) => [c.id, c.op])).toEqual([
+    expect(pull(s, TECH, 'c1', fromZero(s, TECH)).changes.map((c) => [c.id, c.op])).toEqual([
       [T1, 'put'],
       [P1, 'put'],
       [T1, 'del'],
       [P1, 'del'],
     ]);
-    expect(pull(s, OTHER, 'c2').changes.map((c) => [c.id, c.op])).toEqual([
+    expect(pull(s, OTHER, 'c2', fromZero(s, OTHER)).changes.map((c) => [c.id, c.op])).toEqual([
       [T1, 'put'],
       [P1, 'put'],
     ]);
@@ -143,7 +154,7 @@ describe('ModelServer', () => {
     });
 
     const pages: PullResponse[] = [];
-    let cursor: Cursor | null = null;
+    let cursor = fromZero(s, TECH);
     do {
       pages.push(pull(s, TECH, 'c1', cursor, 1));
       cursor = pages[pages.length - 1].cursor;
@@ -182,7 +193,7 @@ describe('ModelServer', () => {
     const s = model();
     s.push(ADMIN, { clientId: 'admin', mutations: [create(1, T1, A), create(2, T2, B)] });
     const first = pull(s, TECH, 'c1');
-    expect(first).toMatchObject({ mode: 'delta' });
+    expect(first).toMatchObject({ mode: 'snapshot', reason: 'initial' });
 
     s.grant(TECH.id, B);
     const granted = pull(s, TECH, 'c1', first.cursor);
@@ -196,6 +207,87 @@ describe('ModelServer', () => {
     s.revoke(TECH.id, A);
     s.revoke(TECH.id, B);
     expect(pull(s, TECH, 'c1', granted.cursor)).toMatchObject({ mode: 'snapshot', changes: [] });
+  });
+
+  it('pages a snapshot in (entity, id) order, pinned at one version; reason on the first page, acks on the last', () => {
+    const s = model();
+    s.push(TECH, {
+      clientId: 'c1',
+      mutations: [
+        create(1, T2, A),
+        create(2, T1, A),
+        m(3, 'part.add', { id: P1, ticketId: T1, name: 'f', quantity: 1 }),
+      ],
+    });
+    s.push(OTHER, { clientId: 'c2', mutations: [create(1, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa0', B)] });
+
+    const first = pull(s, TECH, 'c1', null, 2);
+    expect(first).toMatchObject({ mode: 'snapshot', reason: 'initial', hasMore: true, lastMutationId: null });
+    expect(first.changes.map((c) => [c.entity, c.id, c.version])).toEqual([
+      ['part', P1, 3],
+      ['ticket', T1, 2],
+    ]);
+    expect(decodeCursor(first.cursor)).toMatchObject({ k: 's', v: 4, after: ['ticket', T1] });
+
+    const last = pull(s, TECH, 'c1', first.cursor, 2);
+    expect(last).toMatchObject({ mode: 'snapshot', hasMore: false, lastMutationId: 3, rejections: [] });
+    expect(last).not.toHaveProperty('reason');
+    expect(last.changes.map((c) => c.id)).toEqual([T2]);
+    expect(decodeCursor(last.cursor)).toMatchObject({ k: 'd', v: 4 });
+  });
+
+  it('does not ack on the last snapshot page when the log moved while paging; the delta after it does', () => {
+    const s = model();
+    s.push(TECH, { clientId: 'c1', mutations: [create(1, T1, A), create(2, T2, A)] });
+    const first = pull(s, TECH, 'c1', null, 1);
+    s.push(TECH, {
+      clientId: 'c1',
+      mutations: [m(3, 'ticket.update', { id: T1, patch: { title: 'changed' } }), m(4, 'ticket.delete', { id: T2 })],
+    });
+
+    const last = pull(s, TECH, 'c1', first.cursor, 1);
+    expect(last).toMatchObject({ mode: 'snapshot', changes: [], hasMore: false, lastMutationId: null, rejections: [] });
+    expect(decodeCursor(last.cursor)).toMatchObject({ k: 'd', v: 2 });
+    const delta = pull(s, TECH, 'c1', last.cursor);
+    expect(delta).toMatchObject({ mode: 'delta', lastMutationId: 4 });
+    expect(delta.changes.map((c) => [c.id, c.op])).toEqual([
+      [T1, 'put'],
+      [T2, 'del'],
+    ]);
+  });
+
+  it('restarts a snapshot whose sites changed, or whose log was collected, while it was paged', () => {
+    const s = model();
+    s.push(ADMIN, { clientId: 'admin', mutations: [create(1, T1, A), create(2, T2, A)] });
+
+    const first = pull(s, TECH, 'c1', null, 1);
+    s.grant(TECH.id, B);
+    const regranted = pull(s, TECH, 'c1', first.cursor, 1);
+    expect(regranted).toMatchObject({ mode: 'snapshot', reason: 'access_changed', hasMore: true });
+    expect(regranted.changes.map((c) => c.id)).toEqual([T1]);
+
+    s.push(ADMIN, { clientId: 'admin', mutations: [m(3, 'ticket.update', { id: T2, patch: { title: 'x' } })] });
+    s.gc(3);
+    const expired = pull(s, TECH, 'c1', regranted.cursor, 1);
+    expect(expired).toMatchObject({ mode: 'snapshot', reason: 'cursor_expired', hasMore: true });
+    expect(decodeCursor(expired.cursor)).toMatchObject({ k: 's', v: 3, after: ['ticket', T1] });
+  });
+
+  it('answers a delta cursor below the retained log or beyond the last version with a snapshot', () => {
+    const s = model();
+    s.push(TECH, { clientId: 'c1', mutations: [create(1, T1, A), create(2, T2, A)] });
+    const { fp } = decodeCursor(fromZero(s, TECH))!;
+    s.gc(1);
+    expect(pull(s, TECH, 'c1', encodeCursor({ k: 'd', v: 0, fp }))).toMatchObject({
+      mode: 'snapshot',
+      reason: 'cursor_expired',
+    });
+    expect(pull(s, TECH, 'c1', encodeCursor({ k: 'd', v: 1, fp }))).toMatchObject({ mode: 'delta' });
+    expect(pull(s, TECH, 'c1', encodeCursor({ k: 'd', v: 2, fp }))).toMatchObject({ mode: 'delta' });
+    expect(pull(s, TECH, 'c1', encodeCursor({ k: 'd', v: 3, fp }))).toMatchObject({
+      mode: 'snapshot',
+      reason: 'cursor_ahead',
+    });
   });
 
   it('gc drops the log up to the cut and the tombstones written there', () => {

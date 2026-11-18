@@ -1,4 +1,4 @@
-import { DEMO, TOKENS, createTicket, pull, seed } from '../support/api';
+import { DEMO, TOKENS, pull, push, seed } from '../support/api';
 import { createTestApp, describeDb, type TestApp } from '../support/pg';
 
 /**
@@ -33,13 +33,20 @@ describeDb('F2 lastMutationId vs paged changes', () => {
   afterAll(() => t?.close());
 
   it('does not acknowledge a mutation on a page that lacks its changes', async () => {
-    await createTicket(t.http, {
-      token: TOKENS.admin,
-      clientId: 'c1',
-      mutationId: 1,
-      siteId: DEMO.siteA,
-      title: 'created by mutation 1',
-    });
+    // The highest id, so the row is on the last page by key (snapshot) as well as by version (delta).
+    const created = await push(t.http, TOKENS.admin, 'c1', [
+      {
+        id: 1,
+        name: 'ticket.create',
+        args: {
+          id: 'ffffffff-ffff-4fff-bfff-ffffffffffff',
+          siteId: DEMO.siteA,
+          title: 'created by mutation 1',
+          description: '',
+        },
+      },
+    ]);
+    expect(created.body.results[0].status).toBe('applied');
 
     const page1 = await pull(t.http, TOKENS.admin, { clientId: 'c1', limit: 500 });
     expect(page1.status).toBe(200);

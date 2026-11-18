@@ -13,6 +13,7 @@ import { PushService } from './push.service';
 import { ClientRepository } from './sync/repositories/client.repository';
 import { EntityRepository } from './sync/repositories/entity.repository';
 import { RejectionRepository } from './sync/repositories/rejection.repository';
+import { SnapshotService } from './sync/pull/snapshot.service';
 import { MutationExecutor } from './sync/push/mutation-executor';
 import { ChangeLogRepository } from './sync/repositories/change-log.repository';
 import { StreamService } from './stream.service';
@@ -32,6 +33,7 @@ import { SyncController } from './sync.controller';
     EntityRepository,
     ClientRepository,
     RejectionRepository,
+    SnapshotService,
     PullService,
     StreamService,
     GcService,

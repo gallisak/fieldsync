@@ -118,7 +118,7 @@ describeDb('F13 a new client on a database whose log was collected', () => {
     await t?.close();
   });
 
-  it.failing('gets all 2 000 entities', async () => {
+  it('gets all 2 000 entities', async () => {
     client = new SyncClient({
       transport: new HttpTransport(await listen(t.app), TOKENS.admin),
       storage: new MemoryStorage(),

@@ -1,5 +1,5 @@
 import { MutationRejected, getMutator, type MutatorTx } from '../mutators';
-import { decodeCursor, encodeCursor, type CursorData } from '../protocol/cursor';
+import { decodeCursor, encodeCursor, snapshotReason, type CursorData } from '../protocol/cursor';
 import type {
   Change,
   EntityName,
@@ -10,6 +10,7 @@ import type {
   PushRequest,
   PushResponse,
   Row,
+  SnapshotReason,
 } from '../protocol/types';
 import { TransportError } from '../transport/errors';
 import type { PullParams } from '../transport/http';
@@ -38,7 +39,8 @@ interface Write {
   prevSite?: string;
 }
 
-type Page = Pick<PullResponse, 'mode' | 'reason' | 'changes' | 'cursor' | 'hasMore'>;
+/** `settles`: the page may acknowledge mutations, as in `PullPage`. */
+type Page = Pick<PullResponse, 'mode' | 'reason' | 'changes' | 'cursor' | 'hasMore'> & { settles: boolean };
 
 class BufferedTx implements MutatorTx {
   readonly writes: Write[] = [];
@@ -128,15 +130,20 @@ export class ModelServer implements SimServer {
       cur = decodeCursor(q.cursor) ?? undefined;
       if (!cur) throw new TransportError('http', 400, 'BAD_REQUEST', undefined, 'Malformed cursor');
     }
-    const page = cur && cur.fp !== fp ? this.snapshotPage(sites, fp) : this.deltaPage(sites, cur?.v ?? 0, fp, q.limit);
+    const reason = snapshotReason(cur, fp, this);
+    const page = reason
+      ? this.snapshotPage(sites, fp, { reason }, q.limit)
+      : cur?.k === 's'
+        ? this.snapshotPage(sites, fp, cur, q.limit)
+        : this.deltaPage(sites, cur?.v ?? 0, fp, q.limit);
 
+    const { settles, ...response } = page;
     const own = q.clientId ? this.clients.get(q.clientId) : undefined;
     const mine = own !== undefined && own.userId === user.id;
-    const final = !page.hasMore;
     return {
-      ...page,
-      lastMutationId: !final ? null : mine ? own.last : 0,
-      rejections: final && mine ? this.rejectionsAfter(q.clientId, q.ackedMutationId) : [],
+      ...response,
+      lastMutationId: !settles ? null : mine ? own.last : 0,
+      rejections: settles && mine ? this.rejectionsAfter(q.clientId, q.ackedMutationId) : [],
     };
   }
 
@@ -326,20 +333,36 @@ export class ModelServer implements SimServer {
     });
   }
 
-  /** `PullService.snapshotPage`: every live row of the user's sites, in version order, in one page. */
-  private snapshotPage(sites: Set<string>, fp: string): Page {
-    const live = [...this.entities]
-      .filter(([, e]) => e.row && sites.has(e.siteId))
-      .sort(([, a], [, b]) => a.version - b.version);
-    return {
-      mode: 'snapshot',
-      reason: 'access_changed',
-      changes: live.map(([key, e]) => {
+  /** `SnapshotService.page`: live rows of the user's sites in (entity, id) order, pinned at one version. */
+  private snapshotPage(
+    sites: Set<string>,
+    fp: string,
+    start: { reason: SnapshotReason } | { v: number; after: [EntityName, string] },
+    limit: number,
+  ): Page {
+    const v = 'reason' in start ? this.lastVersion : start.v;
+    const after = 'reason' in start ? undefined : `${start.after[0]}/${start.after[1]}`;
+    // `entity/id` keys sort as (entity, id) does: `/` sorts below every letter of an entity name.
+    const rows = [...this.entities]
+      .filter(([key, e]) => e.row && sites.has(e.siteId) && (after === undefined || key > after))
+      .sort(([a], [b]) => (a < b ? -1 : 1))
+      .slice(0, limit + 1)
+      .map(([key, e]): Change => {
         const [entity, id] = key.split('/') as [EntityName, string];
         return { version: e.version, entity, id, siteId: e.siteId, op: 'put', data: e.row ?? null };
-      }),
-      cursor: encodeCursor({ k: 'd', v: this.lastVersion, fp }),
-      hasMore: false,
+      });
+    const hasMore = rows.length > limit;
+    const changes = hasMore ? rows.slice(0, limit) : rows;
+    const last = changes[changes.length - 1];
+    return {
+      mode: 'snapshot',
+      ...('reason' in start ? { reason: start.reason } : {}),
+      changes,
+      cursor: hasMore
+        ? encodeCursor({ k: 's', v, after: [last.entity, last.id], fp })
+        : encodeCursor({ k: 'd', v, fp }),
+      hasMore,
+      settles: !hasMore && v === this.lastVersion,
     };
   }
 
@@ -350,6 +373,7 @@ export class ModelServer implements SimServer {
       changes: rows.map(toChange),
       cursor: encodeCursor({ k: 'd', v, fp }),
       hasMore,
+      settles: !hasMore,
     });
     if (sites.size === 0) return page(this.lastVersion, [], false);
 

@@ -53,9 +53,11 @@ describeDb('concurrency on real Postgres', () => {
       }
     };
 
+    // The cursor of the still empty database: every reader reads the log from its start, not a snapshot.
+    const start: string = (await pull(http, TOKENS.admin)).body.cursor;
     const reader = async (): Promise<number[]> => {
       const versions: number[] = [];
-      let cursor: string | undefined;
+      let cursor = start;
       for (;;) {
         // Read the flag before pulling: only a pull that started after the last commit may end the loop.
         const finished = writersDone;

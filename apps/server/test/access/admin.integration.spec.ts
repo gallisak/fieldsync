@@ -42,7 +42,7 @@ describeDb('admin access endpoints', () => {
       title: 'site-A ticket',
     });
     const before = await pull(t.http, TOKENS.techB, { clientId: 'tech-b' });
-    expect(before.body).toMatchObject({ mode: 'delta', changes: [] });
+    expect(before.body).toMatchObject({ mode: 'snapshot', reason: 'initial', changes: [] });
 
     expect((await call('post', techBOnA, TOKENS.admin)).status).toBe(204);
     expect((await call('post', techBOnA, TOKENS.admin)).status).toBe(204);

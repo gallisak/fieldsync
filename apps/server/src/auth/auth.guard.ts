@@ -1,6 +1,7 @@
 import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
 import type { Request } from 'express';
 import { Db } from '../database/db.service';
+import { requestContext } from '../common/request-context';
 import { tokenHash } from './token-hash';
 
 export interface AuthUser {
@@ -25,6 +26,8 @@ export class AuthGuard implements CanActivate {
     ]);
     if (rows.length === 0) throw new UnauthorizedException();
     req.user = rows[0];
+    const context = requestContext.getStore();
+    if (context) context.userId = req.user.id;
     return true;
   }
 }

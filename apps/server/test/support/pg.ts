@@ -1,10 +1,12 @@
 import 'reflect-metadata';
 import { randomBytes } from 'crypto';
-import type { INestApplication, LoggerService } from '@nestjs/common';
+import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { Logger } from 'nestjs-pino';
 import { Pool } from 'pg';
 import request from 'supertest';
 import { AppModule } from '../../src/app.module';
+import { LOG_DESTINATION } from '../../src/common/logging';
 import { APP_CONFIG, parseConfig } from '../../src/config/env';
 import { Db } from '../../src/database/db.service';
 
@@ -49,7 +51,7 @@ export interface TestApp {
 
 export async function createTestApp(
   env: Record<string, string> = {},
-  opts: { logger?: LoggerService } = {},
+  opts: { logs?: Record<string, unknown>[] } = {},
 ): Promise<TestApp> {
   const connectionString = requireDatabaseUrl();
   if (!connectionString) throw new Error('createTestApp() needs DATABASE_URL');
@@ -61,14 +63,22 @@ export async function createTestApp(
   // libpq `options` in the URL pins every pooled connection to the private schema.
   const url = new URL(connectionString);
   url.searchParams.set('options', `-c search_path=${schema}`);
-  const config = parseConfig({ ...env, DATABASE_URL: url.toString(), SEED_DEMO: 'false' });
+  const config = parseConfig({
+    LOG_LEVEL: opts.logs ? 'info' : 'silent',
+    ...env,
+    DATABASE_URL: url.toString(),
+    SEED_DEMO: 'false',
+  });
 
   try {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(APP_CONFIG)
       .useValue(config)
+      .overrideProvider(LOG_DESTINATION)
+      .useValue({ write: (line: string) => void opts.logs?.push(JSON.parse(line)) })
       .compile();
-    const app = moduleRef.createNestApplication({ logger: opts.logger ?? false });
+    const app = moduleRef.createNestApplication({ bufferLogs: true });
+    app.useLogger(app.get(Logger));
     await app.init();
 
     return {

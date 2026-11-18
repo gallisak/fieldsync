@@ -23,6 +23,7 @@ export interface StoredLogRow {
   op: 'put' | 'del';
   data: Row | null;
   clientId: string | null;
+  createdAt: Date;
 }
 
 export interface LogState {
@@ -39,9 +40,10 @@ interface DbLogRow {
   op: 'put' | 'del';
   data: Row | null;
   client_id: string | null;
+  created_at: Date;
 }
 
-const COLUMNS = 'version, tx_seq, site_id, entity, entity_id, op, data, client_id';
+const COLUMNS = 'version, tx_seq, site_id, entity, entity_id, op, data, client_id, created_at';
 
 const fromDb = (r: DbLogRow): StoredLogRow => ({
   version: Number(r.version),
@@ -52,6 +54,7 @@ const fromDb = (r: DbLogRow): StoredLogRow => ({
   op: r.op,
   data: r.data,
   clientId: r.client_id,
+  createdAt: r.created_at,
 });
 
 @Injectable()

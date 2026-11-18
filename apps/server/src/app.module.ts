@@ -9,7 +9,10 @@ import { requestContext, requestIdOf } from './common/request-context';
 import { ConfigModule } from './config/config.module';
 import { Db } from './database/db.service';
 import { GcService } from './gc.service';
-import { HealthController } from './health.controller';
+import { HealthController } from './observability/health.controller';
+import { MetricsController } from './observability/metrics.controller';
+import { SyncMetricsInterceptor } from './observability/metrics.interceptor';
+import { MetricsService } from './observability/metrics.service';
 import { PullService } from './pull.service';
 import { PushService } from './push.service';
 import { ClientRepository } from './sync/repositories/client.repository';
@@ -23,7 +26,7 @@ import { SyncController } from './sync.controller';
 
 @Module({
   imports: [ConfigModule, loggerModule],
-  controllers: [SyncController, AccessAdminController, HealthController],
+  controllers: [SyncController, AccessAdminController, HealthController, MetricsController],
   providers: [
     { provide: APP_FILTER, useClass: ApiExceptionFilter },
     Db,
@@ -39,6 +42,8 @@ import { SyncController } from './sync.controller';
     PullService,
     StreamService,
     GcService,
+    MetricsService,
+    SyncMetricsInterceptor,
   ],
 })
 export class AppModule implements NestModule {

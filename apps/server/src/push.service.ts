@@ -12,6 +12,7 @@ import type { PoolClient } from 'pg';
 import type { AuthUser } from './auth/auth.guard';
 import { ApiError } from './common/errors';
 import { withContext } from './common/request-context';
+import { MetricsService } from './observability/metrics.service';
 import { Db, isTransient } from './database/db.service';
 import { MutationExecutor } from './sync/push/mutation-executor';
 import { ClientRepository } from './sync/repositories/client.repository';
@@ -27,6 +28,7 @@ export class PushService {
     private readonly executor: MutationExecutor,
     private readonly clients: ClientRepository,
     private readonly rejections: RejectionRepository,
+    private readonly metrics: MetricsService,
   ) {
     logger.setContext(PushService.name);
   }
@@ -38,6 +40,8 @@ export class PushService {
         const started = performance.now();
         const applied = await this.applyOne(user, req.clientId, m);
         const { status, code } = applied.result;
+        this.metrics.mutations.inc({ status });
+        if (code && status === 'rejected') this.metrics.rejected.inc({ code });
         this.logger.info({ status, code, durationMs: Math.round(performance.now() - started) }, 'mutation');
         return applied;
       });

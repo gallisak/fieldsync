@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Query, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, Res, UseGuards, UseInterceptors } from '@nestjs/common';
 import { pullQuerySchema, pushRequestSchema, type PullQuery, type PushRequest } from '@fieldsync/sync-core';
 import type { Response } from 'express';
 import { AccessService } from './access/access.service';
@@ -6,6 +6,7 @@ import { AuthGuard, type AuthUser } from './auth/auth.guard';
 import { CurrentUser } from './auth/current-user.decorator';
 import { ProtocolGuard } from './common/protocol.guard';
 import { ZodPipe } from './common/zod.pipe';
+import { SyncMetricsInterceptor } from './observability/metrics.interceptor';
 import { Db } from './database/db.service';
 import { PullService } from './pull.service';
 import { PushService } from './push.service';
@@ -31,12 +32,14 @@ export class SyncController {
 
   @Post('sync/push')
   @UseGuards(ProtocolGuard, AuthGuard)
+  @UseInterceptors(SyncMetricsInterceptor)
   push(@CurrentUser() user: AuthUser, @Body(new ZodPipe(pushRequestSchema)) body: PushRequest) {
     return this.pushService.push(user, body);
   }
 
   @Get('sync/pull')
   @UseGuards(ProtocolGuard, AuthGuard)
+  @UseInterceptors(SyncMetricsInterceptor)
   pull(@CurrentUser() user: AuthUser, @Query(new ZodPipe(pullQuerySchema)) query: PullQuery) {
     return this.pullService.pull(user, query);
   }

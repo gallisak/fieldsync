@@ -17,7 +17,6 @@ const LOCK_ORDER: Record<EntityName, number> = { ticket: 0, part: 1 };
 /** The same answer as for a row that does not exist, so ids of other sites cannot be probed. */
 const noAccess = () => new MutationRejected('NO_ACCESS', 'Ticket is unavailable: deleted, moved, or access revoked');
 
-/** `row` is undefined for a missing or deleted row; `siteId` is set whenever the id exists, deleted or not. */
 interface Loaded {
   row: Row | undefined;
   siteId?: string;
@@ -28,7 +27,6 @@ interface Write {
   entity: EntityName;
   id: string;
   row?: Row;
-  /** Site of the live row this write replaces or removes, if there was one. */
   prevSite?: string;
 }
 
@@ -61,22 +59,19 @@ class BufferedTx implements MutatorTx {
 
   del(entity: EntityName, id: string): void {
     const prev = this.loaded.get(`${entity}/${id}`);
-    if (!prev?.row) return; // deleting a missing row changes nothing and logs nothing
+    if (!prev?.row) return;
     this.loaded.set(`${entity}/${id}`, { row: undefined, siteId: prev.siteId });
     this.writes.push({ op: 'del', entity, id, prevSite: prev.siteId });
   }
 }
 
 export interface ExecutorHooks {
-  /** Runs inside the transaction after the change_log insert, before the entity rows are written. */
   afterLogInsert?(c: PoolClient, m: Mutation): Promise<void>;
-  /** Runs inside the transaction after the mutation's writes, before commit. */
   afterWrites?(c: PoolClient, m: Mutation): Promise<void>;
 }
 
 @Injectable()
 export class MutationExecutor {
-  /** Test-only seam for pausing or failing a transaction at a precise point; empty in production. */
   readonly hooks: ExecutorHooks = {};
 
   constructor(
@@ -84,7 +79,6 @@ export class MutationExecutor {
     private readonly changeLog: ChangeLogRepository,
   ) {}
 
-  /** Applies one mutation inside the caller's transaction; returns the site ids it touched. */
   async execute(c: PoolClient, user: AuthUser, m: Mutation, clientId: string): Promise<string[]> {
     const def = getMutator(m.name);
     if (!def) throw new MutationRejected('BAD_ARGS', `Unknown mutator ${String(m.name)}`);
@@ -130,7 +124,6 @@ export class MutationExecutor {
     const { rows: clock } = await c.query<{ now: Date }>(`SELECT transaction_timestamp() AS now`);
     const tx = new BufferedTx(loaded, scanned);
     def.apply(tx, m.args, { now: clock[0].now.toISOString() });
-    // Covers the target site of a create or a move.
     if (tx.writes.some((w) => w.op === 'put' && !sites.has(w.row?.siteId as string))) throw noAccess();
 
     const touched = await this.write(c, tx.writes, clientId, m);
@@ -141,7 +134,7 @@ export class MutationExecutor {
   private async write(c: PoolClient, writes: Write[], clientId: string, m: Mutation): Promise<string[]> {
     type Entry = Omit<LogRow, 'version' | 'txSeq'>;
     const entries: Entry[] = [];
-    const versionIndex: number[] = []; // per write: index of the entry whose version the entity row takes
+    const versionIndex: number[] = [];
     for (const w of writes) {
       const base = { entity: w.entity, entityId: w.id, clientId, mutationId: m.id };
       if (w.op === 'del') {
@@ -150,7 +143,6 @@ export class MutationExecutor {
         continue;
       }
       const siteId = w.row?.siteId as string;
-      // A row that changes site disappears from the old site's stream and appears in the new one's.
       if (w.prevSite && w.prevSite !== siteId) entries.push({ ...base, op: 'del', siteId: w.prevSite, data: null });
       versionIndex.push(entries.length);
       entries.push({ ...base, op: 'put', siteId, data: w.row ?? null });

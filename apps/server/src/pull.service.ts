@@ -30,10 +30,7 @@ export class PullService {
     private readonly rejections: RejectionRepository,
   ) {}
 
-  /**
-   * One REPEATABLE READ snapshot for everything in the response (F2): the changes, the cursor and
-   * lastMutationId all describe the same database state.
-   */
+  /** REPEATABLE READ: the changes, the cursor and lastMutationId must describe one database state (F2). */
   async pull(user: AuthUser, q: PullQuery): Promise<PullResponse> {
     return this.db.tx(
       async (c) => {
@@ -41,8 +38,6 @@ export class PullService {
         const fp = this.access.fingerprint(user, sites);
         const state = await this.log.state(c);
         const cur = q.cursor ? decodeCursor(q.cursor) : undefined;
-        // No cursor, changed sites (F12), a collected log (F13) or an unknown version: no delta can bring the
-        // client's base to the server's, so it gets a snapshot.
         const reason = snapshotReason(cur, fp, state);
         const page = reason
           ? await this.snapshots.page(c, sites, fp, { reason }, state.lastVersion, q.limit)
@@ -55,7 +50,6 @@ export class PullService {
         const mine = own !== undefined && own.userId === user.id;
         return {
           ...response,
-          // A mutation is acknowledged only once the client holds all of its changes.
           lastMutationId: !settles ? null : mine ? own.lastMutationId : 0,
           rejections: settles && mine ? await this.rejections.listAfter(c, q.clientId!, q.ackedMutationId) : [],
         };

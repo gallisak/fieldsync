@@ -24,7 +24,6 @@ const MUTATIONS: Mutation[] = [
   { id: 3, name: 'part.adjust', args: { id: P1, delta: 2 } },
 ];
 
-/** Site A holds ticket T1 with part P1 (3 + 2), written by mutations 1–3 of TECH's client `c1`. */
 function model(): ModelServer {
   const server = new ModelServer();
   server.sites.add(A);
@@ -59,11 +58,6 @@ describe('simulation invariants', () => {
     for (const c of clients.splice(0)) c.dispose();
   });
 
-  /**
-   * TECH's device `c1` whose storage holds `rows` at cursor version 5, after the server acknowledged mutations
-   * 1 … `acked` (with `rejected` among them); `pending` more mutations are still queued. The queued ones target
-   * a ticket that does not exist, so the view skips them and still equals the base.
-   */
   async function device(rows: Row[], opts: { acked?: number; rejected?: number[]; pending?: number } = {}) {
     const { acked = 3, rejected = [], pending = 0 } = opts;
     const storage = new MemoryStorage({ idGen: () => 'c1' });
@@ -150,7 +144,7 @@ describe('simulation invariants', () => {
   it('5: a mutation still pending', async () => {
     const server = model();
     const d = await device(server.liveRows(), { pending: 1 });
-    expect([...d.tabs[0].view().values()]).toEqual(server.liveRows()); // the queued one changes nothing visible
+    expect([...d.tabs[0].view().values()]).toEqual(server.liveRows());
     expect(violated(() => checkConvergence(server, [d], AT))).toBe(5);
   });
 

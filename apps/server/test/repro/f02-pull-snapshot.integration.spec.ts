@@ -1,18 +1,11 @@
 import { DEMO, TOKENS, pull, push, seed } from '../support/api';
 import { createTestApp, describeDb, type TestApp } from '../support/pg';
 
-/**
- * F2: pull reports the client's lastMutationId on every page, even when the changes produced by that
- * mutation are on a later page. The client then drops the pending mutation while `base` still lacks its
- * effect.
- */
 describeDb('F2 lastMutationId vs paged changes', () => {
   let t: TestApp;
   beforeAll(async () => {
     t = await createTestApp();
     await seed(t.pool);
-    // Seeded into both tables so the page-1 assertion still holds once the initial pull becomes a snapshot.
-    // Versions 1..600 are taken here, so the allocator must continue after them.
     await t.pool.query(`UPDATE sync_state SET last_version = 600`);
     await t.pool.query(
       `WITH rows AS (

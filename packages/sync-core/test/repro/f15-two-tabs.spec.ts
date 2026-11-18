@@ -4,11 +4,6 @@ import { ScriptedTransport, flush } from '../support/scripted-transport';
 
 const SITE = '33333333-3333-4333-8333-333333333333';
 
-/**
- * F15: every tab shares one clientId and one storage blob but keeps its own in-memory id counter, so two tabs
- * hand out the same mutation id (the server discards the second as a duplicate) and overwrite each other's
- * saved state.
- */
 describe('F15 two tabs on one storage', () => {
   const clients: SyncClient[] = [];
   const open = (storage: MemoryStorage, transport = new ScriptedTransport()) => {

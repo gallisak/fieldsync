@@ -10,10 +10,7 @@ export interface AuthUser {
 
 export type AuthedRequest = Request & { user: AuthUser };
 
-/**
- * Authenticates from the `Authorization: Bearer` header only. A token in the URL would end up in access logs,
- * proxy logs and browser history (F11).
- */
+/** Header only: a token in the URL ends up in access logs, proxy logs and browser history (F11). */
 @Injectable()
 export class AuthGuard implements CanActivate {
   constructor(private readonly db: Db) {}

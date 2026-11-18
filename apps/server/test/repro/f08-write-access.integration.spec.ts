@@ -2,10 +2,6 @@ import { randomUUID } from 'crypto';
 import { DEMO, TOKENS, createTicket, push, seed } from '../support/api';
 import { createTestApp, describeDb, type TestApp } from '../support/pg';
 
-/**
- * F8: write authorization checks the `siteId` the client put in the arguments, before any row is loaded.
- * A technician of site A can change, extend or delete a site-B ticket by sending their own site id.
- */
 describeDb('F8 write access is checked against the real row', () => {
   let t: TestApp;
   beforeAll(async () => {
@@ -68,7 +64,6 @@ describeDb('F8 write access is checked against the real row', () => {
     expect(rows.rows).toEqual([{ id: own, site_id: DEMO.siteA }]);
   });
 
-  // A deleted row still belongs to its site: authorization must not skip it.
   it('refuses ticket.create with the id of a ticket of another site, deleted or not', async () => {
     const opts = { token: TOKENS.admin, clientId: 'admin-create', siteId: DEMO.siteB };
     const live = await createTicket(t.http, { ...opts, mutationId: 1, title: 'site-B ticket' });

@@ -1,14 +1,8 @@
 import type { SimConfig } from '../../src/testing';
 
-/** The flags of phase 4, when the first seeds were found. */
 const PHASE_4: SimConfig['flags'] = { crash: true, tabs: true, access: false, gc: false };
 const WITH_ACCESS: SimConfig['flags'] = { crash: true, tabs: true, access: true, gc: false };
 
-/**
- * Every seed that ever failed during development, with the flags and the smallest failing step count it was
- * found with, and what it found. They run before the seed sweep. The README "Simulation" section is written
- * from this list. Each entry fails when that one fix is reverted.
- */
 export const REGRESSION_SEEDS: { seed: number; steps: number; flags: SimConfig['flags']; found: string }[] = [
   {
     seed: 30,

@@ -18,7 +18,6 @@ export interface Key {
   id: string;
 }
 
-/** Rows found by a secondary attribute; the server locks them like `reads()` keys. */
 export interface ScanSpec {
   entity: 'part';
   by: { ticketId: string };
@@ -31,7 +30,6 @@ export interface MutatorCtx {
 
 /** State access given to a mutator. Reads are served only from rows loaded up front via reads()/scans(). */
 export interface MutatorTx {
-  /** `undefined` for a row that is missing or deleted. */
   get(entity: EntityName, id: string): Row | undefined;
   /** Whether the id was ever written, even if the row has since been deleted (a client knows only live rows). */
   exists(entity: EntityName, id: string): boolean;
@@ -40,10 +38,6 @@ export interface MutatorTx {
   del(entity: EntityName, id: string): void;
 }
 
-/**
- * Every entry point takes raw, untrusted args and validates them first (BAD_ARGS), so a mutator is safe to
- * call from the server, from a queue replay and from tests alike.
- */
 export interface MutatorDef {
   parse(args: unknown): unknown;
   reads(args: unknown): Key[];

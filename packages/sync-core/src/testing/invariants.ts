@@ -5,7 +5,6 @@ import type { Cursor, Row } from '../protocol/types';
 import type { Device } from './harness';
 import type { SimServer } from './server-port';
 
-/** Where a check ran: enough to replay the run. */
 export interface At {
   seed: number;
   step: number;
@@ -27,14 +26,12 @@ export class SimulationFailure extends Error {
   }
 }
 
-/** The rows the client holds as synced from the server, without its queue. */
 export const baseRows = (client: SyncClient): Row[] => [...client[CLIENT_INTERNALS]().base.values()];
 
 export const cursorOf = (client: SyncClient): Cursor | null => client[CLIENT_INTERNALS]().cursor;
 
 const cursorVersion = (cursor: Cursor | null): number => (cursor ? (decodeCursor(cursor)?.v ?? 0) : 0);
 
-/** `[id, row as JSON with sorted keys]`, sorted by id: a comparison that ignores row and key order. */
 export function canonical(rows: readonly Row[]): [string, string][] {
   const json = (row: Row) =>
     JSON.stringify(
@@ -47,7 +44,6 @@ export function canonical(rows: readonly Row[]): [string, string][] {
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
-/** `undefined` when equal, otherwise which ids are missing, extra or different. */
 function difference(actual: [string, string][], expected: [string, string][]): string | undefined {
   const want = new Map(expected);
   const have = new Map(actual);
@@ -69,9 +65,7 @@ const fail = (at: At, invariant: number, detail: string): never => {
   throw new SimulationFailure(at, invariant, detail);
 };
 
-/** Holds after every step, whatever the network does. */
 export function checkSafety(server: SimServer, devices: Device[], at: At): void {
-  // 2. effectively once: no (clientId, mutationId) applied twice
   const seen = new Set<string>();
   for (const key of server.applied) {
     if (seen.has(key)) fail(at, 2, `mutation ${key} applied twice`);
@@ -80,13 +74,11 @@ export function checkSafety(server: SimServer, devices: Device[], at: At): void 
   for (const d of devices) {
     const client = d.tabs[0];
     if (!client) continue;
-    // 1. after a pull, no row outside the user's sites as of that pull
     for (const row of baseRows(client)) {
       if (!d.sitesAtLastPull.has(row.siteId as string)) {
         fail(at, 1, `device ${d.index} holds ${String(row.id)} of site ${String(row.siteId)}`);
       }
     }
-    // 3. the cursor never goes backwards except through a snapshot
     const v = cursorVersion(cursorOf(client));
     if (v < d.lastCursorVersion && !d.snapshotSinceLastCheck) {
       fail(at, 3, `device ${d.index} cursor ${d.lastCursorVersion} → ${v}`);
@@ -96,7 +88,6 @@ export function checkSafety(server: SimServer, devices: Device[], at: At): void 
   }
 }
 
-/** Holds once the network is healed and every client has settled. */
 export function checkConvergence(server: SimServer, devices: Device[], at: At): void {
   const applied = new Set(server.applied);
   for (const d of devices) {
@@ -104,16 +95,13 @@ export function checkConvergence(server: SimServer, devices: Device[], at: At): 
     const expected = canonical(server.liveRows().filter((row) => sites.has(row.siteId as string)));
     for (const [tab, client] of d.tabs.entries()) {
       const where = `device ${d.index} tab ${tab}`;
-      // 4. every client holds exactly the server's rows of its user's sites
       const base = difference(canonical(baseRows(client)), expected);
       if (base) fail(at, 4, `${where}: base ≠ server: ${base}`);
-      // 5. nothing is left pending, so the view is the base
       if (client.pendingCount !== 0) fail(at, 5, `${where}: ${client.pendingCount} still pending`);
       const view = difference(canonical([...client.view().values()]), expected);
       if (view) fail(at, 5, `${where}: view ≠ base: ${view}`);
     }
-    // 6. every issued mutation is applied on the server or rejected with a reason the client knows, not both.
-    // Rejections are keyed by the current client id: the simulated server never loses a client, so none is reset.
+    // Keyed by the current client id: the simulated server never loses a client, so none is reset.
     const client = d.tabs[0];
     const rejected = new Set(client.rejections.map((r) => `${client.clientId}/${r.mutation.id}`));
     for (const key of d.issued) {
@@ -126,7 +114,6 @@ export function checkConvergence(server: SimServer, devices: Device[], at: At): 
       }
     }
   }
-  // 7. quantities commute: each is what it was added with plus every applied delta, each counted once
   for (const [partId, quantity] of server.expectedQuantities()) {
     const actual = server.quantityOf(partId);
     if (actual !== quantity) fail(at, 7, `part ${partId} has quantity ${actual}, expected ${quantity}`);

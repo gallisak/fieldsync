@@ -3,16 +3,14 @@ import { resolve } from 'path';
 import { parseEnv } from 'util';
 import { z } from 'zod';
 
-/** The repository's `.env` (git-ignored; template: `.env.example`). The same path from `src/` and `dist/`. */
+/** The repository root's `.env`, reached from both `src/config` and `dist/config`. */
 export const ENV_FILE = resolve(__dirname, '../../../../.env');
 
-/** The variables of an env file; none when the file does not exist (containers, CI). */
 export function readEnvFile(path: string = ENV_FILE): Record<string, string> {
   if (!existsSync(path)) return {};
   return parseEnv(readFileSync(path, 'utf8')) as Record<string, string>;
 }
 
-/** Treat empty strings (e.g. `FOO=` in an .env file) as "not set" so defaults apply. */
 const unset = (v: unknown) => (v === '' ? undefined : v);
 
 const int = (def: number, min = 0) => z.preprocess(unset, z.coerce.number().int().min(min).default(def));
@@ -78,7 +76,6 @@ export function parseConfig(env: Record<string, string | undefined>): AppConfig 
 
 let cached: AppConfig | undefined;
 
-/** Memoised: the only place in the server that reads `process.env`. The real environment wins over `.env`. */
 export function loadConfig(): AppConfig {
   cached ??= parseConfig({ ...readEnvFile(), ...process.env });
   return cached;

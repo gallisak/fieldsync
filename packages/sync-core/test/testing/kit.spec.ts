@@ -13,7 +13,6 @@ import {
 const BATCH = 4;
 const CALLS = 120;
 const OFFLINE_DEVICE = 2;
-/** Rates high enough that every fate occurs within one short run. */
 const ROUGH: Faults = { dropRequest: 0.12, dropResponse: 0.12, duplicate: 0.12, cut: 0.12, maxDelayMs: 400 };
 const NO_FAULTS: Faults = { dropRequest: 0, dropResponse: 0, duplicate: 0, cut: 0, maxDelayMs: 5 };
 const USER: AuthUser = { id: 'user', role: 'technician' };
@@ -33,7 +32,6 @@ const emptyPull: PullResponse = {
   rejections: [],
 };
 
-/** One call as both ends saw it: the batch size of every server execution, and the client's answer. */
 interface Call {
   device: number;
   kind: 'push' | 'pull';
@@ -42,10 +40,6 @@ interface Call {
   outcome?: string;
 }
 
-/**
- * A seeded stream of pushes and pulls from three devices, one of them offline for a while. Records, in
- * virtual-time order, every server execution and every answer a device receives.
- */
 async function run(seed: number) {
   const rng = mulberry32(seed);
   const s = new Scheduler();
@@ -138,7 +132,6 @@ describe('simulation kit', () => {
     expect(again.calls).toEqual(first.calls);
     expect((await run(43)).trace).not.toEqual(first.trace);
 
-    // Every fate occurs, so the equality above covers all of them.
     expect([...new Set(first.calls.map(fate))].sort()).toEqual([
       'cut',
       'delivered',
@@ -149,7 +142,6 @@ describe('simulation kit', () => {
     ]);
     for (const c of first.calls.filter((c) => c.offline)) expect(c).toMatchObject({ served: [], outcome: 'network' });
     expect(first.calls.every((c) => c.outcome !== undefined)).toBe(true);
-    // Different delays per call make answers overtake each other.
     const answered = first.trace
       .filter((l) => l.includes(' device '))
       .map((l) => Number(l.split('#')[1].split(' ')[0]));

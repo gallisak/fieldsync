@@ -4,7 +4,6 @@ import { int } from './prng';
 import type { Scheduler } from './scheduler';
 import type { AuthUser, SyncServerPort } from './server-port';
 
-/** The probability of each fate per call; every hop takes 1 … `maxDelayMs` of virtual time. */
 export interface Faults {
   dropRequest: number;
   dropResponse: number;
@@ -21,10 +20,6 @@ export const DEFAULT_FAULTS: Faults = {
   maxDelayMs: 400,
 };
 
-/**
- * A lossy network with one `Transport` per client. Every call draws its fate and delays from the seeded
- * generator, so a seed replays the same losses, duplicates and reorderings at the same virtual times.
- */
 export class SimNetwork {
   private readonly offline = new Set<number>();
 
@@ -65,7 +60,6 @@ export class SimNetwork {
     };
   }
 
-  /** `partial` delivers part of the request to the server, as when the connection is cut mid-batch. */
   private call<T>(
     client: number,
     signal: AbortSignal | undefined,
@@ -90,15 +84,13 @@ export class SimNetwork {
       const d2 = 1 + int(rng, f.maxDelayMs);
       const d3 = 1 + int(rng, f.maxDelayMs);
       let edge = f.dropRequest;
-      if (roll < edge) return void fail(d1); // the server never sees it
+      if (roll < edge) return void fail(d1);
 
       s.at(s.now + d1, () => {
-        // its answer is lost with the connection
         if (partial && roll < (edge += f.cut)) return after(partial, () => void fail(d2));
         return after(exec, (outcome) => {
           const out = 'ok' in outcome ? { ok: structuredClone(outcome.ok) } : outcome;
           if (roll < (edge += f.dropResponse) || this.offline.has(client)) return void fail(d2);
-          // a replay's answer goes nowhere
           if (roll < (edge += f.duplicate)) s.at(s.now + d3, () => after(exec, () => undefined));
           s.at(s.now + d2, () => finish(() => ('err' in out ? reject(out.err) : resolve(out.ok))));
         });
@@ -109,10 +101,6 @@ export class SimNetwork {
 
 type Outcome<T> = { ok: T } | { err: unknown };
 
-/**
- * Runs `f` and hands its outcome to `then`: at once for a server in memory, or once the promise of a real one
- * settles (that promise is returned, so the scheduler waits for it).
- */
 function after<T>(f: () => T | Promise<T>, then: (out: Outcome<T>) => void): void | Promise<void> {
   let result: T | Promise<T>;
   try {

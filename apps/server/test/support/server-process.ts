@@ -5,7 +5,6 @@ import { until } from './pg';
 
 export interface ServerProcess {
   url: string;
-  /** Everything the process wrote to stdout and stderr so far. */
   output(): string;
   alive(): boolean;
   stop(): Promise<void>;
@@ -22,10 +21,7 @@ function freePort(): Promise<number> {
   });
 }
 
-/**
- * Runs `src/main.ts` in its own Node process. Inside Jest an uncaught exception is only reported; in a real
- * process it is fatal, which is what a test about crashes has to observe.
- */
+/** A real process, because inside Jest an uncaught exception is not fatal. */
 export async function startServerProcess(env: Record<string, string>): Promise<ServerProcess> {
   const port = await freePort();
   const child: ChildProcess = spawn(

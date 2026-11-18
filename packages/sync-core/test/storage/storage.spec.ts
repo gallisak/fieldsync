@@ -40,7 +40,6 @@ const page = (expected: string | null, next: string, rest: Partial<Parameters<Sy
   ...rest,
 });
 
-/** A Map-backed `localStorage`. */
 function fakeLocalStorage(): Storage {
   const data = new Map<string, string>();
   return {
@@ -55,10 +54,6 @@ function fakeLocalStorage(): Storage {
   };
 }
 
-/**
- * Each backend yields an opener: every call returns a handle on the same stored state, like a second tab or a
- * reload (for `MemoryStorage`, the same object).
- */
 const backends: [string, () => () => SyncStorage][] = [
   [
     'MemoryStorage',
@@ -187,7 +182,7 @@ describe.each(backends)('%s', (_name, backend) => {
     const s = handle();
     await s.commitPull(page(null, 'c1', { lastMutationId: 7 }));
     expect((await s.enqueue(mutation('a'))).id).toBe(8);
-    await s.commitPull(page('c1', 'c2', { lastMutationId: 0 })); // a server that does not know this client
+    await s.commitPull(page('c1', 'c2', { lastMutationId: 0 }));
     expect((await handle().load()).lastMutationId).toBe(7);
     expect((await s.enqueue(mutation('b'))).id).toBe(9);
   });
@@ -314,7 +309,6 @@ describe('IdbStorage specifics', () => {
     const notified = jest.fn();
     storage.onVersionChange(notified);
 
-    // Another tab with newer code opens the same database at a higher version.
     const newer = indexedDB.open(db, 2);
     await new Promise<void>((resolve, reject) => {
       newer.onsuccess = () => resolve();

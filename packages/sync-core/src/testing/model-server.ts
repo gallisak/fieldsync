@@ -18,7 +18,6 @@ import type { AuthUser, SimServer } from './server-port';
 
 export type LogEntry = Change & { txSeq: number; clientId: string; mutationId: number };
 
-/** `row` is undefined for a tombstone. */
 export interface Entity {
   row?: Row;
   siteId: string;
@@ -35,11 +34,9 @@ interface Write {
   entity: EntityName;
   id: string;
   row?: Row;
-  /** Site of the live row this write replaces or removes, if there was one. */
   prevSite?: string;
 }
 
-/** `settles`: the page may acknowledge mutations, as in `PullPage`. */
 type Page = Pick<PullResponse, 'mode' | 'reason' | 'changes' | 'cursor' | 'hasMore'> & { settles: boolean };
 
 class BufferedTx implements MutatorTx {
@@ -92,28 +89,19 @@ const reason = (r: PulledRejection): Omit<PulledRejection, 'mutationId'> => ({
   ...(r.details === undefined ? {} : { details: r.details }),
 });
 
-/**
- * The sync protocol in memory: the real mutators, with the decisions of `PushService`, `MutationExecutor` and
- * `PullService` taken in the same order. Each request runs to completion before the next, as the server's row
- * locks serialise them; writes reach the maps only after the last check has passed.
- */
+/** Requests run one at a time, as the server's row locks serialise them. */
 export class ModelServer implements SimServer {
   lastVersion = 0;
   minRetained = 0;
   readonly log: LogEntry[] = [];
   readonly entities = new Map<string, Entity>();
   readonly clients = new Map<string, { userId: string; last: number }>();
-  /** Keyed by `clientId/mutationId`. */
   readonly rejections = new Map<string, PulledRejection>();
-  /** Every site; an admin can access all of them. */
   readonly sites = new Set<string>();
   readonly userSites = new Map<string, Set<string>>();
-  /** `clientId/mutationId` of every applied mutation, in order. */
   readonly applied: string[] = [];
-  /** Per live part: the quantity it was added with and the delta of each applied adjustment, by mutation. */
   private readonly parts = new Map<string, { initial: number; deltas: Map<string, number> }>();
 
-  /** `clock` (ms) is the transaction time a mutator gets as `ctx.now`. */
   constructor(private readonly clock: () => number = () => 0) {}
 
   push(user: AuthUser, req: PushRequest): PushResponse {
@@ -165,7 +153,6 @@ export class ModelServer implements SimServer {
     this.userSites.get(userId)?.delete(siteId);
   }
 
-  /** Drops the log up to `cut` and the tombstones written there. */
   gc(cut: number): void {
     if (cut <= this.minRetained) return;
     this.minRetained = cut;
@@ -186,10 +173,6 @@ export class ModelServer implements SimServer {
     return rows;
   }
 
-  /**
-   * What each part's quantity must be: the quantity it was added with plus the delta of every applied
-   * adjustment. A mutation counts once, however often it was executed.
-   */
   expectedQuantities(): Map<string, number> {
     const expected = new Map<string, number>();
     for (const [id, p] of this.parts)
@@ -218,7 +201,7 @@ export class ModelServer implements SimServer {
     if (m.id !== expected) {
       throw new TransportError('http', 409, 'OUT_OF_ORDER', { expected }, `Expected mutation ${expected}`);
     }
-    this.clients.set(clientId, c); // a new client's row commits with its first mutation
+    this.clients.set(clientId, c);
 
     let result: MutationResult;
     try {
@@ -240,7 +223,6 @@ export class ModelServer implements SimServer {
     return result;
   }
 
-  /** The steps of `MutationExecutor.execute`: load, authorize on stored sites, apply, authorize targets, write. */
   private execute(user: AuthUser, m: Mutation, clientId: string): void {
     const def = getMutator(m.name);
     if (!def) throw new MutationRejected('BAD_ARGS', `Unknown mutator ${String(m.name)}`);
@@ -267,7 +249,6 @@ export class ModelServer implements SimServer {
       }
     }
 
-    // A deleted row still belongs to its site.
     this.authorize(
       user,
       [...loaded.values()].filter((l) => l.siteId !== undefined).map((l) => l.siteId as string),
@@ -303,7 +284,7 @@ export class ModelServer implements SimServer {
 
   private write(writes: Write[], clientId: string, mutationId: number): void {
     const entries: Omit<LogEntry, 'version' | 'txSeq'>[] = [];
-    const versionIndex: number[] = []; // per write: the entry whose version the entity takes
+    const versionIndex: number[] = [];
     for (const w of writes) {
       const base = { entity: w.entity, id: w.id, clientId, mutationId };
       if (w.op === 'del') {
@@ -312,7 +293,6 @@ export class ModelServer implements SimServer {
         continue;
       }
       const siteId = w.row?.siteId as string;
-      // A row that changes site disappears from the old site's stream and appears in the new one's.
       if (w.prevSite && w.prevSite !== siteId) entries.push({ ...base, op: 'del', siteId: w.prevSite, data: null });
       versionIndex.push(entries.length);
       entries.push({ ...base, op: 'put', siteId, data: w.row ?? null });
@@ -333,7 +313,6 @@ export class ModelServer implements SimServer {
     });
   }
 
-  /** `SnapshotService.page`: live rows of the user's sites in (entity, id) order, pinned at one version. */
   private snapshotPage(
     sites: Set<string>,
     fp: string,
@@ -366,7 +345,6 @@ export class ModelServer implements SimServer {
     };
   }
 
-  /** `PullService.deltaPage`: a page never splits a transaction; the last page's cursor is `lastVersion`. */
   private deltaPage(sites: Set<string>, after: number, fp: string, limit: number): Page {
     const page = (v: number, rows: LogEntry[], hasMore: boolean): Page => ({
       mode: 'delta',
@@ -381,7 +359,6 @@ export class ModelServer implements SimServer {
     if (rows.length <= limit) return page(this.lastVersion, rows, false);
     const out = rows.slice(0, limit);
     const last = out[out.length - 1];
-    // A transaction's entries are contiguous, so the rest of it directly follows in `rows`.
     for (const e of rows.slice(limit)) {
       if (e.txSeq !== last.txSeq) break;
       out.push(e);

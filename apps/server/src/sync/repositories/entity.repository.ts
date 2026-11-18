@@ -4,10 +4,6 @@ import type { PoolClient } from 'pg';
 
 @Injectable()
 export class EntityRepository {
-  /**
-   * Up to `n` live rows of the given sites after the key `after`, as `put` changes. In primary-key order, so a
-   * page continues on the index where the previous one stopped.
-   */
   async livePage(
     c: PoolClient,
     sites: string[],

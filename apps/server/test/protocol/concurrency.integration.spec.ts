@@ -8,11 +8,6 @@ import { createTestApp, describeDb, until, waitersOn, type TestApp } from '../su
 
 const RACERS = 50;
 
-/**
- * The protocol's concurrency guarantees, exercised on real Postgres with real parallel HTTP requests:
- * no reader ever skips a change, a mutation applies at most once, rejections survive a lost response,
- * and a mutation that dies half-way leaves nothing behind.
- */
 describeDb('concurrency on real Postgres', () => {
   let t: TestApp;
   beforeEach(async () => {
@@ -53,7 +48,6 @@ describeDb('concurrency on real Postgres', () => {
       }
     };
 
-    // The cursor of the still empty database: every reader reads the log from its start, not a snapshot.
     const start: string = (await pull(http, TOKENS.admin)).body.cursor;
     const reader = async (): Promise<number[]> => {
       const versions: number[] = [];
@@ -84,11 +78,7 @@ describeDb('concurrency on real Postgres', () => {
   }, 120_000);
 
   describe('identical requests in flight together', () => {
-    /**
-     * Sends the same push RACERS times at once while the test holds the sync_state row, so every request is
-     * inside its transaction (the first one waiting for version allocation, the rest for the client row)
-     * before any of them can commit. Returns the result statuses.
-     */
+    /** Holding sync_state keeps every request inside its transaction until all of them have arrived. */
     async function race(clientId: string, m: Mutation): Promise<string[]> {
       const http = request(await listen(t.app));
       const blocker = await t.pool.connect();
@@ -158,12 +148,11 @@ describeDb('concurrency on real Postgres', () => {
     });
     const batch: Mutation[] = [
       create(1, 'created in batch'),
-      // The ticket is "open", so a transition declared from "done" is a status conflict.
       { id: 2, name: 'ticket.setStatus', args: { id: ticketId, from: 'done', to: 'in_progress' } },
       { id: 3, name: 'ticket.update', args: { id: ticketId, patch: { title: 'after' } } },
     ];
 
-    await push(t.http, TOKENS.admin, 'lossy', batch); // the response never reaches the client
+    await push(t.http, TOKENS.admin, 'lossy', batch);
     const retry = await push(t.http, TOKENS.admin, 'lossy', batch);
 
     const rejection = { code: 'STATUS_CONFLICT', message: expect.any(String), details: { current: 'open' } };
@@ -199,7 +188,6 @@ describeDb('concurrency on real Postgres', () => {
       executor.hooks.afterLogInsert = undefined;
     });
 
-    /** Arms the hook for mutations titled `title`; `fail` runs after their log rows were inserted. */
     function failAfterLogInsert(title: string, fail: (c: PoolClient) => Promise<void>): void {
       executor.hooks.afterLogInsert = async (c, m) => {
         if (m.args.title !== title) return;
@@ -221,8 +209,8 @@ describeDb('concurrency on real Postgres', () => {
 
       expect(res.status).toBe(503);
       expect(res.body).toMatchObject({ code: 'UNAVAILABLE' });
-      expect(logRowsAtFailure.length).toBeGreaterThan(1); // retried after each crash
-      expect(logRowsAtFailure.every((n) => n === 1)).toBe(true); // the log row did exist inside each attempt
+      expect(logRowsAtFailure.length).toBeGreaterThan(1);
+      expect(logRowsAtFailure.every((n) => n === 1)).toBe(true);
       expect(await count(`change_log WHERE entity_id = $1`, [m.args.id])).toBe(0);
       expect(await count(`entities WHERE id = $1`, [m.args.id])).toBe(0);
       expect(await count(`mutation_rejections WHERE client_id = $1`, ['c1'])).toBe(0);

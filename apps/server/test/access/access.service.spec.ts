@@ -9,7 +9,6 @@ const ADMIN: AuthUser = { id: 'admin', role: 'admin' };
 const TECH: AuthUser = { id: 'tech', role: 'technician' };
 const NEWBIE: AuthUser = { id: 'newbie', role: 'technician' };
 
-/** Answers the two queries AccessService makes from fixed `sites` and `user_sites` tables. */
 const db = (sites: string[], userSites: [string, string][]): Queryable => ({
   async query<R extends QueryResultRow>(text: string, values: unknown[] = []): Promise<{ rows: R[] }> {
     if (/FROM sites/.test(text)) return { rows: sites.map((id) => ({ id })) as unknown as R[] };

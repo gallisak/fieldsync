@@ -5,7 +5,6 @@ import { FakeServer } from '../support/fake-server';
 const SITE = '33333333-3333-4333-8333-333333333333';
 const create = (title: string) => ({ id: randomUUID(), siteId: SITE, title, description: '' });
 
-/** Waits (event loop turns, not timers) until `condition` holds. */
 async function eventually(condition: () => boolean | Promise<boolean>, what: string): Promise<void> {
   const deadline = Date.now() + 2_000;
   while (!(await condition())) {
@@ -48,7 +47,7 @@ describe('several tabs on one storage', () => {
     expect(server.applied).toEqual(idsOneToTwenty(clientId));
     expect(followerTransport.calls).toBe(0);
     expect(a.rows('ticket')).toHaveLength(20);
-    expect(b.facts).toMatchObject({ phase: 'idle', connection: 'online' }); // mirrored from the leader
+    expect(b.facts).toMatchObject({ phase: 'idle', connection: 'online' });
   });
 
   it("sends a follower's mutation through the idle leader and shows it in every tab", async () => {
@@ -79,19 +78,19 @@ describe('several tabs on one storage', () => {
     const b = open(storage, followerTransport, hub.join());
     await Promise.all([a.ready, b.ready]);
 
-    answersLost = true; // the server applies the leader's pushes, but no answer ever comes back
+    answersLost = true;
     await mutateInterleaved(a, b);
     await eventually(() => server.applied.length > 0, 'the leader to push');
     const appliedByDeadLeader = server.applied.length;
     expect(followerTransport.calls).toBe(0);
 
-    leaderTab.kill(); // the tab dies with its push in flight
+    leaderTab.kill();
     a.dispose();
     await eventually(async () => (await storage.load()).pending.length === 0, 'the new leader to finish');
     await eventually(() => b.pendingCount === 0, 'the new leader to show it');
 
     const { clientId } = await storage.load();
-    expect(server.duplicates).toBeGreaterThanOrEqual(appliedByDeadLeader); // re-sent, recognised, not re-applied
+    expect(server.duplicates).toBeGreaterThanOrEqual(appliedByDeadLeader);
     expect(server.applied).toEqual(idsOneToTwenty(clientId));
     expect(server.state.size).toBe(20);
     expect(b.rows('ticket')).toHaveLength(20);
@@ -110,7 +109,7 @@ describe('several tabs on one storage', () => {
     await Promise.all([a.sync(), b.sync()]);
 
     const { clientId } = await storage.load();
-    expect(server.applied).toEqual(idsOneToTwenty(clientId)); // each applied exactly once, in order
+    expect(server.applied).toEqual(idsOneToTwenty(clientId));
     expect(server.state.size).toBe(20);
     expect(a.rows('ticket')).toHaveLength(20);
     expect(b.rows('ticket')).toHaveLength(20);

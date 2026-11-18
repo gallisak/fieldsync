@@ -14,11 +14,7 @@ const TRANSIENT_SQLSTATES = new Set(['40001', '40P01', '57P01']);
 const NETWORK_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE']);
 const MAX_RETRIES = 3;
 
-/**
- * Errors after which the whole transaction can safely be run again; they say nothing about the request
- * itself. Class 08 is connection_exception; node-postgres reports a dropped or timed-out connection without
- * any code.
- */
+/** Class 08 is connection_exception; node-postgres reports a dropped or timed-out connection with no code. */
 export function isTransient(err: unknown): boolean {
   const code = (err as { code?: unknown } | null)?.code;
   if (typeof code === 'string') return TRANSIENT_SQLSTATES.has(code) || code.startsWith('08') || NETWORK_CODES.has(code);
@@ -32,8 +28,7 @@ export class Db implements OnModuleInit, OnModuleDestroy {
 
   constructor(@Inject(APP_CONFIG) private readonly config: AppConfig) {
     this.pool = new Pool({ connectionString: config.DATABASE_URL, max: config.DB_POOL_MAX });
-    // node-postgres reports a connection that Postgres dropped as an 'error' event, which kills the process
-    // when nobody listens (F28). The pool already discards the dead client; queries on it fail on their own.
+    // Without a listener, the 'error' event of a connection Postgres dropped kills the process (F28).
     this.pool.on('error', (err) => this.logger.warn(`idle database connection lost: ${err.message}`));
   }
 
@@ -67,7 +62,7 @@ export class Db implements OnModuleInit, OnModuleDestroy {
         try {
           await client.query('ROLLBACK');
         } catch {
-          broken = true; // a dead connection must not hide the original error
+          broken = true;
         }
         if (isTransient(err) && attempt < MAX_RETRIES) continue;
         throw err;

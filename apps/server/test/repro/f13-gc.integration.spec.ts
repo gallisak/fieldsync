@@ -3,11 +3,6 @@ import { GcService } from '../../src/gc.service';
 import { DEMO, TOKENS, createTicket, listen, liveRows, push, seed, sortById } from '../support/api';
 import { createTestApp, describeDb, type TestApp } from '../support/pg';
 
-/**
- * F13: GC deletes log rows by age with no retained floor and no signal to clients. A client whose cursor
- * predates the cut silently misses changes, and a brand-new client (cursor 0) replays a log that no longer
- * contains the old entities.
- */
 describeDb('F13 change-log GC vs stale and new clients', () => {
   let t: TestApp;
   const clients: SyncClient[] = [];
@@ -50,7 +45,6 @@ describeDb('F13 change-log GC vs stale and new clients', () => {
     await stale.sync();
     expect(stale.rows('ticket')).toHaveLength(10);
 
-    // Include deletions so "equal to the server" also proves removed rows disappear from the stale client.
     for (let i = 0; i < 7; i++) {
       await createTicket(t.http, {
         token: TOKENS.admin,
@@ -89,7 +83,6 @@ describeDb('F13 a new client on a database whose log was collected', () => {
   beforeAll(async () => {
     t = await createTestApp();
     await seed(t.pool);
-    // 1 000 tickets over both sites, each with one part: 2 000 entities, versions 1..2000, and no log left.
     await t.pool.query(
       `WITH tickets AS (
          SELECT gen_random_uuid() AS id, gen_random_uuid() AS part_id, g,

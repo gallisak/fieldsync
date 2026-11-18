@@ -4,7 +4,6 @@ import type { Pool } from 'pg';
 
 const LOCK_KEY = 727001;
 
-/** Applies pending `migrations/*.sql` in name order, each in its own transaction. Returns the applied names. */
 export async function migrate(pool: Pool, dir = join(__dirname, 'migrations')): Promise<string[]> {
   const files = (await readdir(dir)).filter((f) => f.endsWith('.sql')).sort();
   const c = await pool.connect();

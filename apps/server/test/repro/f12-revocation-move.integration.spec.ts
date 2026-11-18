@@ -3,10 +3,6 @@ import { randomUUID } from 'crypto';
 import { DEMO, TOKENS, createTicket, listen, pull, push, seed } from '../support/api';
 import { createTestApp, describeDb, type TestApp } from '../support/pg';
 
-/**
- * F12: nothing ever tells a client to drop data it may no longer see. A revoked site's rows stay on the
- * device, and a ticket moved to another site stays in the old site's clients.
- */
 describeDb('F12 revocation and site moves reach the client', () => {
   let t: TestApp;
   let client: SyncClient | undefined;
@@ -94,7 +90,6 @@ describeDb('F12 revocation and site moves reach the client', () => {
     const ids = [ticketId, ...parts];
     expect(await changes(TOKENS.techA, cursors.techA)).toEqual(ids.map((id) => [id, 'del', DEMO.siteA]));
     expect(await changes(TOKENS.techB, cursors.techB)).toEqual(ids.map((id) => [id, 'put', DEMO.siteB]));
-    // Delete under the old site first, then put under the new one: applied in order, the row survives.
     expect(await changes(TOKENS.admin, cursors.admin)).toEqual(
       ids.flatMap((id) => [
         [id, 'del', DEMO.siteA],

@@ -5,16 +5,10 @@ import { DEMO, TOKENS } from '../support/api';
 import { describeDb, requireDatabaseUrl, until } from '../support/pg';
 import { startServerProcess, type ServerProcess } from '../support/server-process';
 
-/**
- * F28: when Postgres drops a pooled connection (restart, failover, an idle timeout in a proxy), node-postgres
- * fails the running query and also emits an 'error' event on the client or the pool. Nothing listened for
- * that event, so the whole server process crashed instead of one request failing over to a new connection.
- * The server runs in its own process here, because inside Jest an uncaught exception is not fatal.
- */
 describeDb('F28 lost database connection', () => {
-  const name = 'f28_' + randomBytes(6).toString('hex'); // schema and application_name of this test's server
+  const name = 'f28_' + randomBytes(6).toString('hex');
   let admin: Pool;
-  let db: Pool; // the server's schema, seen from the test
+  let db: Pool;
   let server: ServerProcess | undefined;
 
   beforeAll(() => {
@@ -56,7 +50,6 @@ describeDb('F28 lost database connection', () => {
     expect(idle.length).toBeGreaterThan(0);
 
     await terminate(idle);
-    // Either the process dies (the defect) or it logs the lost connection and carries on.
     await until(async () => !server!.alive() || /connection lost/.test(server!.output()), 'the server to react', 5_000);
 
     expect(server!.alive()).toBe(true);

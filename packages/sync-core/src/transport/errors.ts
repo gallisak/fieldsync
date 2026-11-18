@@ -1,7 +1,3 @@
-/**
- * Why a call to the server failed. `network`: no response at all; `timeout`: no response in time; `http`: a
- * non-2xx response, with the `{ code, message, details }` envelope when the server sent one.
- */
 export class TransportError extends Error {
   constructor(
     readonly kind: 'network' | 'timeout' | 'http',

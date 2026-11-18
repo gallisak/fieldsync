@@ -3,11 +3,6 @@ import type { Mutation } from '@fieldsync/sync-core';
 import { DEMO, TOKENS, push, seed } from '../support/api';
 import { createTestApp, describeDb, type TestApp } from '../support/pg';
 
-/**
- * F6: the mutator registry is a plain object, so `MUTATORS["constructor"]` and `MUTATORS["__proto__"]` are
- * truthy; `def.reads` is then not a function and the request dies with a TypeError (500). A client can
- * permanently block its own queue with one such name.
- */
 describeDb('F6 prototype-property mutator names', () => {
   let t: TestApp;
   beforeAll(async () => {

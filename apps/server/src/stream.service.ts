@@ -39,10 +39,6 @@ export class StreamService {
     }
   }
 
-  /**
-   * After a user's access changed: re-reads their sites for their open streams and pokes them, so their next
-   * pull brings the snapshot, even for a site they just lost.
-   */
   async refreshUser(userId: string): Promise<void> {
     const subs = [...this.subscribers].filter((s) => s.userId === userId);
     if (subs.length === 0) return;

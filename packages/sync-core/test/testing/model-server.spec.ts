@@ -16,8 +16,8 @@ const T2 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2';
 const P1 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1';
 const P2 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2';
 const ADMIN: AuthUser = { id: 'admin', role: 'admin' };
-const TECH: AuthUser = { id: 'tech', role: 'technician' }; // site A
-const OTHER: AuthUser = { id: 'other', role: 'technician' }; // site B
+const TECH: AuthUser = { id: 'tech', role: 'technician' };
+const OTHER: AuthUser = { id: 'other', role: 'technician' };
 
 function model(): ModelServer {
   const s = new ModelServer();
@@ -33,7 +33,6 @@ const create = (id: number, ticket: string, siteId: string) =>
   m(id, 'ticket.create', { id: ticket, siteId, title: 'title', description: '' });
 const pull = (s: ModelServer, user: AuthUser, clientId: string, cursor: Cursor | null = null, limit = 500, acked = 0) =>
   s.pull(user, { cursor, clientId, ackedMutationId: acked, limit });
-/** A delta cursor at version 0 for the user's current sites: the pull reads the whole log, not a snapshot. */
 const fromZero = (s: ModelServer, user: AuthUser): Cursor =>
   encodeCursor({ k: 'd', v: 0, fp: decodeCursor(pull(s, user, 'probe').cursor)!.fp });
 const failure = (fn: () => unknown): TransportError => {
@@ -74,7 +73,6 @@ describe('ModelServer', () => {
     const theirs = failure(() => s.push(OTHER, { clientId: 'c1', mutations: [create(2, T2, B)] }));
     expect(theirs).toMatchObject({ status: 403, code: 'CLIENT_MISMATCH' });
 
-    // A request that failed before any mutation committed leaves no client behind.
     expect(failure(() => s.push(TECH, { clientId: 'c2', mutations: [create(2, T2, A)] }))).toMatchObject({
       status: 409,
     });
@@ -90,7 +88,7 @@ describe('ModelServer', () => {
         m(1, 'ticket.update', { id: T1, patch: { title: 'mine now' } }),
         m(2, 'part.add', { id: P1, ticketId: T1, name: 'filter', quantity: 1 }),
         m(3, 'ticket.move', { id: T2, toSiteId: B }),
-        m(4, 'ticket.delete', { id: T1 }), // writes no put: only the stored site stops it
+        m(4, 'ticket.delete', { id: T1 }),
       ],
     });
     expect(res.results.map((r) => r.code)).toEqual(['NO_ACCESS', 'NO_ACCESS', 'NO_ACCESS', 'NO_ACCESS']);
@@ -160,7 +158,6 @@ describe('ModelServer', () => {
       cursor = pages[pages.length - 1].cursor;
     } while (pages[pages.length - 1].hasMore);
 
-    // Like the real server, `hasMore` is decided before the rest of the transaction is added: an empty last page.
     expect(pages.map((p) => p.changes.map((c) => c.version))).toEqual([[1], [2], [3], [4, 5, 6], []]);
     expect(pages.map((p) => p.lastMutationId)).toEqual([null, null, null, null, 5]);
     expect(pages.map((p) => p.rejections.map((r) => [r.mutationId, r.code]))).toEqual([
@@ -298,7 +295,7 @@ describe('ModelServer', () => {
     });
     s.gc(2);
     expect(s.log.map((e) => e.version)).toEqual([3]);
-    expect(s.entities.has(`ticket/${T1}`)).toBe(true); // its tombstone is version 3
+    expect(s.entities.has(`ticket/${T1}`)).toBe(true);
     s.gc(3);
     expect(s.log).toEqual([]);
     expect([...s.entities.keys()]).toEqual([`ticket/${T2}`]);

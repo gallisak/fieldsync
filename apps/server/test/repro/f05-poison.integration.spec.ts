@@ -2,10 +2,6 @@ import { randomUUID } from 'crypto';
 import { DEMO, TOKENS, createTicket, push, seed } from '../support/api';
 import { createTestApp, describeDb, type TestApp } from '../support/pg';
 
-/**
- * F5: a mutation rejected by its mutator (MutationRejected) is never caught: the request fails with 500 and
- * last_mutation_id is not advanced, so the client retries the same head of the queue forever.
- */
 describeDb('F5 rejected mutation inside a batch', () => {
   let t: TestApp;
   beforeAll(async () => {
@@ -25,7 +21,6 @@ describeDb('F5 rejected mutation inside a batch', () => {
 
     const res = await push(t.http, TOKENS.admin, 'c1', [
       { id: 1, name: 'ticket.create', args: { id: randomUUID(), siteId: DEMO.siteA, title: 'F5 other', description: '' } },
-      // The ticket is "open", so a transition declared from "done" is a status conflict.
       { id: 2, name: 'ticket.setStatus', args: { id: ticketId, from: 'done', to: 'open' } },
       { id: 3, name: 'ticket.update', args: { id: ticketId, patch: { title: 'F5 updated' } } },
     ]);

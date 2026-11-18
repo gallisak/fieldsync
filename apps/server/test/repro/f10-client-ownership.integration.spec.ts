@@ -2,10 +2,6 @@ import { randomUUID } from 'crypto';
 import { DEMO, TOKENS, pull, push, seed } from '../support/api';
 import { createTestApp, describeDb, type TestApp } from '../support/pg';
 
-/**
- * F10: `clients.user_id` is stored but never checked. Another user can push under someone else's clientId
- * (burning their ids, so the owner's real mutations become "duplicates") and read their lastMutationId.
- */
 describeDb('F10 clientId belongs to one user', () => {
   let t: TestApp;
   beforeAll(async () => {

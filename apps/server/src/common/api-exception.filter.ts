@@ -10,7 +10,6 @@ const CODE_BY_STATUS: Record<number, string> = {
   404: 'NOT_FOUND',
 };
 
-/** Every non-2xx response is `{ code, message, details? }`; unexpected errors never leak their message or stack. */
 @Catch()
 export class ApiExceptionFilter implements ExceptionFilter {
   private readonly logger = new Logger(ApiExceptionFilter.name);
@@ -35,7 +34,6 @@ export class ApiExceptionFilter implements ExceptionFilter {
     }
 
     if (isTransient(err)) {
-      // Nothing was committed for the failing step, so the client may simply retry it.
       this.logger.warn(`transient database error: ${err instanceof Error ? err.message : String(err)}`);
       res.status(503).json({ code: 'UNAVAILABLE', message: 'Temporarily unavailable, retry later' });
       return;

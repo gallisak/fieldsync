@@ -15,16 +15,10 @@ import { PullService } from '../../src/pull.service';
 import { PushService } from '../../src/push.service';
 import type { TestApp } from '../support/pg';
 
-/**
- * The real `PushService` and `PullService` on Postgres as a simulation server. Request errors come back as the
- * `TransportError` the HTTP transport would raise. What the invariants read is loaded from the database by
- * `refresh()`, except `applied`, which is taken from the push results as the server returns them.
- */
 export class PgServer implements SimServer {
   applied: string[] = [];
   lastVersion = 0;
   private rejected = new Set<string>();
-  /** Every mutation the server was sent, by `clientId/mutationId`. */
   private sent = new Map<string, Mutation>();
   private rows: { entity: EntityName; row: Row }[] = [];
   private dirty = true;
@@ -70,7 +64,6 @@ export class PgServer implements SimServer {
     await this.t.pool.query(`INSERT INTO sites (id, name) VALUES ($1::uuid, $1::text)`, [siteId]);
   }
 
-  /** Grants go to technicians only; their user row is created with the first one. */
   async grant(userId: string, siteId: string): Promise<void> {
     const sites = this.userSites.get(userId) ?? new Set<string>();
     sites.add(siteId);
@@ -90,7 +83,6 @@ export class PgServer implements SimServer {
     await this.t.pool.query(`DELETE FROM user_sites WHERE user_id = $1 AND site_id = $2`, [userId, siteId]);
   }
 
-  /** The model's gc, in SQL. The server's own collection is replaced in P6.2. */
   async gc(cut: number): Promise<void> {
     this.dirty = true;
     const { rowCount } = await this.t.pool.query(
@@ -146,7 +138,6 @@ export class PgServer implements SimServer {
     this.dirty = false;
   }
 
-  /** Empties the database and this object for the next run. */
   async reset(): Promise<void> {
     await this.t.pool.query(`TRUNCATE entities, change_log, clients, mutation_rejections, user_sites, users, sites`);
     await this.t.pool.query(`UPDATE sync_state SET last_version = 0, min_retained_version = 0`);

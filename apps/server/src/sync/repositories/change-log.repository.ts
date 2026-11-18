@@ -14,7 +14,6 @@ export interface LogRow {
   mutationId: number;
 }
 
-/** A log row as read back for delivery. Rows written before protocol v2 have no client id. */
 export interface StoredLogRow {
   version: number;
   txSeq: number;
@@ -64,10 +63,6 @@ export class ChangeLogRepository {
     return { lastVersion: Number(rows[0].last_version), minRetained: Number(rows[0].min_retained_version) };
   }
 
-  /**
-   * The first `n` rows after `version` in the given sites, in version order. One index range scan per site,
-   * so a user with few sites never walks the other sites' rows.
-   */
   async after(c: PoolClient, sites: string[], version: number, n: number): Promise<StoredLogRow[]> {
     const { rows } = await c.query<DbLogRow>(
       `SELECT l.* FROM unnest($2::uuid[]) AS s(site_id)
@@ -83,11 +78,7 @@ export class ChangeLogRepository {
     return rows.map(fromDb);
   }
 
-  /**
-   * The rows of transaction `txSeq` after `version` in the given sites, so a page never splits a mutation.
-   * A transaction's versions are contiguous, so the scan is bounded by the first later row of another
-   * transaction and stays on the primary key (there is no index on tx_seq).
-   */
+  /** Bounded by the next row of another transaction, so the scan stays on the primary key (no index on tx_seq). */
   async restOfTx(c: PoolClient, sites: string[], txSeq: number, version: number): Promise<StoredLogRow[]> {
     const { rows } = await c.query<DbLogRow>(
       `SELECT ${COLUMNS} FROM change_log
@@ -102,9 +93,8 @@ export class ChangeLogRepository {
   }
 
   /**
-   * Reserves `n` consecutive versions and returns the first. The UPDATE locks the single sync_state row until
-   * the transaction ends, so versions become visible in exactly the order they were handed out (F1). It must
-   * be the last lock a writing transaction takes.
+   * Locks sync_state until COMMIT, so versions become visible in allocation order (F1). Must be the last lock a
+   * writing transaction takes.
    */
   async allocateVersions(c: PoolClient, n: number): Promise<number> {
     const { rows } = await c.query<{ last_version: string }>(

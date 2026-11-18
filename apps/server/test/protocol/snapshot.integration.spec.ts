@@ -70,7 +70,7 @@ describeDb('paged snapshot', () => {
     const pages: PullResponse[] = [await pullTech(undefined, 3)];
     while (pages[pages.length - 1].hasMore) pages.push(await pullTech(pages[pages.length - 1].cursor, 3));
 
-    expect(pages).toHaveLength(3); // 7 rows of site A, 3 per page
+    expect(pages).toHaveLength(3);
     expect(pages.map((p) => [p.mode, p.reason, p.lastMutationId])).toEqual([
       ['snapshot', 'initial', null],
       ['snapshot', undefined, null],
@@ -92,7 +92,7 @@ describeDb('paged snapshot', () => {
     const first = await pullTech(undefined, 2);
 
     await asTech('ticket.update', { id: ticket, patch: { title: 'while paging' } });
-    await asTech('ticket.create', { id: randomUUID(), siteId: B, title: 'not mine', description: '' }); // NO_ACCESS
+    await asTech('ticket.create', { id: randomUUID(), siteId: B, title: 'not mine', description: '' });
     const last = await pullTech(first.cursor, 2);
     expect(last).toMatchObject({ mode: 'snapshot', hasMore: false, lastMutationId: null, rejections: [] });
     expect(cursorOf(last)).toMatchObject({ k: 'd', v });

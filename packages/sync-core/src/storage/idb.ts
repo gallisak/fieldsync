@@ -23,7 +23,6 @@ type StoreName = (typeof STORES)[number];
 type Tx = IDBPTransaction<unknown, StoreName[], 'readwrite'>;
 
 export interface IdbStorageOptions {
-  /** Where an older web app kept its state; imported once when the database is created. Default: localStorage. */
   legacy?: LegacySource | null;
 }
 
@@ -50,11 +49,10 @@ function entityRecord(c: Change): EntityRecord {
   return { entity: c.entity, siteId: c.siteId, data: c.data as Row };
 }
 
-/** Writes an imported legacy state into a freshly created database (raw API: runs in the upgrade transaction). */
 function writeLegacy(tx: IDBTransaction, legacy: LegacyState): void {
   const meta = tx.objectStore('meta');
   meta.put(legacy.clientId ?? newClientId(), 'clientId');
-  meta.put(null, 'cursor'); // a full pull rebuilds `base` against the server's current state
+  meta.put(null, 'cursor');
   meta.put(legacy.lastMutationId, 'lastMutationId');
   meta.put(legacy.nextMutationId, 'nextMutationId');
   const entities = tx.objectStore('entities');
@@ -65,11 +63,7 @@ function writeLegacy(tx: IDBTransaction, legacy: LegacyState): void {
   for (const r of legacy.rejections) tx.objectStore('rejections').put(r);
 }
 
-/**
- * Durable client storage in IndexedDB. Every method is a single `readwrite` transaction over the stores it
- * touches; IndexedDB runs overlapping transactions on the same stores one after another, also across tabs,
- * which is what makes `enqueue` and `commitPull` safe with several tabs open.
- */
+/** Safe across tabs: IndexedDB runs overlapping readwrite transactions on the same stores one at a time. */
 export class IdbStorage implements SyncStorage {
   private db?: Promise<IDBPDatabase>;
   private upgradedElsewhere = false;
@@ -122,7 +116,7 @@ export class IdbStorage implements SyncStorage {
       const at = new Date().toISOString();
       const mutations = tx.objectStore('mutations');
       for (const m of (await mutations.getAll()) as StoredMutation[]) {
-        if (m.id > acked) break; // keys are ascending
+        if (m.id > acked) break;
         const r = reasons.get(m.id);
         if (r) {
           const rejection: StoredRejection = {
@@ -165,7 +159,6 @@ export class IdbStorage implements SyncStorage {
     return state;
   }
 
-  /** Called when a newer version of the app (another tab) upgrades the database; this connection is closed. */
   onVersionChange(listener: () => void): () => void {
     this.versionListeners.add(listener);
     return () => this.versionListeners.delete(listener);

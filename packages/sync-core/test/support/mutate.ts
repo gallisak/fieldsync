@@ -8,7 +8,6 @@ export function run(tx: MutatorTx, name: string, args: unknown, ctx = CTX): void
   def.apply(tx, args, ctx);
 }
 
-/** Runs the mutation and returns the rejection; fails the test if it was not rejected. */
 export function rejectionOf(tx: MutatorTx, name: string, args: unknown): MutationRejected {
   try {
     run(tx, name, args);

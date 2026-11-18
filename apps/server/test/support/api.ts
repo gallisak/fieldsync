@@ -49,7 +49,6 @@ export function me(http: Http, token: string) {
   return http.get('/me').set('authorization', `Bearer ${token}`).set(PROTOCOL_HEADER, String(PROTOCOL));
 }
 
-/** Starts the app on an ephemeral port (needed for streams and for a real SyncClient) and returns its URL. */
 export async function listen(app: INestApplication): Promise<string> {
   const server = app.getHttpServer();
   if (!server.listening) await app.listen(0, '127.0.0.1');
@@ -59,11 +58,9 @@ export async function listen(app: INestApplication): Promise<string> {
 export interface OpenStream {
   status: number;
   req: ClientRequest;
-  /** Everything the stream has sent so far. */
   received(): string;
 }
 
-/** Opens `GET /sync/stream` and resolves as soon as the response headers arrive; the body is left open. */
 export function openStream(baseUrl: string, opts: { token?: string; query?: string } = {}): Promise<OpenStream> {
   return new Promise((resolve, reject) => {
     const req = httpRequest(`${baseUrl}/sync/stream${opts.query ? `?${opts.query}` : ''}`, {
@@ -95,7 +92,6 @@ export function sortById(rows: readonly Row[]): Row[] {
   return [...rows].sort((a, b) => String(a.id).localeCompare(String(b.id)));
 }
 
-/** Creates a ticket through the push endpoint and returns its id; throws unless the mutation was applied. */
 export async function createTicket(
   http: Http,
   opts: { token: string; clientId: string; mutationId: number; siteId: string; title: string },

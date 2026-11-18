@@ -44,7 +44,7 @@ describe('ticket.create', () => {
 
   it('rejects the id of a deleted ticket with ALREADY_EXISTS instead of reviving it', () => {
     const tx = new MapTx();
-    tx.exists = (entity, id) => entity === 'ticket' && id === TICKET; // a tombstone: it exists, get() is undefined
+    tx.exists = (entity, id) => entity === 'ticket' && id === TICKET;
     expectRejected(tx, 'ticket.create', args, 'ALREADY_EXISTS');
     expect(tx.all('ticket')).toEqual([]);
   });

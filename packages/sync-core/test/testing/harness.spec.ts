@@ -1,11 +1,9 @@
 import { DEFAULT_FAULTS, runSimulation, type SimConfig } from '../../src/testing';
 
 const PHASE_4 = { crash: true, tabs: true, access: false, gc: false };
-/** What the runner uses since P5.4; gc (F13) is switched on by P6.2. */
 const WITH_ACCESS = { crash: true, tabs: true, access: true, gc: false };
 const NO_FLAGS = { crash: false, tabs: false, access: false, gc: false };
 
-/** The action kinds of a trace; a move is a mutate by the admin, listed by its mutator name. */
 const kinds = (trace: string[]) =>
   new Set(
     trace.map((line) => {

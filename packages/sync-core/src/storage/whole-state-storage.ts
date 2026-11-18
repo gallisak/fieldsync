@@ -1,7 +1,6 @@
 import type { Change, Cursor, Row } from '../protocol/types';
 import type { PersistedState, PullCommit, StoredMutation, StoredRejection, SyncStorage } from './types';
 
-/** The complete persisted state as plain, JSON-safe data. */
 export interface WholeState {
   clientId: string;
   cursor: Cursor | null;
@@ -26,20 +25,14 @@ function applyChanges(base: Map<string, Row>, changes: Change[]): void {
   }
 }
 
-/**
- * The `SyncStorage` semantics, implemented once over a backend that reads and writes the whole state.
- * Each method reads, changes and writes with no `await` in between, so it is atomic for every client that
- * shares the backend.
- */
+/** No `await` between a method's read and its write: that is what makes each method atomic across tabs. */
 export abstract class WholeStateStorage implements SyncStorage {
   private readonly newId: () => string;
 
-  /** `idGen` makes client ids reproducible, as the simulation needs. */
   constructor(opts: { idGen?: () => string } = {}) {
     this.newId = opts.idGen ?? newClientId;
   }
 
-  /** A private copy of the stored state, or `undefined` when nothing is stored yet. */
   protected abstract read(): WholeState | undefined;
   protected abstract write(state: WholeState): void;
 

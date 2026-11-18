@@ -2,10 +2,6 @@ import { randomUUID } from 'crypto';
 import { DEMO, TOKENS, push, seed } from '../support/api';
 import { createTestApp, describeDb, type TestApp } from '../support/pg';
 
-/**
- * F7: a mutation id ahead of the server's counter is answered with a generic 400, which the client treats as
- * "offline" and retries unchanged forever. The server must say what it expected so the client can recover.
- */
 describeDb('F7 out-of-order mutation id', () => {
   let t: TestApp;
   beforeAll(async () => {

@@ -28,10 +28,6 @@ export class PushService {
     private readonly rejections: RejectionRepository,
   ) {}
 
-  /**
-   * One transaction per mutation. A request-level error (CLIENT_MISMATCH, OUT_OF_ORDER) aborts the rest of the
-   * batch; mutations committed before it stay committed and the client learns about them on the next pull.
-   */
   async push(user: AuthUser, req: PushRequest): Promise<PushResponse> {
     const results: MutationResult[] = [];
     for (const m of req.mutations) {
@@ -63,7 +59,7 @@ export class PushService {
         sites = await this.executor.execute(c, user, m, clientId);
         result = { id: m.id, status: 'applied' };
       } catch (err) {
-        if (isTransient(err)) throw err; // the whole transaction is retried; the id is not consumed
+        if (isTransient(err)) throw err;
         await c.query('ROLLBACK TO SAVEPOINT m');
         const rejection = this.toRejection(err, m);
         await this.rejections.insert(c, clientId, m.id, rejection);

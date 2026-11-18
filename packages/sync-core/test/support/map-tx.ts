@@ -1,6 +1,5 @@
 import type { EntityName, MutatorTx, Row } from '../../src';
 
-/** In-memory row store for mutator-level tests. */
 export class MapTx implements MutatorTx {
   readonly rows = new Map<string, Row>();
 

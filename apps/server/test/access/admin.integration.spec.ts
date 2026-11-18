@@ -51,7 +51,6 @@ describeDb('admin access endpoints', () => {
     expect(granted.body).toMatchObject({ mode: 'snapshot', reason: 'access_changed', hasMore: false });
     expect(granted.body.changes.map((c: Change) => [c.id, c.op, c.siteId])).toEqual([[ticketA, 'put', DEMO.siteA]]);
 
-    // The same sites again: back to deltas.
     const quiet = await pull(t.http, TOKENS.techB, { clientId: 'tech-b', cursor: granted.body.cursor });
     expect(quiet.body).toMatchObject({ mode: 'delta', changes: [] });
 

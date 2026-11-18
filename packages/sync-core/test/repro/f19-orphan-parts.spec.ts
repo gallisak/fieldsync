@@ -4,7 +4,6 @@ import { MapTx } from '../support/map-tx';
 const SITE = '33333333-3333-4333-8333-333333333333';
 const TICKET = '11111111-1111-4111-8111-111111111111';
 
-/** F19: deleting a ticket leaves its parts behind; they are replicated to every client forever. */
 describe('F19 orphan parts', () => {
   it('deletes the parts of a deleted ticket', () => {
     const tx = new MapTx([

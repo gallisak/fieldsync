@@ -4,11 +4,6 @@ import { ScriptedTransport, flush } from '../support/scripted-transport';
 
 const SITE = '33333333-3333-4333-8333-333333333333';
 
-/**
- * F14: the queue of unsynced mutations lives only in memory, and lastMutationId is persisted only after a
- * successful pull. A reload loses all offline work; a reload between "push acknowledged" and "pull done"
- * reuses mutation ids the server has already seen, so new work is discarded as duplicates.
- */
 describe('F14 reload', () => {
   const clients: SyncClient[] = [];
   const open = (storage: MemoryStorage, transport: ScriptedTransport) => {
@@ -41,7 +36,7 @@ describe('F14 reload', () => {
   it('never reuses a mutation id the server has acknowledged', async () => {
     const storage = new MemoryStorage();
     const first = new ScriptedTransport().replyPush({ results: [{ id: 1, status: 'applied' }], lastMutationId: 1 });
-    const a = open(storage, first); // its pull is unscripted, so it fails after the push succeeded
+    const a = open(storage, first);
     await ready(a);
     await a.mutate('ticket.create', { id: randomUUID(), siteId: SITE, title: 'before reload', description: '' });
     await flush();

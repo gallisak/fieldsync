@@ -59,7 +59,6 @@ export const setTicketStatus = defineMutator({
   },
 });
 
-/** Idempotent; removes the ticket's parts too (F19). */
 export const deleteTicket = defineMutator({
   args: deleteTicketArgs,
   reads: (a) => [{ entity: 'ticket', id: a.id }],

@@ -10,29 +10,23 @@ import type { BlockReason, SyncFacts } from './status';
 import type { Transport } from '../transport/http';
 import type { Change, Cursor, EntityName, MutatorName, Row } from '../protocol/types';
 
-/** A mutation the server refused, with the full mutation so the UI can offer to fix and retry it. */
 export type Rejection = StoredRejection;
 
-/** A queued mutation as the UI lists it; `id` is missing while it is still being stored. */
 export type QueuedMutation = Omit<StoredMutation, 'id'> & { id?: number };
 
-/** Applied to the local view at once, but not yet in storage: it gets its id when it is stored. */
 type UnsavedMutation = Omit<StoredMutation, 'id'>;
 
-/** Time source of the client; injectable so tests and the simulator control it. */
 export interface SyncClock {
   now(): number;
   setTimeout(fn: () => void, ms: number): unknown;
   clearTimeout(handle: unknown): void;
 }
 
-/** Outside signals that make syncing worthwhile; each returns its unsubscribe function. */
 export interface SyncEnvironment {
   onOnline?(fn: () => void): () => void;
   onVisible?(fn: () => void): () => void;
 }
 
-/** Where `start()` opens the server's poke stream. */
 export interface PokeStreamConfig {
   url: string;
   token: string;
@@ -45,18 +39,11 @@ export interface SyncClientOptions {
   clientId?: string;
   transport: Transport;
   storage: SyncStorage;
-  /** Without it the client syncs on its own triggers only (mutations, `online`, visibility, poll). */
   stream?: PokeStreamConfig;
-  /**
-   * Tabs sharing the storage: only the elected one talks to the server, the others follow through storage.
-   * Without it this client always leads.
-   */
   tabs?: TabCoordinator;
-  /** Defaults: warn at 1 000 queued mutations, refuse new ones (`QUEUE_FULL`) at 10 000. */
   queueLimits?: { warnAt?: number; max?: number };
   clock?: SyncClock;
   random?: () => number;
-  /** Defaults to the browser's `online` and `visibilitychange` events, and to nothing elsewhere. */
   env?: SyncEnvironment;
 }
 
@@ -83,7 +70,6 @@ function browserEnvironment(): SyncEnvironment {
   };
 }
 
-/** Background poll period: 30 s, jittered so clients do not poll in step. */
 const POLL_MS = 30_000;
 
 class MapTx implements MutatorTx {
@@ -125,21 +111,16 @@ function applyLocally(state: Map<string, Row>, m: UnsavedMutation): void {
 }
 
 export class SyncClient {
-  /** Resolves once the persisted state is loaded. Nothing is pushed or pulled before that. */
   readonly ready: Promise<void>;
   private readonly transport: Transport;
-  /** Replaced by a `MemoryStorage` when the given one cannot be opened (`facts.storage = 'memory'`). */
   private storage: SyncStorage;
   private readonly clock: SyncClock;
   private readonly random: () => number;
   private readonly env: SyncEnvironment;
   private readonly streamConfig?: PokeStreamConfig;
   private readonly tabs?: TabCoordinator;
-  /** Only the leader pushes, pulls, keeps the stream and polls; a follower reloads from storage. */
   private isLeader: boolean;
-  /** Aborted by `dispose()`: every request in flight is given up. */
   private readonly abort = new AbortController();
-  /** Closes the poke stream only: `dispose()` and `block()`. */
   private streamAbort = new AbortController();
   private streamTimer?: unknown;
   private id = '';
@@ -147,14 +128,12 @@ export class SyncClient {
   private cursor: Cursor | null = null;
   private lastMutationId = 0;
   private queue: StoredMutation[] = [];
-  /** Highest id this client has had answered by a push; entries stay in `pending` until a pull acknowledges them. */
   private pushedUpTo = 0;
   private outOfOrderRetried = false;
   private unsaved: UnsavedMutation[] = [];
   private readonly warnAt: number;
   private readonly maxQueue: number;
   private queueWarned = false;
-  /** Bumped whenever base or queue change; `view()`, `rows()` and `pending` are recomputed only then. */
   private dataVersion = 0;
   private derived?: {
     version: number;
@@ -162,7 +141,6 @@ export class SyncClient {
     byEntity: Map<string, readonly Row[]>;
     pending: readonly QueuedMutation[];
   };
-  /** Every step that reads or writes storage and updates memory from it runs here, one at a time. */
   private writeChain: Promise<unknown>;
   private listeners = new Set<() => void>();
   private currentFacts: SyncFacts = {
@@ -176,9 +154,7 @@ export class SyncClient {
   private rejected: readonly Rejection[] = [];
   private changeCount = 0;
   private running?: Promise<void>;
-  /** Set when a sync is requested while one runs (a poke, a new mutation): it runs again afterwards (F3). */
   private rerun = false;
-  /** Consecutive failed runs; drives the backoff. */
   private attempt = 0;
   private retryTimer?: unknown;
   private pollTimer?: unknown;
@@ -203,12 +179,10 @@ export class SyncClient {
     this.writeChain = this.ready;
   }
 
-  /** Empty until `ready` has resolved. */
   get clientId(): string {
     return this.id;
   }
 
-  /** A new object whenever a fact changes, so it can be a `useSyncExternalStore` snapshot as is. */
   get facts(): SyncFacts {
     return this.currentFacts;
   }
@@ -217,7 +191,6 @@ export class SyncClient {
     return this.queue.length + this.unsaved.length;
   }
 
-  /** Stored mutations in id order, then the ones still being stored. */
   get pending(): readonly QueuedMutation[] {
     return this.derive().pending;
   }
@@ -226,7 +199,6 @@ export class SyncClient {
     return this.rejected;
   }
 
-  /** The user has seen a rejection: it leaves the list (in every tab). */
   async dismissRejection(mutationId: number): Promise<void> {
     await this.serial(async () => {
       await this.storage.dismissRejection(mutationId);
@@ -240,7 +212,6 @@ export class SyncClient {
     return { base: this.base, cursor: this.cursor };
   }
 
-  /** Increases on every state change; usable as a cheap snapshot id for UI bindings. */
   get snapshotVersion(): number {
     return this.changeCount;
   }
@@ -250,12 +221,6 @@ export class SyncClient {
     return () => this.listeners.delete(listener);
   }
 
-  /**
-   * Shows the mutation in the local view at once and queues it. It is first run against the current view: a
-   * mutation that cannot apply (invalid arguments, a stale status, a negative quantity …) throws its
-   * `MutationRejected` here and nothing is queued. The returned promise resolves when the mutation is durable
-   * (stored with its id); callers may ignore it.
-   */
   mutate(name: MutatorName, args: Record<string, unknown>): Promise<void> {
     const def = getMutator(name);
     if (!def) throw new MutationRejected('BAD_ARGS', `Unknown mutator ${String(name)}`);
@@ -290,25 +255,14 @@ export class SyncClient {
     return durable;
   }
 
-  /**
-   * Server state, then the stored queue, then mutations still being stored. A queued mutation that no longer
-   * applies (its row is gone, its status is stale) is skipped here but stays queued until the server decides.
-   * Recomputed only when base or queue changed; treat the result as read-only.
-   */
   view(): ReadonlyMap<string, Row> {
     return this.derive().view;
   }
 
-  /** The rows of one entity in the view; the same array until the data changes. */
   rows(entity: EntityName): readonly Row[] {
     return this.derive().byEntity.get(entity) ?? NO_ROWS;
   }
 
-  /**
-   * Starts background syncing: one sync now, then on every stream poke, on `online`, on the page becoming
-   * visible and on a jittered poll. Mutations request a sync whether or not the client was started. With
-   * `tabs`, the stream and the poll run only while this tab leads; the others ask the leader to sync.
-   */
   start(): void {
     if (this.started || this.disposed) return;
     this.started = true;
@@ -326,10 +280,6 @@ export class SyncClient {
     request();
   }
 
-  /**
-   * Requests a sync. One runs at a time; a request during a run is remembered and runs right after it, so a
-   * poke is never lost (F3). Resolves when the current run settles.
-   */
   sync(): Promise<void> {
     if (this.disposed || this.currentFacts.blocked) return Promise.resolve();
     if (!this.isLeader) {
@@ -351,7 +301,6 @@ export class SyncClient {
     return this.running;
   }
 
-  /** Stops everything: aborts the requests in flight, clears every timer and listener, closes storage (F21). */
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -360,7 +309,7 @@ export class SyncClient {
     this.clearRetry();
     if (this.pollTimer !== undefined) this.clock.clearTimeout(this.pollTimer);
     for (const off of this.unsubscribe.splice(0)) off();
-    this.tabs?.close(); // the next tab takes over
+    this.tabs?.close();
     this.storage.close();
     this.listeners.clear();
   }
@@ -370,7 +319,6 @@ export class SyncClient {
     try {
       state = await this.storage.load();
     } catch (err) {
-      // Private mode, a full disk, a blocked upgrade: keep working, but never pretend the data is safe.
       console.error('fieldsync: durable storage unavailable, keeping changes in memory only:', err);
       this.storage = new MemoryStorage();
       state = await this.storage.load();
@@ -432,10 +380,7 @@ export class SyncClient {
     return this.queue.filter((m) => m.id > from);
   }
 
-  /**
-   * Sends what the server has not answered yet. Nothing leaves `pending` here: a mutation leaves the queue only
-   * in the storage commit of the pull page that contains its effect (F16).
-   */
+  /** Nothing leaves the queue here, only in the commit of the pull page that holds its effect (F16). */
   private async push(): Promise<void> {
     for (;;) {
       const batch = this.unpushed().slice(0, 100);
@@ -454,9 +399,8 @@ export class SyncClient {
     }
   }
 
-  /** Decides from the error what happens to the queue and whether syncing goes on. */
   private async onSyncError(err: unknown): Promise<void> {
-    if (this.disposed) return; // includes requests aborted by dispose()
+    if (this.disposed) return;
     const e = err instanceof TransportError ? err : undefined;
     if (e?.status === 401) return this.block('auth');
     if (e?.status === 426) return this.block('upgrade');
@@ -469,7 +413,7 @@ export class SyncClient {
         const highest = Math.max(this.lastMutationId, ...this.queue.map((m) => m.id));
         if (expected <= highest + 1 && !this.outOfOrderRetried) {
           this.outOfOrderRetried = true;
-          this.pushedUpTo = expected - 1; // resend from what the server expects, right after this run
+          this.pushedUpTo = expected - 1;
           return void this.sync();
         }
       }
@@ -487,7 +431,6 @@ export class SyncClient {
     }, delay);
   }
 
-  /** Stops syncing for good (until a new client is made); the queue is kept. */
   private block(reason: BlockReason): void {
     this.closeStream();
     this.clearRetry();
@@ -496,7 +439,6 @@ export class SyncClient {
     this.setFacts({ blocked: reason, phase: 'idle' });
   }
 
-  /** New client id, queue renumbered from 1; the next sync pushes everything again under the new id. */
   private async resetClient(): Promise<void> {
     await this.serial(async () => {
       this.adopt(await this.storage.resetClient());
@@ -509,9 +451,8 @@ export class SyncClient {
   }
 
   /**
-   * Pulls until the client holds the server's state. The pages of a snapshot are collected in memory and
-   * committed with its last one, so storage never holds part of a snapshot (a reload starts it over). A delta
-   * pull always follows a snapshot: it brings what changed while the snapshot was paged.
+   * Snapshot pages are committed together, so storage never holds part of a snapshot. The delta pull that always
+   * follows brings what changed while the snapshot was paged.
    */
   private async pull(): Promise<void> {
     let cursor = this.cursor;
@@ -525,7 +466,6 @@ export class SyncClient {
       this.setFacts({ connection: 'online' });
       let snapshot: Change[] | undefined;
       if (resp.mode === 'snapshot') {
-        // A first page (it has a reason) starts over: rows staged from a snapshot the server restarted are dropped.
         if (resp.reason || !staged) staged = [...resp.changes];
         else staged.push(...resp.changes);
         if (resp.hasMore) {
@@ -539,7 +479,6 @@ export class SyncClient {
         const ok = await this.storage.commitPull({
           expectedCursor: this.cursor,
           cursor: resp.cursor,
-          // A snapshot replaces the base (rows of a site the user lost disappear); the queue stays on top.
           ...(snapshot ? { snapshot } : { changes: resp.changes }),
           lastMutationId: resp.lastMutationId,
           rejections: resp.rejections,
@@ -555,7 +494,6 @@ export class SyncClient {
     }
   }
 
-  /** Changes facts; the leader shares connection, phase and blocking with the other tabs. */
   private setFacts(patch: Partial<Pick<SyncFacts, 'connection' | 'phase' | 'blocked' | 'storage'>>): void {
     const f = this.currentFacts;
     if (Object.entries(patch).every(([k, v]) => f[k as keyof SyncFacts] === v)) return;
@@ -564,7 +502,6 @@ export class SyncClient {
     this.emit();
   }
 
-  /** Leader duties beyond syncing on request: the poke stream and the background poll. */
   private lead(): void {
     this.schedulePoll();
     if (this.streamConfig) void this.keepStreamOpen(this.streamConfig);
@@ -579,7 +516,6 @@ export class SyncClient {
       this.pollTimer = undefined;
       return;
     }
-    // What the previous leader left in storage is the starting point; anything it had not pushed goes now.
     void this.reload().then(() => {
       this.lead();
       void this.sync();
@@ -613,10 +549,6 @@ export class SyncClient {
     });
   }
 
-  /**
-   * Keeps the poke stream open: reopens after an end or an error with backoff (reset by the first byte of a
-   * connection). Every successful open requests a sync, since pokes may have been missed while disconnected.
-   */
   private async keepStreamOpen(config: PokeStreamConfig): Promise<void> {
     let attempt = 0;
     const abort = (this.streamAbort = new AbortController());

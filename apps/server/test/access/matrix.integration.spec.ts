@@ -21,14 +21,12 @@ const UNAUTHENTICATED: Caller[] = [
   { name: 'wrong token', token: 'not-a-token', sites: [] },
 ];
 
-/** A ticket with one part, both in `site`. */
 interface Fixture {
   site: string;
   ticket: string;
   part: string;
 }
 
-/** The arguments of each mutator against a fixture, and the ids it would create. */
 const MUTATORS: Record<
   MutatorName,
   (f: Fixture, caller: Caller) => { args: Record<string, unknown>; creates?: string }
@@ -40,7 +38,6 @@ const MUTATORS: Record<
   'ticket.update': (f) => ({ args: { id: f.ticket, patch: { title: 'changed' } } }),
   'ticket.setStatus': (f) => ({ args: { id: f.ticket, from: 'open', to: 'in_progress' } }),
   'ticket.delete': (f) => ({ args: { id: f.ticket } }),
-  // To another site the caller has, or to the same one (a no-op) when it has only this one.
   'ticket.move': (f, caller) => ({
     args: { id: f.ticket, toSiteId: caller.sites.find((s) => s !== f.site) ?? caller.sites[0] },
   }),

@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { APP_FILTER } from '@nestjs/core';
 import { AccessService } from './access/access.service';
-import { AuthGuard } from './auth';
+import { AuthGuard } from './auth/auth.guard';
 import { ApiExceptionFilter } from './common/api-exception.filter';
 import { ConfigModule } from './config/config.module';
 import { Db } from './database/db.service';

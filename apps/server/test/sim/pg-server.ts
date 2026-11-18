@@ -9,6 +9,7 @@ import {
   type Row,
 } from '@fieldsync/sync-core';
 import type { AuthUser, SimServer } from '@fieldsync/sync-core/testing';
+import { tokenHash } from '../../src/auth/token-hash';
 import { ApiError } from '../../src/common/errors';
 import { PullService } from '../../src/pull.service';
 import { PushService } from '../../src/push.service';
@@ -75,8 +76,8 @@ export class PgServer implements SimServer {
     sites.add(siteId);
     this.userSites.set(userId, sites);
     await this.t.pool.query(
-      `INSERT INTO users (id, name, role, token) VALUES ($1::uuid, $1::text, 'technician', $1::text) ON CONFLICT DO NOTHING`,
-      [userId],
+      `INSERT INTO users (id, name, role, token_hash) VALUES ($1::uuid, $1::text, 'technician', $2) ON CONFLICT DO NOTHING`,
+      [userId, tokenHash(userId)],
     );
     await this.t.pool.query(`INSERT INTO user_sites (user_id, site_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [
       userId,

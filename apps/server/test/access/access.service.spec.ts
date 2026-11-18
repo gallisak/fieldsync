@@ -1,6 +1,6 @@
 import type { QueryResultRow } from 'pg';
 import { AccessService, type Queryable } from '../../src/access/access.service';
-import type { AuthUser } from '../../src/auth';
+import type { AuthUser } from '../../src/auth/auth.guard';
 
 const A = '00000000-0000-4000-8000-0000000000a1';
 const B = '00000000-0000-4000-8000-0000000000b1';

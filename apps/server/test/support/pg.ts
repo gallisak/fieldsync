@@ -1,6 +1,6 @@
 import 'reflect-metadata';
 import { randomBytes } from 'crypto';
-import type { INestApplication } from '@nestjs/common';
+import type { INestApplication, LoggerService } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { Pool } from 'pg';
 import request from 'supertest';
@@ -59,9 +59,12 @@ export interface TestApp {
 /**
  * Boots the full AppModule against a fresh, empty Postgres schema. Each call gets its own schema,
  * so test files can run in parallel without seeing each other's rows. `env` overrides configuration
- * (for example DB_POOL_MAX).
+ * (for example DB_POOL_MAX); `logger` receives the app's log output, which is off by default.
  */
-export async function createTestApp(env: Record<string, string> = {}): Promise<TestApp> {
+export async function createTestApp(
+  env: Record<string, string> = {},
+  opts: { logger?: LoggerService } = {},
+): Promise<TestApp> {
   const connectionString = requireDatabaseUrl();
   if (!connectionString) throw new Error('createTestApp() needs DATABASE_URL');
 
@@ -79,7 +82,7 @@ export async function createTestApp(env: Record<string, string> = {}): Promise<T
       .overrideProvider(APP_CONFIG)
       .useValue(config)
       .compile();
-    const app = moduleRef.createNestApplication({ logger: false });
+    const app = moduleRef.createNestApplication({ logger: opts.logger ?? false });
     await app.init();
 
     return {

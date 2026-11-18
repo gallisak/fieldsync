@@ -81,7 +81,7 @@ in `packages/sync-core/test/repro/`.
 | F8 | Write access | Authorization trusts the client-supplied `siteId` | `f08-write-access.integration.spec.ts` | fixed |
 | F9 | Read access | Site filter applied only when `cursor = 0` | `f09-read-access.integration.spec.ts` | fixed |
 | F10 | Authenticity | `clientId` ownership never checked on push or pull | `f10-client-ownership.integration.spec.ts` | fixed |
-| F11 | Authenticity | Bearer token accepted in the SSE query string; tokens stored in plaintext | `f11-token-in-url.integration.spec.ts` | open |
+| F11 | Authenticity | Bearer token accepted in the SSE query string; tokens stored in plaintext | `f11-token-in-url.integration.spec.ts` | fixed |
 | F12 | Access lifecycle | Revoked access and site moves never remove data from clients | `f12-revocation-move.integration.spec.ts` | moves fixed; revocation open |
 | F13 | Log lifecycle | GC by age with no floor or reload signal; new clients replay a truncated log | `f13-gc.integration.spec.ts` | open |
 | F14 | Client data loss | Pending queue not persisted; `lastMutationId` persisted only after pull | `f14-reload.spec.ts` | fixed |
@@ -338,6 +338,34 @@ otherwise), and the push response's `lastMutationId` is read with the same condi
 
 **Alternatives considered.** Deriving the client id on the server (e.g. `userId + device`) would remove the
 check but breaks the client's ability to create its id offline before it has ever talked to the server.
+
+### F11 — the stream token in the URL, every token in plaintext
+
+**What.** `/sync/stream` accepted the bearer token as `?token=`, because `EventSource` cannot send headers.
+`users.token` held every token as plain text.
+
+**Why it is dangerous.** A token in a URL is written to access logs and proxy logs, kept in browser history
+and sent on as `Referer`. With plaintext storage, a database dump, a backup or a read-only SQL login hands out
+every account.
+
+**Reproduce.** `apps/server/test/repro/f11-token-in-url.integration.spec.ts`:
+- a stream opened with `?token=` must get `401`;
+- no `users` row may contain a token;
+- the app's log output during a push and a stream connect must contain no token.
+
+**Fix.** `AuthGuard` (`src/auth/`) reads the token only from `Authorization: Bearer`, and the query-string branch
+is gone. Users are looked up by `sha256(token)`. Migration `004_token_hash.sql` hashes the existing tokens in
+place and drops the plaintext column; checked on a database that had plaintext users. The demo seed stores
+hashes too. CORS allows exactly the headers the clients send: `authorization`, `content-type`,
+`x-fieldsync-protocol` and `x-request-id`. The web client has opened its stream with `fetch` and the header
+since the poke-stream work. A headless-Chrome run against the rebuilt containers shows the stream request with
+the header and no token in the URL, a poke arriving in under 200 ms, and no CORS errors. Controllers take the
+user from `@CurrentUser()`.
+
+**Alternatives considered.** A short-lived, single-use stream ticket in the URL would keep `EventSource` but adds
+an endpoint and server state. A cookie would bring CSRF and cross-site `SameSite` concerns. A slow password
+hash (bcrypt, argon2) protects low-entropy secrets; the tokens are random, so a fast hash is enough and costs
+nothing per request. The demo tokens are guessable on purpose.
 
 ### F14 — a reload loses offline work and reuses mutation ids
 

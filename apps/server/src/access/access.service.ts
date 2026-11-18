@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { createHash } from 'crypto';
 import type { QueryResultRow } from 'pg';
-import type { AuthUser } from '../auth';
+import type { AuthUser } from '../auth/auth.guard';
 
 /** A pool or a transaction's client: inside a transaction, access is read as that transaction sees it. */
 export interface Queryable {

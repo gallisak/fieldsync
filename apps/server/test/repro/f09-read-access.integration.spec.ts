@@ -1,4 +1,5 @@
 import { decodeCursor } from '@fieldsync/sync-core';
+import { tokenHash } from '../../src/auth/token-hash';
 import { ChangeLogRepository } from '../../src/sync/repositories/change-log.repository';
 import { DEMO, TOKENS, createTicket, pull, seed } from '../support/api';
 import { createTestApp, describeDb, type TestApp } from '../support/pg';
@@ -35,10 +36,10 @@ describeDb('F9 read access on every pull path', () => {
   });
 
   it('gives a technician with no sites an empty last page without reading the log', async () => {
-    await t.pool.query(
-      `INSERT INTO users (id, name, role, token)
-       VALUES ('00000000-0000-4000-8000-000000000009', 'No sites', 'technician', 'no-sites-token')`,
-    );
+    await t.pool.query(`INSERT INTO users (id, name, role, token_hash) VALUES ($1, 'No sites', 'technician', $2)`, [
+      '00000000-0000-4000-8000-000000000009',
+      tokenHash('no-sites-token'),
+    ]);
     await createTicket(t.http, {
       token: TOKENS.admin,
       clientId: 'admin-2',

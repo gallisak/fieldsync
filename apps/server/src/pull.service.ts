@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { Change, PullQuery, PullResponse } from '@fieldsync/sync-core';
 import type { PoolClient } from 'pg';
 import { AccessService } from './access/access.service';
-import type { AuthUser } from './auth';
+import type { AuthUser } from './auth/auth.guard';
 import { Db } from './database/db.service';
 import { decodeCursor, encodeCursor, type CursorData } from './sync/pull/cursor';
 import { ChangeLogRepository, type LogState, type StoredLogRow } from './sync/repositories/change-log.repository';

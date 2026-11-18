@@ -8,7 +8,7 @@ import {
 } from '@fieldsync/sync-core';
 import { ZodError } from 'zod';
 import type { PoolClient } from 'pg';
-import type { AuthUser } from './auth';
+import type { AuthUser } from './auth/auth.guard';
 import { ApiError } from './common/errors';
 import { Db, isTransient } from './database/db.service';
 import { MutationExecutor } from './sync/push/mutation-executor';

@@ -9,7 +9,7 @@ import {
 } from '@fieldsync/sync-core';
 import type { PoolClient } from 'pg';
 import { AccessService } from '../../access/access.service';
-import type { AuthUser } from '../../auth';
+import type { AuthUser } from '../../auth/auth.guard';
 import { ChangeLogRepository, type LogRow } from '../repositories/change-log.repository';
 
 const LOCK_ORDER: Record<EntityName, number> = { ticket: 0, part: 1 };

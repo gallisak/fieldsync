@@ -4,14 +4,13 @@ import { defineConfig } from 'steiger';
 export default defineConfig([
   ...fsd.configs.recommended,
   {
-    files: ['./src/shared/ui/**'],
-    rules: { 'fsd/public-api': 'off' },
+    // One slice per noun, verb and screen block, however many slices use it: a page stays a short list of
+    // named widgets, every user action is its own feature, and `part` is read by one widget only.
+    rules: { 'fsd/insignificant-slice': 'off' },
   },
   {
-    // Each widget is used by one page and each feature by one widget, on purpose: a page stays a short list of
-    // named blocks, and every user action is its own slice.
-    files: ['./src/widgets/**', './src/features/**'],
-    rules: { 'fsd/insignificant-slice': 'off' },
+    files: ['./src/shared/ui/**'],
+    rules: { 'fsd/public-api': 'off' },
   },
   {
     // `src/app/providers` is the conventional home of the app's context providers.

@@ -14,10 +14,17 @@ const sessionSchema = z.object({
 
 export type Session = z.infer<typeof sessionSchema>;
 
+export interface Viewer {
+  id: string;
+  role: Session['role'];
+  sites: Session['sites'];
+}
+
 const listeners = new Set<() => void>();
 let cached: { raw: string | null; session: Session | null } = { raw: null, session: null };
+const viewers = new WeakMap<Session, Viewer>();
 
-function read(): Session | null {
+export function readSession(): Session | null {
   const raw = localStorage.getItem(KEY);
   if (raw !== cached.raw) {
     let session: Session | null = null;
@@ -50,7 +57,19 @@ function subscribe(listener: () => void): () => void {
 
 /** `undefined` until the browser's storage has been read (on the server and during hydration). */
 export function useSession(): Session | null | undefined {
-  return useSyncExternalStore(subscribe, read, () => undefined);
+  return useSyncExternalStore(subscribe, readSession, () => undefined);
+}
+
+/** The signed-in user. Only for components below the session gate: it throws when signed out. */
+export function useViewer(): Viewer {
+  const session = useSession();
+  if (!session) throw new Error('useViewer() is used without a signed-in session');
+  let viewer = viewers.get(session);
+  if (!viewer) {
+    viewer = { id: session.userId, role: session.role, sites: session.sites };
+    viewers.set(session, viewer);
+  }
+  return viewer;
 }
 
 export function signIn(session: Session): void {

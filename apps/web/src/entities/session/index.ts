@@ -1,2 +1,2 @@
-export type { Session } from './model/session-store';
-export { signIn, signOut, useSession } from './model/session-store';
+export type { Session, Viewer } from './model/session-store';
+export { signIn, signOut, useSession, useViewer } from './model/session-store';

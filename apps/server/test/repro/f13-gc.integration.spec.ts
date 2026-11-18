@@ -82,3 +82,51 @@ describeDb('F13 change-log GC vs stale and new clients', () => {
     expect(sortById(fresh.rows('ticket'))).toEqual(server);
   });
 });
+
+describeDb('F13 a new client on a database whose log was collected', () => {
+  let t: TestApp;
+  let client: SyncClient | undefined;
+  beforeAll(async () => {
+    t = await createTestApp();
+    await seed(t.pool);
+    // 1 000 tickets over both sites, each with one part: 2 000 entities, versions 1..2000, and no log left.
+    await t.pool.query(
+      `WITH tickets AS (
+         SELECT gen_random_uuid() AS id, gen_random_uuid() AS part_id, g,
+                CASE WHEN g % 2 = 0 THEN $1::uuid ELSE $2::uuid END AS site_id
+           FROM generate_series(1, 1000) AS g
+       ), inserted AS (
+         INSERT INTO entities (entity, id, site_id, data, deleted, version)
+         SELECT 'ticket', id, site_id,
+                jsonb_build_object('id', id, 'siteId', site_id::text, 'title', 'old ' || g, 'description', '',
+                                   'status', 'open'),
+                false, g
+           FROM tickets
+       )
+       INSERT INTO entities (entity, id, site_id, data, deleted, version)
+       SELECT 'part', t.part_id, t.site_id,
+              jsonb_build_object('id', t.part_id, 'ticketId', t.id::text, 'siteId', t.site_id::text, 'name', 'belt',
+                                 'quantity', 1),
+              false, 1000 + t.g
+         FROM tickets t`,
+      [DEMO.siteA, DEMO.siteB],
+    );
+    await t.pool.query(`UPDATE sync_state SET last_version = 2000, min_retained_version = 2000`);
+  });
+  afterAll(async () => {
+    client?.dispose();
+    await t?.close();
+  });
+
+  it.failing('gets all 2 000 entities', async () => {
+    client = new SyncClient({
+      transport: new HttpTransport(await listen(t.app), TOKENS.admin),
+      storage: new MemoryStorage(),
+    });
+    await client.sync();
+
+    expect(client.rows('ticket').length + client.rows('part').length).toBe(2000);
+    expect(sortById(client.rows('ticket'))).toEqual(sortById(await liveRows(t.pool, 'ticket')));
+    expect(sortById(client.rows('part'))).toEqual(sortById(await liveRows(t.pool, 'part')));
+  });
+});

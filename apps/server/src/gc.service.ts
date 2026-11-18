@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { APP_CONFIG, type AppConfig } from './config/env';
 import { Db } from './database/db.service';
+import { MetricsService } from './observability/metrics.service';
 
 const GC_LOCK = 727002;
 
@@ -21,6 +22,7 @@ export class GcService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly db: Db,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
+    private readonly metrics: MetricsService,
   ) {}
 
   onModuleInit(): void {
@@ -36,7 +38,7 @@ export class GcService implements OnModuleInit, OnModuleDestroy {
     cutoff: Date = new Date(Date.now() - this.config.CHANGELOG_RETENTION_SECONDS * 1000),
   ): Promise<GcResult | null> {
     const days = this.config.CLIENT_RETENTION_DAYS;
-    return this.db.tx(async (c) => {
+    const result = await this.db.tx(async (c): Promise<GcResult | null> => {
       // Per schema: a run in one schema must not make another schema's run skip.
       const lock = await c.query<{ ok: boolean }>(
         `SELECT pg_try_advisory_xact_lock($1, hashtext(current_schema())) AS ok`,
@@ -70,6 +72,8 @@ export class GcService implements OnModuleInit, OnModuleDestroy {
       }
       return { cut, log, tombstones, rejections: rejections.rowCount ?? 0, clients: clients.rowCount ?? 0 };
     });
+    if (result) this.metrics.gcDeleted.inc(result.log + result.tombstones + result.rejections + result.clients);
+    return result;
   }
 
   private async tick(): Promise<void> {

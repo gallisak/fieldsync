@@ -8,6 +8,7 @@ const CODE_BY_STATUS: Record<number, string> = {
   401: 'UNAUTHENTICATED',
   403: 'FORBIDDEN',
   404: 'NOT_FOUND',
+  429: 'TOO_MANY_REQUESTS',
 };
 
 @Catch()

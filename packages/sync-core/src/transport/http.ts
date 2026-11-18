@@ -58,7 +58,12 @@ export class HttpTransport implements Transport {
         res = await this.fetchImpl(`${this.baseUrl}${path}`, {
           ...init,
           signal: controller.signal,
-          headers: { ...init.headers, authorization: `Bearer ${this.token}`, [PROTOCOL_HEADER]: String(PROTOCOL) },
+          headers: {
+            ...init.headers,
+            authorization: `Bearer ${this.token}`,
+            [PROTOCOL_HEADER]: String(PROTOCOL),
+            'x-request-id': globalThis.crypto.randomUUID(),
+          },
         });
       } catch (err) {
         throw this.failure(err, timedOut, signal);

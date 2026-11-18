@@ -4,8 +4,16 @@ import type { Pool } from 'pg';
 
 const LOCK_KEY = 727001;
 
-export async function migrate(pool: Pool, dir = join(__dirname, 'migrations')): Promise<string[]> {
-  const files = (await readdir(dir)).filter((f) => f.endsWith('.sql')).sort();
+const MIGRATIONS = join(__dirname, 'migrations');
+
+const migrationFiles = async (dir: string) => (await readdir(dir)).filter((f) => f.endsWith('.sql')).sort();
+
+export async function lastMigration(dir = MIGRATIONS): Promise<string> {
+  return (await migrationFiles(dir)).at(-1) ?? '';
+}
+
+export async function migrate(pool: Pool, dir = MIGRATIONS): Promise<string[]> {
+  const files = await migrationFiles(dir);
   const c = await pool.connect();
   const applied: string[] = [];
   try {

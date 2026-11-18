@@ -60,15 +60,25 @@ describeDb('admin access endpoints', () => {
     expect(revoked.body).toMatchObject({ mode: 'snapshot', reason: 'access_changed', changes: [] });
   });
 
-  it("pokes the user's open stream after a grant and after a revoke", async () => {
+  it("pokes the user's open stream after a grant and after a revoke, then for its new sites only", async () => {
     const stream = await openStream(await listen(t.app), { token: TOKENS.techB });
+    let mutationId = 0;
+    const create = (siteId: string) =>
+      createTicket(t.http, { token: TOKENS.admin, clientId: 'admin-2', mutationId: ++mutationId, siteId, title: 'x' });
     try {
       expect(stream.status).toBe(200);
       const pokes = () => stream.received().split('event: poke').length - 1;
       await call('post', techBOnA, TOKENS.admin);
       await until(async () => pokes() === 1, 'a poke after the grant');
+      await create(DEMO.siteA);
+      await until(async () => pokes() === 2, 'a poke for the granted site');
       await call('delete', techBOnA, TOKENS.admin);
-      await until(async () => pokes() === 2, 'a poke after the revoke');
+      await until(async () => pokes() === 3, 'a poke after the revoke');
+      await create(DEMO.siteA);
+      await create(DEMO.siteB);
+      await until(async () => pokes() >= 4, 'a poke for its own site');
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(pokes()).toBe(4);
     } finally {
       stream.req.destroy();
     }

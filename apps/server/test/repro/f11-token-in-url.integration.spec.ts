@@ -1,4 +1,3 @@
-import type { LoggerService } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { DEMO, TOKENS, listen, openStream, push, seed } from '../support/api';
 import { createTestApp, describeDb, type TestApp } from '../support/pg';
@@ -28,30 +27,27 @@ describeDb('F11 stream token in the URL', () => {
   });
 
   it('never writes a token to the log during a push or a stream connect', async () => {
-    const lines: string[] = [];
-    const record = (...args: unknown[]) => void lines.push(args.map(String).join(' '));
-    const logger: LoggerService = {
-      log: record,
-      error: record,
-      warn: record,
-      debug: record,
-      verbose: record,
-      fatal: record,
-    };
-    const logged = await createTestApp({}, { logger });
+    const logs: Record<string, unknown>[] = [];
+    const logged = await createTestApp({}, { logs });
     try {
       await seed(logged.pool);
       const res = await push(logged.http, TOKENS.techA, 'f11-log', [
         { id: 1, name: 'ticket.create', args: { id: randomUUID(), siteId: DEMO.siteA, title: 'F11', description: '' } },
       ]);
       expect(res.status).toBe(201);
-      const stream = await openStream(await listen(logged.app), { token: TOKENS.techA });
+      const baseUrl = await listen(logged.app);
+      const stream = await openStream(baseUrl, { token: TOKENS.techA });
       stream.req.destroy();
       expect(stream.status).toBe(200);
+      const inUrl = await openStream(baseUrl, { query: `token=${TOKENS.techB}` });
+      inUrl.req.destroy();
+      expect(inUrl.status).toBe(401);
+      await new Promise((resolve) => setTimeout(resolve, 50));
     } finally {
       await logged.close();
     }
-    expect(lines.length).toBeGreaterThan(0);
+    const lines = logs.map((l) => JSON.stringify(l));
+    expect(lines.some((l) => l.includes('/sync/stream?token=[Redacted]'))).toBe(true);
     for (const token of Object.values(TOKENS)) expect(lines.filter((l) => l.includes(token))).toEqual([]);
   });
 });

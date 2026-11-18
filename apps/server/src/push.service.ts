@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import {
   MutationRejected,
   type Mutation,
@@ -6,10 +6,13 @@ import {
   type PushRequest,
   type PushResponse,
 } from '@fieldsync/sync-core';
+import { PinoLogger } from 'nestjs-pino';
 import { ZodError } from 'zod';
 import type { PoolClient } from 'pg';
 import type { AuthUser } from './auth/auth.guard';
 import { ApiError } from './common/errors';
+import { withContext } from './common/request-context';
+import { MetricsService } from './observability/metrics.service';
 import { Db, isTransient } from './database/db.service';
 import { MutationExecutor } from './sync/push/mutation-executor';
 import { ClientRepository } from './sync/repositories/client.repository';
@@ -18,20 +21,30 @@ import { StreamService } from './stream.service';
 
 @Injectable()
 export class PushService {
-  private readonly logger = new Logger(PushService.name);
-
   constructor(
+    private readonly logger: PinoLogger,
     private readonly db: Db,
     private readonly streams: StreamService,
     private readonly executor: MutationExecutor,
     private readonly clients: ClientRepository,
     private readonly rejections: RejectionRepository,
-  ) {}
+    private readonly metrics: MetricsService,
+  ) {
+    logger.setContext(PushService.name);
+  }
 
   async push(user: AuthUser, req: PushRequest): Promise<PushResponse> {
     const results: MutationResult[] = [];
     for (const m of req.mutations) {
-      const { result, sites } = await this.applyOne(user, req.clientId, m);
+      const { result, sites } = await withContext({ clientId: req.clientId, mutationId: m.id }, async () => {
+        const started = performance.now();
+        const applied = await this.applyOne(user, req.clientId, m);
+        const { status, code } = applied.result;
+        this.metrics.mutations.inc({ status });
+        if (code && status === 'rejected') this.metrics.rejected.inc({ code });
+        this.logger.info({ status, code, durationMs: Math.round(performance.now() - started) }, 'mutation');
+        return applied;
+      });
       if (sites.length) this.streams.notify(sites);
       results.push(result);
     }
@@ -83,9 +96,7 @@ export class PushService {
     if (err instanceof ZodError) {
       return { code: 'BAD_ARGS', message: err.issues[0]?.message ?? 'Invalid arguments', details: err.issues };
     }
-    this.logger.error(
-      `mutation ${m.id} (${m.name}) failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
-    );
+    this.logger.error({ err, mutator: m.name }, 'mutation failed');
     return { code: 'INTERNAL', message: 'Unexpected server error' };
   }
 }

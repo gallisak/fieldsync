@@ -1,7 +1,8 @@
 import { DEFAULT_FAULTS, runSimulation, type SimConfig } from '../../src/testing';
 
-/** What phase 4 runs with: access changes (F12) and gc (F13) are switched on by P5.4 and P6.2. */
 const PHASE_4 = { crash: true, tabs: true, access: false, gc: false };
+/** What the runner uses since P5.4; gc (F13) is switched on by P6.2. */
+const WITH_ACCESS = { crash: true, tabs: true, access: true, gc: false };
 const NO_FLAGS = { crash: false, tabs: false, access: false, gc: false };
 
 /** The action kinds of a trace; a move is a mutate by the admin, listed by its mutator name. */
@@ -29,6 +30,18 @@ describe('runSimulation', () => {
     const base = { seed: 1, steps: 400, clients: 3, faults: DEFAULT_FAULTS };
     const on = await runSimulation({ ...base, flags: PHASE_4 });
     expect([...kinds(on.trace)].sort()).toEqual(['advance', 'close-tab', 'crash', 'mutate', 'open-tab', 'partition']);
+    const access = await runSimulation({ ...base, flags: WITH_ACCESS });
+    expect([...kinds(access.trace)].sort()).toEqual([
+      'advance',
+      'close-tab',
+      'crash',
+      'grant',
+      'move',
+      'mutate',
+      'open-tab',
+      'partition',
+      'revoke',
+    ]);
     const off = await runSimulation({ ...base, flags: NO_FLAGS });
     expect([...kinds(off.trace)].sort()).toEqual(['advance', 'mutate', 'partition']);
   });

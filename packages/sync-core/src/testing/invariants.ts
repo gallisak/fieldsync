@@ -80,7 +80,7 @@ export function checkSafety(server: SimServer, devices: Device[], at: At): void 
   for (const d of devices) {
     const client = d.tabs[0];
     if (!client) continue;
-    // 1. no data the user must not have
+    // 1. after a pull, no row outside the user's sites as of that pull
     for (const row of baseRows(client)) {
       if (!d.sitesAtLastPull.has(row.siteId as string)) {
         fail(at, 1, `device ${d.index} holds ${String(row.id)} of site ${String(row.siteId)}`);

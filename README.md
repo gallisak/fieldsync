@@ -696,13 +696,14 @@ Each step is one random action:
 - the passage of time;
 - a network partition;
 - a device crash and restart on the same storage;
-- opening or closing a second tab.
+- opening or closing a second tab;
+- granting or revoking a technician's site, or an admin moving a ticket to another site.
 
 The network loses requests and responses, delivers duplicates, cuts a batch midway and delays every hop by up to
 400 ms, so answers overtake each other. After the last step the network heals and every client settles.
 
 Checked after every step:
-1. no client holds a row of a site its user could not see;
+1. after a pull, no client holds a row outside the sites its user had when the server computed that pull;
 2. no mutation is applied twice;
 3. a client's cursor never goes backwards, except through a snapshot.
 
@@ -732,19 +733,21 @@ rejection codes. Timestamps are left out of the comparison, because the model us
 uses the transaction time. A server call is awaited in full before anything else happens, so a seed replays
 exactly on Postgres too.
 
-Access changes (F12) and change-log garbage collection (F13) are not simulated yet. With them switched on,
-every seed fails on invariant 1 or 4, which is those two defects.
+Change-log garbage collection (F13) is not simulated yet: with it switched on, every seed fails on
+invariant 4, which is that defect.
 
 **Regression seeds** (`packages/sync-core/test/sim/regression-seeds.ts`). They run first. Each entry is the
 smallest failing run found when that one fix was reverted on its own, which is evidence that the simulation
-catches it. The second column shows how many of seeds 1–100 failed with that fix reverted.
+catches it. Each entry also keeps the flags it was found with. The "Seeds 1–100 failing" column shows how
+many of seeds 1–100 failed with that fix reverted.
 
-| Seed | Steps | Seeds 1–100 failing | Found |
-|---|---|---|---|
-| 30 | 1 | 100 | F4: a server that does not deduplicate applies a retried mutation twice |
-| 56 | 3 | 100 | F5: a rejection that does not advance the client blocks its queue |
-| 91 | 2 | 68 | F15: a follower tab that ignores `state-changed` keeps a stale base |
-| 86 | 27 | 41 | F15: a leader that ignores `queue-changed` never pushes another tab's mutation |
+| Seed | Steps | Access changes | Seeds 1–100 failing | Found |
+|---|---|---|---|---|
+| 30 | 1 | off | 100 | F4: a server that does not deduplicate applies a retried mutation twice |
+| 56 | 3 | off | 100 | F5: a rejection that does not advance the client blocks its queue |
+| 91 | 2 | off | 68 | F15: a follower tab that ignores `state-changed` keeps a stale base |
+| 86 | 27 | off | 41 | F15: a leader that ignores `queue-changed` never pushes another tab's mutation |
+| 31 | 12 | on | 100 | F12: without a snapshot on an access change, a client keeps revoked rows and misses granted ones (server or client side reverted) |
 
 ## Load results
 

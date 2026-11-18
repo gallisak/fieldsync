@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import {
   IdbStorage,
   LEGACY_CLIENT_ID_KEY,
+  LOCAL_SCHEMA,
   LEGACY_STATE_KEY,
   LocalStorageSyncStorage,
   MemoryStorage,
@@ -244,8 +245,63 @@ describe('MemoryStorage specifics', () => {
   });
 });
 
+function openRaw(name: string, version?: number, upgrade?: (db: IDBDatabase, tx: IDBTransaction) => void) {
+  return new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(name, version);
+    request.onupgradeneeded = () => upgrade?.(request.result, request.transaction as IDBTransaction);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+const result = <T>(request: IDBRequest<T>) =>
+  new Promise<T>((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+
 describe('IdbStorage specifics', () => {
   const name = () => `fieldsync-test-${randomUUID()}`;
+
+  it('migrates a version 1 database and keeps its queue, ids and order, and its data', async () => {
+    const db = name();
+    const part = { id: 'p1', ticketId: 't1', siteId: SITE, name: 'belt', quantity: 1 };
+    const queued = [3, 4, 5].map((id) => ({ ...mutation(`q${id}`), id }));
+    const v1 = await openRaw(db, 1, (raw, tx) => {
+      raw.createObjectStore('meta');
+      const entities = raw.createObjectStore('entities');
+      entities.createIndex('entity', 'entity');
+      entities.createIndex('siteId', 'siteId');
+      raw.createObjectStore('mutations', { keyPath: 'id' });
+      raw.createObjectStore('rejections', { keyPath: 'mutation.id' });
+      const meta = tx.objectStore('meta');
+      meta.put('v1-client', 'clientId');
+      meta.put('v1-cursor', 'cursor');
+      meta.put(2, 'lastMutationId');
+      meta.put(6, 'nextMutationId');
+      tx.objectStore('entities').put({ entity: 'ticket', siteId: SITE, data: row('t1') }, 'ticket/t1');
+      tx.objectStore('entities').put({ entity: 'part', siteId: SITE, data: part }, 'part/p1');
+      for (const m of [queued[2], queued[0], queued[1]]) tx.objectStore('mutations').put(m);
+    });
+    v1.close();
+
+    const s = new IdbStorage(db, indexedDB, { legacy: null });
+    const state = await s.load();
+    expect(state).toMatchObject({ clientId: 'v1-client', cursor: 'v1-cursor', lastMutationId: 2 });
+    expect(state.pending).toEqual(queued);
+    expect([...state.base].sort()).toEqual([
+      ['part/p1', part],
+      ['ticket/t1', row('t1')],
+    ]);
+    expect((await s.enqueue(mutation('next'))).id).toBe(6);
+    s.close();
+
+    const migrated = await openRaw(db);
+    expect(migrated.version).toBe(LOCAL_SCHEMA);
+    const index = migrated.transaction('entities').objectStore('entities').index('ticketId');
+    expect(await result(index.getAllKeys('t1'))).toEqual(['part/p1']);
+    migrated.close();
+  });
 
   it('imports the starter blob once: data and lastMutationId, a null cursor, the old client id', async () => {
     const ls = fakeLocalStorage();
@@ -309,7 +365,7 @@ describe('IdbStorage specifics', () => {
     const notified = jest.fn();
     storage.onVersionChange(notified);
 
-    const newer = indexedDB.open(db, 2);
+    const newer = indexedDB.open(db, LOCAL_SCHEMA + 1);
     await new Promise<void>((resolve, reject) => {
       newer.onsuccess = () => resolve();
       newer.onerror = () => reject(newer.error);

@@ -80,6 +80,22 @@ is not touched. A newer build opened on the same storage pushes the queue.
 Tests: `apps/server/test/protocol/upgrade.integration.spec.ts`, which sends old, missing, newer and malformed
 versions, with and without a token, to every guarded endpoint; and `packages/sync-core/test/client/upgrade.spec.ts`.
 
+**Local schema migrations never lose the queue.** The IndexedDB schema has a version (`LOCAL_SCHEMA`). Opening
+an older database runs every step after its version, in order, inside the upgrade transaction
+(`packages/sync-core/src/storage/idb-migrations.ts`). The rules:
+- steps are additive: new stores, new indexes, transformed rows;
+- base data may be dropped, but only together with setting the cursor to `null`, so the next pull fetches it
+  again as an `initial` snapshot;
+- the mutation queue, its ids and `nextMutationId` are never dropped or renumbered: they are the user's
+  unsynced work.
+
+Version 0 → 1 imports the state an older web app kept in `localStorage`, unsynced queue included. Version 1 → 2
+adds a `ticketId` index on `entities` (parts only), a harmless step that proves the mechanism. A tab still
+running the old code is closed by the upgrade and blocks with `upgrade` (see above). Tests in
+`packages/sync-core/test/storage/storage.spec.ts`: a version 1 database built by hand with three queued
+mutations and base rows keeps the mutations with their ids and order, its rows and cursor, and hands out the
+next id after them; and the `localStorage` import keeps its queue.
+
 ## Found issues
 
 Each issue is reproduced by an automated test that is committed as `it.failing` before the fix (red against

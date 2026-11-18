@@ -1,6 +1,9 @@
-export const LOCAL_SCHEMA = 1;
+export const LOCAL_SCHEMA = 2;
 
-/** A step must never clear `mutations`: they are the user's unsynced work. */
+/**
+ * Additive only. A step must never clear `mutations` (the user's unsynced work); it may drop `entities` only
+ * together with setting the cursor to `null`, so the next pull re-fetches them.
+ */
 export const migrations: Record<number, (db: IDBDatabase, tx: IDBTransaction) => void> = {
   1(db) {
     db.createObjectStore('meta');
@@ -9,5 +12,8 @@ export const migrations: Record<number, (db: IDBDatabase, tx: IDBTransaction) =>
     entities.createIndex('siteId', 'siteId');
     db.createObjectStore('mutations', { keyPath: 'id' });
     db.createObjectStore('rejections', { keyPath: 'mutation.id' });
+  },
+  2(_db, tx) {
+    tx.objectStore('entities').createIndex('ticketId', 'data.ticketId');
   },
 };

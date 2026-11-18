@@ -123,7 +123,7 @@ in `packages/sync-core/test/repro/`.
 | F17 | Determinism | `ticket.create` generates its id and timestamps inside the mutator | `f17-determinism.spec.ts` | fixed |
 | F18 | Merge semantics | `ticket.update` overwrites title and description wholesale | `f18-field-merge.spec.ts` | fixed |
 | F19 | Merge semantics | `ticket.delete` leaves the ticket's parts behind | `f19-orphan-parts.spec.ts` | fixed |
-| F20 | Resource leak (server) | Stream subscribers never removed; no backpressure or heartbeat | `f20-stream-leak.integration.spec.ts` | open |
+| F20 | Resource leak (server) | Stream subscribers never removed; no backpressure or heartbeat | `f20-stream-leak.integration.spec.ts` | fixed |
 | F21 | Resource leak (client) | `dispose()` does not abort requests; no request timeout; web effect has no cleanup | `f21-dispose.spec.ts` | fixed |
 | F22 | Resource / behaviour | Fixed 5 s retry without backoff or jitter; immediate re-push loop | `f22-backoff.spec.ts` | fixed |
 | F23 | Input handling | Malformed cursor silently becomes a full-history pull | `f23-bad-cursor.integration.spec.ts` | fixed |
@@ -657,6 +657,42 @@ ticket.
 **Alternatives considered.** An `ON DELETE CASCADE` in Postgres would not reach the change log (clients would
 never hear about the deleted parts) and would not run on the client; soft-hiding orphans in the UI leaves the
 data and the replication cost in place.
+
+### F20 — stream subscribers are never released
+
+**What.** The poke stream added every connection to a set and never removed it. Pokes were written without
+looking at backpressure, nothing was ever sent on a quiet stream, and shutdown left the responses open.
+
+**Why it is dangerous.** Every reconnect leaked a subscriber that kept being written to after its socket was
+gone, so memory grew without bound. A client that stopped reading made the server buffer every poke in
+memory. Proxies close idle connections, and the server could not stop while any stream was open.
+
+**Reproduce.** `apps/server/test/repro/f20-stream-leak.integration.spec.ts`:
+- 50 closed streams must be forgotten, and 500 open/close cycles must leave the `fieldsync_active_streams`
+  gauge at 0;
+- a client that leaves while its sites are read must not be kept;
+- 200 000 pokes to a client that does not read must keep the buffer under the high-water mark, and exactly one
+  poke must follow once it reads again;
+- a heartbeat must arrive;
+- a user is limited to `STREAM_MAX_PER_USER` streams;
+- shutdown must end open streams.
+
+**Fix.**
+- `StreamService` removes a subscriber on the response's `close`, and ignores a response whose socket is
+  already gone.
+- `add()` refuses with `429 TOO_MANY_REQUESTS` above `STREAM_MAX_PER_USER` per user. The client retries a
+  refused stream with backoff.
+- While `res.writableNeedDrain` is set, a poke only marks the subscriber dirty, and the next `drain` sends one
+  poke. Pokes carry no data, so one stands for all of them.
+- One shared timer writes `: hb` every `STREAM_HEARTBEAT_MS`, which the client's watchdog expects.
+- `onModuleDestroy` clears the timer and ends every response.
+- Responses carry `x-accel-buffering: no` so nginx does not buffer them.
+- The route lives in `stream.controller.ts`.
+
+**Alternatives considered.** A per-subscriber `once('drain')` per blocked write, as first planned, adds a
+listener for each and repeats a poke that is already buffered. Closing a slow client instead of coalescing would
+make it reconnect and sync for nothing. WebSockets would add a protocol where only server-to-client pokes are
+needed.
 
 ### F21 — disposing the client leaves requests and timers alive
 

@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { Toaster } from '@/shared/ui/sonner';
+import { ServiceWorkerRegistration } from './providers/service-worker';
 import { SessionProvider } from './providers/session-provider';
 import { SyncProvider } from './providers/sync-provider';
 import './styles/globals.css';
@@ -14,6 +15,7 @@ export function RootLayout({ children }: { children: ReactNode }) {
           <SyncProvider>{children}</SyncProvider>
         </SessionProvider>
         <Toaster />
+        <ServiceWorkerRegistration />
       </body>
     </html>
   );

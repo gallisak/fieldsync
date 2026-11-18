@@ -1,11 +1,17 @@
 'use client';
 
+import { usePathname } from 'next/navigation';
 import { AppHeader } from '@/widgets/app-header';
 import { RejectionInbox } from '@/widgets/rejection-inbox';
 import { TicketDetailsCard } from '@/widgets/ticket-details-card';
 import { TicketParts } from '@/widgets/ticket-parts';
 
-export function TicketDetailsPage({ params: { id } }: { params: { id: string } }) {
+/**
+ * The id comes from the address, not from the route params: offline, the service worker answers any
+ * `/tickets/…` with one cached ticket document, whose params belong to another ticket.
+ */
+export function TicketDetailsPage() {
+  const id = decodeURIComponent(usePathname()?.split('/')[2] ?? '');
   return (
     <>
       <AppHeader inbox={(trigger) => <RejectionInbox trigger={trigger} />} />

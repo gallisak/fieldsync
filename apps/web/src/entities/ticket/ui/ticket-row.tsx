@@ -17,7 +17,7 @@ export function TicketRow({ ticket, siteName, unsynced, actions }: TicketRowProp
   return (
     <TableRow>
       <TableCell className="font-medium">
-        <Link href={`/tickets/${ticket.id}`} className="hover:underline">
+        <Link href={`/tickets/${ticket.id}`} prefetch={false} className="hover:underline">
           {ticket.title}
         </Link>
       </TableCell>

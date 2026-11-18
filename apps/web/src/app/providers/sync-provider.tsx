@@ -9,6 +9,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/shared/ui/alert';
 import { Button } from '@/shared/ui/button';
 import { UpgradeGate } from '@/widgets/upgrade-gate';
 import { FullPageSkeleton } from './full-page-skeleton';
+import { UpdateShellOnUpgrade } from './service-worker';
 
 export function SyncProvider({ children }: { children: ReactNode }) {
   const session = useSession();
@@ -62,6 +63,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
   if (!client || ready !== client) return <FullPageSkeleton />;
   return (
     <SyncClientProvider client={client}>
+      <UpdateShellOnUpgrade />
       <UpgradeGate>{children}</UpgradeGate>
     </SyncClientProvider>
   );

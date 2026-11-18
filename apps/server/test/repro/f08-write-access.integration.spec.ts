@@ -47,4 +47,50 @@ describeDb('F8 write access is checked against the real row', () => {
     const parts = await t.pool.query(`SELECT 1 FROM entities WHERE entity = 'part' AND id = $1`, [partId]);
     expect(parts.rowCount).toBe(0);
   });
+
+  // A deleted row still belongs to its site: authorization must not skip it.
+  it.failing('refuses ticket.create with the id of a ticket of another site, deleted or not', async () => {
+    const opts = { token: TOKENS.admin, clientId: 'admin-create', siteId: DEMO.siteB };
+    const live = await createTicket(t.http, { ...opts, mutationId: 1, title: 'site-B ticket' });
+    const gone = await createTicket(t.http, { ...opts, mutationId: 2, title: 'deleted site-B ticket' });
+    await push(t.http, TOKENS.admin, 'admin-create', [{ id: 3, name: 'ticket.delete', args: { id: gone } }]);
+
+    const res = await push(t.http, TOKENS.techA, 'tech-a-create', [
+      { id: 1, name: 'ticket.create', args: { id: live, siteId: DEMO.siteA, title: 'mine', description: '' } },
+      { id: 2, name: 'ticket.create', args: { id: gone, siteId: DEMO.siteA, title: 'mine', description: '' } },
+    ]);
+
+    expect(res.body.results?.map((r: { code?: string }) => r.code)).toEqual(['NO_ACCESS', 'NO_ACCESS']);
+    const rows = await t.pool.query(`SELECT id, site_id, deleted FROM entities WHERE id = ANY($1::uuid[])`, [
+      [live, gone],
+    ]);
+    expect(rows.rows).toEqual(
+      expect.arrayContaining([
+        { id: live, site_id: DEMO.siteB, deleted: false },
+        { id: gone, site_id: DEMO.siteB, deleted: true },
+      ]),
+    );
+  });
+
+  it.failing(
+    'answers ALREADY_EXISTS to ticket.create with the id of a deleted ticket instead of reviving it',
+    async () => {
+      const gone = await createTicket(t.http, {
+        token: TOKENS.techA,
+        clientId: 'tech-a-revive',
+        mutationId: 1,
+        siteId: DEMO.siteA,
+        title: 'deleted site-A ticket',
+      });
+      await push(t.http, TOKENS.techA, 'tech-a-revive', [{ id: 2, name: 'ticket.delete', args: { id: gone } }]);
+
+      const res = await push(t.http, TOKENS.techA, 'tech-a-revive', [
+        { id: 3, name: 'ticket.create', args: { id: gone, siteId: DEMO.siteA, title: 'again', description: '' } },
+      ]);
+
+      expect(res.body.results?.[0]).toMatchObject({ status: 'rejected', code: 'ALREADY_EXISTS' });
+      const row = await t.pool.query(`SELECT deleted FROM entities WHERE entity = 'ticket' AND id = $1`, [gone]);
+      expect(row.rows).toEqual([{ deleted: true }]);
+    },
+  );
 });

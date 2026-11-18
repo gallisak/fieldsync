@@ -4,7 +4,7 @@ import type { Pool } from 'pg';
 import { createTestApp, describeDb, type TestApp } from '../support/pg';
 import { PgServer } from './pg-server';
 
-const FLAGS: SimConfig['flags'] = { crash: true, tabs: true, access: true, gc: false };
+const FLAGS: SimConfig['flags'] = { crash: true, tabs: true, access: true, gc: true };
 const STEPS = 200;
 const SEEDS = Array.from({ length: 50 }, (_, i) => i + 1);
 const DIFFERENTIAL_SEEDS = Array.from({ length: 10 }, (_, i) => i + 1);

@@ -1,6 +1,6 @@
 import type { SyncClock } from '../client/sync-client';
 
-const settle = async (): Promise<void> => {
+export const settle = async (): Promise<void> => {
   for (let i = 0; i < 100; i++) await Promise.resolve();
 };
 

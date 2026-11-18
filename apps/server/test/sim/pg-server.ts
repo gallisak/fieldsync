@@ -11,6 +11,7 @@ import {
 import type { AuthUser, SimServer } from '@fieldsync/sync-core/testing';
 import { tokenHash } from '../../src/auth/token-hash';
 import { ApiError } from '../../src/common/errors';
+import { GcService } from '../../src/gc.service';
 import { PullService } from '../../src/pull.service';
 import { PushService } from '../../src/push.service';
 import type { TestApp } from '../support/pg';
@@ -21,6 +22,7 @@ export class PgServer implements SimServer {
   private rejected = new Set<string>();
   private sent = new Map<string, Mutation>();
   private rows: { entity: EntityName; row: Row }[] = [];
+  private firstWrite = new Map<string, number>();
   private dirty = true;
   private sites = new Set<string>();
   private userSites = new Map<string, Set<string>>();
@@ -85,13 +87,8 @@ export class PgServer implements SimServer {
 
   async gc(cut: number): Promise<void> {
     this.dirty = true;
-    const { rowCount } = await this.t.pool.query(
-      `UPDATE sync_state SET min_retained_version = $1 WHERE min_retained_version < $1`,
-      [cut],
-    );
-    if (!rowCount) return;
-    await this.t.pool.query(`DELETE FROM change_log WHERE version <= $1`, [cut]);
-    await this.t.pool.query(`DELETE FROM entities WHERE deleted AND version <= $1`, [cut]);
+    await this.t.pool.query(`UPDATE change_log SET created_at = '2000-01-01' WHERE version <= $1`, [cut]);
+    await this.t.app.get(GcService).collect();
   }
 
   sitesOf(user: AuthUser): Set<string> {
@@ -125,14 +122,31 @@ export class PgServer implements SimServer {
   /** Live rows in the order they were first written, as the model keeps them, so both draw the same targets. */
   async refresh(): Promise<void> {
     if (!this.dirty) return;
-    const { rows } = await this.t.pool.query<{ entity: EntityName; data: Row }>(
-      `SELECT e.entity, e.data FROM entities e
-         JOIN (SELECT entity, entity_id, min(version) AS first FROM change_log GROUP BY entity, entity_id) f
-           ON f.entity = e.entity AND f.entity_id = e.id
-        WHERE NOT e.deleted
-        ORDER BY f.first`,
+    const { rows } = await this.t.pool.query<{
+      entity: EntityName;
+      id: string;
+      data: Row;
+      deleted: boolean;
+      version: string;
+      first: string | null;
+    }>(
+      `SELECT e.entity, e.id, e.data, e.deleted, e.version, f.first FROM entities e
+         LEFT JOIN (SELECT entity, entity_id, min(version) AS first FROM change_log GROUP BY entity, entity_id) f
+           ON f.entity = e.entity AND f.entity_id = e.id`,
     );
-    this.rows = rows.map((r) => ({ entity: r.entity, row: r.data }));
+    // GC removes the log rows that date a first write, so the first version is remembered while the row exists.
+    const present = new Set<string>();
+    for (const r of rows) {
+      const key = `${r.entity}/${r.id}`;
+      present.add(key);
+      if (!this.firstWrite.has(key)) this.firstWrite.set(key, Number(r.first ?? r.version));
+    }
+    for (const key of this.firstWrite.keys()) if (!present.has(key)) this.firstWrite.delete(key);
+    const first = (r: { entity: string; id: string }) => this.firstWrite.get(`${r.entity}/${r.id}`)!;
+    this.rows = rows
+      .filter((r) => !r.deleted)
+      .sort((a, b) => first(a) - first(b))
+      .map((r) => ({ entity: r.entity, row: r.data }));
     const state = await this.t.pool.query<{ last_version: string }>(`SELECT last_version FROM sync_state`);
     this.lastVersion = Number(state.rows[0].last_version);
     this.dirty = false;
@@ -146,6 +160,7 @@ export class PgServer implements SimServer {
     this.rejected = new Set();
     this.sent = new Map();
     this.rows = [];
+    this.firstWrite = new Map();
     this.dirty = true;
     this.sites = new Set();
     this.userSites = new Map();

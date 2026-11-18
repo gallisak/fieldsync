@@ -8,7 +8,7 @@ import type { Transport } from '../transport/http';
 import { checkConvergence, checkSafety } from './invariants';
 import { ModelServer } from './model-server';
 import { chance, int, mulberry32, pick, uuidFrom } from './prng';
-import { Scheduler } from './scheduler';
+import { Scheduler, settle } from './scheduler';
 import type { AuthUser, SimServer, SyncServerPort } from './server-port';
 import { SimNetwork, type Faults } from './sim-network';
 
@@ -243,15 +243,20 @@ async function perform(a: Action, sim: Sim): Promise<void> {
       return sim.openTab(devices[a.device]);
     case 'close-tab':
       return devices[a.device].tabs.splice(a.tab, 1)[0].dispose();
+    // A real server's I/O lets pending client work run meanwhile; settling first keeps model and Postgres runs equal.
     case 'grant':
+      await settle();
       return server.grant(a.userId, a.siteId);
     case 'revoke':
+      await settle();
       return server.revoke(a.userId, a.siteId);
     case 'gc':
+      await settle();
       return server.gc(a.cut);
     case 'long-offline':
       net.setOffline(a.device, true);
       await s.advance(60_000);
+      if (server.refresh) await server.refresh();
       await server.gc(server.lastVersion);
       net.setOffline(a.device, false);
   }

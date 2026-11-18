@@ -776,7 +776,8 @@ Each step is one random action:
 - a network partition;
 - a device crash and restart on the same storage;
 - opening or closing a second tab;
-- granting or revoking a technician's site, or an admin moving a ticket to another site.
+- granting or revoking a technician's site, or an admin moving a ticket to another site;
+- change-log GC, and a device offline for long enough to fall behind it.
 
 The network loses requests and responses, delivers duplicates, cuts a batch midway and delays every hop by up to
 400 ms, so answers overtake each other. Clients pull 3 rows per page, so snapshots and deltas span several pulls
@@ -795,7 +796,7 @@ Checked at the end:
 7. every part quantity equals what it was added with plus each applied adjustment.
 
 ```sh
-npm run sim                                  # regression seeds, then seeds 1–500 × 400 steps (about 40 s)
+npm run sim                                  # regression seeds, then seeds 1–500 × 400 steps (about 45 s)
 SIM_SEED=1234 npm run sim                    # one seed
 SIM_SEED=1234 SIM_STEPS=57 npm run sim       # one seed, a shorter run
 SIM_SEEDS=50 npm run sim                     # seeds 1–50 (0: regression seeds only)
@@ -813,21 +814,28 @@ rejection codes. Timestamps are left out of the comparison, because the model us
 uses the transaction time. A server call is awaited in full before anything else happens, so a seed replays
 exactly on Postgres too.
 
-Change-log garbage collection (F13) is not simulated yet: with it switched on, every seed fails on
-invariant 4, which is that defect.
+Change-log garbage collection runs too: a GC step at a random recent version, and a "long offline" step that
+partitions a device for a minute, collects the whole log and heals it. On Postgres the GC step backdates the log
+up to the cut and calls the real `GcService`. Granting, revoking and GC first let every pending client step
+finish: a call into Postgres does that anyway while it waits for I/O, the model does not, and without it the
+two would draw different random numbers.
 
 **Regression seeds** (`packages/sync-core/test/sim/regression-seeds.ts`). They run first. Each entry is the
 smallest failing run found when that one fix was reverted on its own, which is evidence that the simulation
 catches it. Each entry also keeps the flags it was found with. The "Seeds 1–100 failing" column shows how
 many of seeds 1–100 failed with that fix reverted.
 
-| Seed | Steps | Access changes | Seeds 1–100 failing | Found |
+| Seed | Steps | Flags | Seeds 1–100 failing | Found |
 |---|---|---|---|---|
-| 30 | 1 | off | 100 | F4: a server that does not deduplicate applies a retried mutation twice |
-| 56 | 3 | off | 100 | F5: a rejection that does not advance the client blocks its queue |
-| 91 | 2 | off | 68 | F15: a follower tab that ignores `state-changed` keeps a stale base |
-| 86 | 27 | off | 41 | F15: a leader that ignores `queue-changed` never pushes another tab's mutation |
-| 31 | 12 | on | 100 | F12: without a snapshot on an access change, a client keeps revoked rows and misses granted ones (server or client side reverted) |
+| 30 | 1 | crash, tabs | 100 | F4: a server that does not deduplicate applies a retried mutation twice |
+| 47 | 3 | crash, tabs | 100 | F5: a rejection that does not advance the client blocks its queue |
+| 91 | 2 | crash, tabs | 69 | F15: a follower tab that ignores `state-changed` keeps a stale base |
+| 91 | 45 | crash, tabs | 56 | F15: a leader that ignores `queue-changed` never pushes another tab's mutation |
+| 69 | 6 | + access | 97 | F12: without a snapshot on an access change, a client keeps revoked rows and misses granted ones (server or client side reverted) |
+| 10 | 11 | + access, gc | 71 | F13: GC without a retained floor lets a client whose cursor it passed miss the collected changes |
+
+Paging by 3 rows (F13, part 1) changed every run, so the F5, F15 (leader) and F12 entries were searched again
+with their fixes reverted; the old seeds no longer failed.
 
 ## Load results
 

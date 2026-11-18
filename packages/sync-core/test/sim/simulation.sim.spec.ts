@@ -1,7 +1,7 @@
 import { DEFAULT_FAULTS, SimulationFailure, runSimulation, type SimConfig } from '../../src/testing';
 import { REGRESSION_SEEDS } from './regression-seeds';
 
-const FLAGS: SimConfig['flags'] = { crash: true, tabs: true, access: true, gc: false };
+const FLAGS: SimConfig['flags'] = { crash: true, tabs: true, access: true, gc: true };
 
 function envInt(name: string): number | undefined {
   const raw = process.env[name];

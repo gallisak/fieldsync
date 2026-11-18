@@ -308,7 +308,8 @@ user's sites; every pull with a cursor returned all sites' changes.
 a data leak that looks correct in a quick test, because the initial load is filtered.
 
 **Reproduce.** `apps/server/test/repro/f09-read-access.integration.spec.ts`: a site-A technician pulls, a
-site-B ticket is created, the incremental pull must not contain site B.
+site-B ticket is created, the incremental pull must not contain site B. A technician with no sites gets an
+empty last page without the log being read.
 
 **Fix.** There is one delta query and it always takes the site list: a `LATERAL` per accessible site
 (`site_id = s AND version > cursor ORDER BY version LIMIT n`), merged by version. A user with no sites gets an
@@ -327,7 +328,9 @@ user's `clientId` and pull with it.
 real mutations are later answered `duplicate` and silently lost; pulling with it leaked the owner's
 `lastMutationId`.
 
-**Reproduce.** `apps/server/test/repro/f10-client-ownership.integration.spec.ts`.
+**Reproduce.** `apps/server/test/repro/f10-client-ownership.integration.spec.ts`: another user pushing under a
+technician's `clientId` gets `403 CLIENT_MISMATCH`. Pulling with it shows neither the owner's `lastMutationId`
+nor the owner's rejections.
 
 **Fix.** Push locks the client row and answers `403 CLIENT_MISMATCH` when it belongs to another user, before
 anything else. Pull reports `lastMutationId` and rejections only for the caller's own client (`0` and `[]`

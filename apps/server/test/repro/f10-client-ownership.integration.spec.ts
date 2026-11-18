@@ -29,4 +29,17 @@ describeDb('F10 clientId belongs to one user', () => {
     const peek = await pull(t.http, TOKENS.techB, { clientId: 'c1' });
     expect([0, null, undefined]).toContain(peek.body.lastMutationId);
   });
+
+  it("does not show another user's rejections", async () => {
+    const rejected = await push(t.http, TOKENS.techA, 'c2', [
+      { id: 1, name: 'part.adjust', args: { id: randomUUID(), delta: 1 } },
+    ]);
+    expect(rejected.body.results?.[0]).toMatchObject({ status: 'rejected', code: 'NO_ACCESS' });
+
+    const owner = await pull(t.http, TOKENS.techA, { clientId: 'c2' });
+    expect(owner.body).toMatchObject({ lastMutationId: 1, rejections: [{ mutationId: 1, code: 'NO_ACCESS' }] });
+
+    const peek = await pull(t.http, TOKENS.techB, { clientId: 'c2' });
+    expect(peek.body).toMatchObject({ lastMutationId: 0, rejections: [] });
+  });
 });

@@ -1,3 +1,5 @@
+import { decodeCursor } from '@fieldsync/sync-core';
+import { ChangeLogRepository } from '../../src/sync/repositories/change-log.repository';
 import { DEMO, TOKENS, createTicket, pull, seed } from '../support/api';
 import { createTestApp, describeDb, type TestApp } from '../support/pg';
 
@@ -30,5 +32,31 @@ describeDb('F9 read access on every pull path', () => {
     expect(sites(initial.body)).toContain(DEMO.siteA);
     expect(sites(initial.body)).not.toContain(DEMO.siteB);
     expect(sites(incremental.body)).not.toContain(DEMO.siteB);
+  });
+
+  it('gives a technician with no sites an empty last page without reading the log', async () => {
+    await t.pool.query(
+      `INSERT INTO users (id, name, role, token)
+       VALUES ('00000000-0000-4000-8000-000000000009', 'No sites', 'technician', 'no-sites-token')`,
+    );
+    await createTicket(t.http, {
+      token: TOKENS.admin,
+      clientId: 'admin-2',
+      mutationId: 1,
+      siteId: DEMO.siteA,
+      title: 'F9 A',
+    });
+    const log = t.app.get(ChangeLogRepository);
+    const after = jest.spyOn(log, 'after');
+    const restOfTx = jest.spyOn(log, 'restOfTx');
+
+    const res = await pull(t.http, 'no-sites-token');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ changes: [], hasMore: false, lastMutationId: 0, rejections: [] });
+    const { rows } = await t.pool.query<{ last_version: string }>(`SELECT last_version FROM sync_state`);
+    expect(decodeCursor(res.body.cursor)?.v).toBe(Number(rows[0].last_version));
+    expect(after).not.toHaveBeenCalled();
+    expect(restOfTx).not.toHaveBeenCalled();
   });
 });

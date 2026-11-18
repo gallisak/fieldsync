@@ -520,7 +520,8 @@ export class SyncClient {
         const ok = await this.storage.commitPull({
           expectedCursor: this.cursor,
           cursor: resp.cursor,
-          changes: resp.changes,
+          // A snapshot replaces the base (rows of a site the user lost disappear); the queue stays on top.
+          ...(resp.mode === 'snapshot' ? { snapshot: resp.changes } : { changes: resp.changes }),
           lastMutationId: resp.lastMutationId,
           rejections: resp.rejections,
         });

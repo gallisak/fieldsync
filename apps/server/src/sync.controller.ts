@@ -45,6 +45,6 @@ export class SyncController {
   @UseGuards(ProtocolGuard, AuthGuard)
   async stream(@CurrentUser() user: AuthUser, @Res() res: Response) {
     const sites = [...(await this.access.accessibleSites(this.db.pool, user))];
-    this.streams.add(sites, res);
+    this.streams.add(user.id, sites, res);
   }
 }

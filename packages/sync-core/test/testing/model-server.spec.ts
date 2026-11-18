@@ -178,6 +178,26 @@ describe('ModelServer', () => {
     });
   });
 
+  it('answers with an access_changed snapshot when the sites changed since the cursor', () => {
+    const s = model();
+    s.push(ADMIN, { clientId: 'admin', mutations: [create(1, T1, A), create(2, T2, B)] });
+    const first = pull(s, TECH, 'c1');
+    expect(first).toMatchObject({ mode: 'delta' });
+
+    s.grant(TECH.id, B);
+    const granted = pull(s, TECH, 'c1', first.cursor);
+    expect(granted).toMatchObject({ mode: 'snapshot', reason: 'access_changed', hasMore: false });
+    expect(granted.changes.map((c) => [c.id, c.op, c.version])).toEqual([
+      [T1, 'put', 1],
+      [T2, 'put', 2],
+    ]);
+    expect(pull(s, TECH, 'c1', granted.cursor)).toMatchObject({ mode: 'delta', changes: [] });
+
+    s.revoke(TECH.id, A);
+    s.revoke(TECH.id, B);
+    expect(pull(s, TECH, 'c1', granted.cursor)).toMatchObject({ mode: 'snapshot', changes: [] });
+  });
+
   it('gc drops the log up to the cut and the tombstones written there', () => {
     const s = model();
     s.push(TECH, {

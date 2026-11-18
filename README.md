@@ -82,7 +82,7 @@ in `packages/sync-core/test/repro/`.
 | F9 | Read access | Site filter applied only when `cursor = 0` | `f09-read-access.integration.spec.ts` | fixed |
 | F10 | Authenticity | `clientId` ownership never checked on push or pull | `f10-client-ownership.integration.spec.ts` | fixed |
 | F11 | Authenticity | Bearer token accepted in the SSE query string; tokens stored in plaintext | `f11-token-in-url.integration.spec.ts` | fixed |
-| F12 | Access lifecycle | Revoked access and site moves never remove data from clients | `f12-revocation-move.integration.spec.ts` | moves fixed; revocation open |
+| F12 | Access lifecycle | Revoked access and site moves never remove data from clients | `f12-revocation-move.integration.spec.ts` | fixed |
 | F13 | Log lifecycle | GC by age with no floor or reload signal; new clients replay a truncated log | `f13-gc.integration.spec.ts` | open |
 | F14 | Client data loss | Pending queue not persisted; `lastMutationId` persisted only after pull | `f14-reload.spec.ts` | fixed |
 | F15 | Client data loss | Tabs share one `clientId` and storage blob with separate id counters | `f15-two-tabs.spec.ts` | fixed |
@@ -366,6 +366,43 @@ user from `@CurrentUser()`.
 an endpoint and server state. A cookie would bring CSRF and cross-site `SameSite` concerns. A slow password
 hash (bcrypt, argon2) protects low-entropy secrets; the tokens are random, so a fast hash is enough and costs
 nothing per request. The demo tokens are guessable on purpose.
+
+### F12 — revoked access and site moves never leave the client
+
+**What.** Pull only ever sent changes from the log. When a technician lost a site, no change said so, and its
+rows stayed on the device. When the technician gained a site, its existing rows were older than the cursor and
+never arrived. A ticket moved to another site kept appearing in the old site's clients.
+
+**Why it is dangerous.** A revoked user keeps reading, and showing, data they no longer may see. A new
+assignment looks empty until rows happen to change.
+
+**Reproduce.** `apps/server/test/repro/f12-revocation-move.integration.spec.ts`:
+- a client whose site is revoked must end with none of its rows;
+- a client that loses a ticket to a site move must drop it;
+- a move must reach the old site as deletes of the ticket and each part, the new site as puts, and a client
+  that sees both as a delete followed by a put, so the row survives.
+
+`apps/server/test/access/admin.integration.spec.ts` drives the same flow through the admin endpoints. The
+simulation runs with access changes on.
+
+**Fix.**
+- *Moves.* A write that changes a row's site logs a delete under the old site before the put under the new
+  one, in the same transaction.
+- *Access changes.* Every cursor carries a fingerprint of the site set it was issued for. When the user's
+  current sites give a different fingerprint, pull answers `mode: 'snapshot', reason: 'access_changed'` with
+  every live row of the current sites, in version order. A paged snapshot replaces this single page later.
+- *Client.* A snapshot page replaces the client's base entirely. Queued mutations stay and are replayed on
+  top; one that touches a row now out of reach is rejected `NO_ACCESS` and lands in rejections.
+- *Admin endpoints.* `POST`/`DELETE /admin/users/:userId/sites/:siteId` (admin only, each in a transaction)
+  change access. They then re-read the user's sites for their open streams and poke them, so the snapshot
+  arrives at once.
+- *Model.* `ModelServer` answers snapshots the same way; the differential test against Postgres covers them.
+
+**Alternatives considered.**
+- Logging a `del` for every row of a revoked site would write one log row per entity per revocation, and
+  still give a granted site nothing to send.
+- Revocation tombstones keyed by user would need their own lifecycle.
+- A snapshot costs one read of the user's sites when access changes, which is rare.
 
 ### F14 — a reload loses offline work and reuses mutation ids
 

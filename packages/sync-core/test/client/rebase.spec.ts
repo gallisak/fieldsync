@@ -34,8 +34,19 @@ const put = (version: number, row: Row): Change => ({
   op: 'put',
   data: row,
 });
-const del = (version: number, id: string): Change => ({ version, entity: 'ticket', id, siteId: SITE, op: 'del', data: null });
-const page = (changes: Change[], cursor: string, last: { hasMore: boolean; lastMutationId: number | null }): PullResponse => ({
+const del = (version: number, id: string): Change => ({
+  version,
+  entity: 'ticket',
+  id,
+  siteId: SITE,
+  op: 'del',
+  data: null,
+});
+const page = (
+  changes: Change[],
+  cursor: string,
+  last: { hasMore: boolean; lastMutationId: number | null },
+): PullResponse => ({
   mode: 'delta',
   changes,
   cursor: cursor as Cursor,
@@ -81,7 +92,13 @@ describe('rebase of pending mutations', () => {
     const transport = new ScriptedTransport()
       .replyPush({ results: [{ id: 1, status: 'applied' }], lastMutationId: 1 })
       // Another user's edit arrives on a page that does not acknowledge our mutation yet.
-      .replyPull(page([put(2, ticket(A, { title: 'old title', description: 'their text' }))], 'c1', { hasMore: true, lastMutationId: null }), rest.promise);
+      .replyPull(
+        page([put(2, ticket(A, { title: 'old title', description: 'their text' }))], 'c1', {
+          hasMore: true,
+          lastMutationId: null,
+        }),
+        rest.promise,
+      );
     const client = open(storage, transport);
     await client.ready;
 
@@ -122,7 +139,15 @@ describe('rebase of pending mutations', () => {
     // Snapshot pages are committed through storage exactly like delta pages.
     const { cursor } = await storage.load();
     const snapshot = [put(10, ticket(A, { title: 'server title', description: 'server text' })), put(11, ticket(D))];
-    expect(await storage.commitPull({ expectedCursor: cursor, cursor: 's1' as Cursor, snapshot, lastMutationId: null, rejections: [] })).toBe(true);
+    expect(
+      await storage.commitPull({
+        expectedCursor: cursor,
+        cursor: 's1' as Cursor,
+        snapshot,
+        lastMutationId: null,
+        rejections: [],
+      }),
+    ).toBe(true);
 
     const client = open(storage);
     await client.ready;
@@ -134,7 +159,37 @@ describe('rebase of pending mutations', () => {
     ]);
     const view = client.view();
     expect([...view.keys()].sort()).toEqual([`ticket/${A}`, `ticket/${D}`]);
-    expect(view.get(`ticket/${A}`)).toMatchObject({ title: 'second', description: 'server text', status: 'in_progress' });
+    expect(view.get(`ticket/${A}`)).toMatchObject({
+      title: 'second',
+      description: 'server text',
+      status: 'in_progress',
+    });
+  });
+
+  it('lets a snapshot pull replace the base and keeps the queue on top of it', async () => {
+    const storage = await seeded([ticket(A, { title: 'old title' }), ticket(B)]);
+    await enqueue(storage, 'ticket.update', { id: A, patch: { title: 'mine' } });
+    const transport = new ScriptedTransport()
+      .replyPush({ results: [{ id: 1, status: 'applied' }], lastMutationId: 1 })
+      // Access changed: B's site is gone, D's is new. The pull is taken before mutation 1 committed.
+      .replyPull({
+        ...page([put(5, ticket(A, { title: 'server title', description: 'server text' })), put(6, ticket(D))], 's1', {
+          hasMore: false,
+          lastMutationId: 0,
+        }),
+        mode: 'snapshot',
+        reason: 'access_changed',
+      });
+    const client = open(storage, transport);
+    await client.ready;
+
+    await client.sync();
+
+    const state = await storage.load();
+    expect([...state.base.keys()].sort()).toEqual([`ticket/${A}`, `ticket/${D}`]);
+    expect(state.pending.map((m) => m.id)).toEqual([1]);
+    expect([...client.view().keys()].sort()).toEqual([`ticket/${A}`, `ticket/${D}`]);
+    expect(client.view().get(`ticket/${A}`)).toMatchObject({ title: 'mine', description: 'server text' });
   });
 
   it('drops exactly the acknowledged mutations and replays the rest on the new base', async () => {
@@ -148,7 +203,12 @@ describe('rebase of pending mutations', () => {
         lastMutationId: 3,
       })
       // The pull's snapshot was taken after mutations 1 and 2 committed, before 3.
-      .replyPull(page([put(2, ticket(A, { title: 'first', status: 'in_progress' }))], 'c1', { hasMore: false, lastMutationId: 2 }));
+      .replyPull(
+        page([put(2, ticket(A, { title: 'first', status: 'in_progress' }))], 'c1', {
+          hasMore: false,
+          lastMutationId: 2,
+        }),
+      );
     const client = open(storage, transport);
     await client.ready;
 

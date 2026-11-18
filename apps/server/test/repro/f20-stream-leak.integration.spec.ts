@@ -36,8 +36,8 @@ describeDb('F20 stream subscribers are released', () => {
     t = undefined;
   });
 
-  it.failing('forgets a subscriber once its connection is gone', async () => {
-    const { baseUrl, service } = await start();
+  it('forgets a subscriber once its connection is gone', async () => {
+    const { baseUrl, service } = await start({ STREAM_MAX_PER_USER: '50' });
     const streams = await Promise.all(Array.from({ length: 50 }, () => open(baseUrl, TOKENS.admin)));
     expect(streams.every((s) => s.status === 200)).toBe(true);
     expect(service.count).toBe(50);
@@ -48,19 +48,21 @@ describeDb('F20 stream subscribers are released', () => {
     expect(service.count).toBe(0);
   });
 
-  it.failing('reports 0 open streams after 500 open/close cycles', async () => {
-    const { t, baseUrl, service } = await start();
+  it('reports 0 open streams after 500 open/close cycles', async () => {
+    const { t, baseUrl, service } = await start({ STREAM_MAX_PER_USER: '50' });
     for (let batch = 0; batch < 10; batch++) {
       const streams = await Promise.all(Array.from({ length: 50 }, () => open(baseUrl, TOKENS.admin)));
+      expect(streams.every((s) => s.status === 200)).toBe(true);
       for (const s of streams) s.req.destroy();
+      await until(() => service.count === 0);
+      expect(service.count).toBe(0);
     }
-    await until(() => service.count === 0);
 
     const metrics = (await t.http.get('/metrics')).text;
     expect(metrics).toMatch(/^fieldsync_active_streams 0$/m);
   });
 
-  it.failing('forgets a client that left while its stream was being opened', async () => {
+  it('forgets a client that left while its stream was being opened', async () => {
     const { t, baseUrl, service } = await start();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => (release = resolve));
@@ -88,26 +90,30 @@ describeDb('F20 stream subscribers are released', () => {
     expect(service.count).toBe(0);
   });
 
-  it.failing('coalesces pokes while a client is not reading', async () => {
+  it('coalesces pokes while a client is not reading, and sends one once it reads again', async () => {
     const { baseUrl, service } = await start();
     const add = jest.spyOn(service, 'add');
     const stream = await open(baseUrl, TOKENS.admin, false);
     const res = add.mock.calls[0][2] as Response;
+    const write = jest.spyOn(res, 'write');
 
     const pokes = 200_000;
     for (let i = 0; i < pokes; i++) service.notify([DEMO.siteA]);
-    expect(res.writableLength).toBeLessThan(64 * 1024);
+    const written = write.mock.calls.length;
+    expect(written).toBeLessThan(pokes);
+    expect(res.writableLength).toBeLessThan(res.writableHighWaterMark + POKE.length * 2);
 
     let body = '';
+    const received = () => body.split(POKE).length - 1;
     stream.res.on('data', (chunk: string) => (body += chunk));
-    await until(() => res.writableLength === 0 && body.endsWith(POKE));
+    await until(() => received() > written);
     await sleep(50);
 
-    expect(body.endsWith(POKE)).toBe(true);
-    expect(body.split(POKE).length - 1).toBeLessThan(pokes);
+    expect(write.mock.calls.length).toBe(written + 1);
+    expect(received()).toBe(written + 1);
   });
 
-  it.failing('sends a heartbeat to every open stream', async () => {
+  it('sends a heartbeat to every open stream', async () => {
     const { baseUrl } = await start({ STREAM_HEARTBEAT_MS: '50' });
     const streams = [await open(baseUrl, TOKENS.admin), await open(baseUrl, TOKENS.techA)];
     await sleep(200);
@@ -115,7 +121,7 @@ describeDb('F20 stream subscribers are released', () => {
     for (const s of streams) expect(s.received()).toContain(': hb\n\n');
   });
 
-  it.failing('refuses more than STREAM_MAX_PER_USER streams for one user', async () => {
+  it('refuses more than STREAM_MAX_PER_USER streams for one user', async () => {
     const { baseUrl, service } = await start({ STREAM_MAX_PER_USER: '2' });
     const first = await open(baseUrl, TOKENS.admin);
     expect((await open(baseUrl, TOKENS.admin)).status).toBe(200);
@@ -127,17 +133,19 @@ describeDb('F20 stream subscribers are released', () => {
     expect((await open(baseUrl, TOKENS.admin)).status).toBe(200);
   });
 
-  it.failing('ends open streams when the server shuts down', async () => {
+  it('ends open streams when the server shuts down', async () => {
     const { t: app, baseUrl } = await start();
     const stream = await open(baseUrl, TOKENS.admin);
     const ended = new Promise((resolve) => stream.res.on('end', () => resolve('ended')));
 
     t = undefined;
     const closing = app.close();
+    let timer: NodeJS.Timeout | undefined;
+    const hung = new Promise((resolve) => (timer = setTimeout(resolve, 2000, 'hung')));
     try {
-      const outcome = await Promise.race([closing.then(() => ended), sleep(2000).then(() => 'hung')]);
-      expect(outcome).toBe('ended');
+      expect(await Promise.race([closing.then(() => ended), hung])).toBe('ended');
     } finally {
+      clearTimeout(timer);
       stream.req.destroy();
       await closing;
     }

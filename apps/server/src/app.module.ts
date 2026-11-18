@@ -21,12 +21,13 @@ import { RejectionRepository } from './sync/repositories/rejection.repository';
 import { SnapshotService } from './sync/pull/snapshot.service';
 import { MutationExecutor } from './sync/push/mutation-executor';
 import { ChangeLogRepository } from './sync/repositories/change-log.repository';
+import { StreamController } from './stream.controller';
 import { StreamService } from './stream.service';
 import { SyncController } from './sync.controller';
 
 @Module({
   imports: [ConfigModule, loggerModule],
-  controllers: [SyncController, AccessAdminController, HealthController, MetricsController],
+  controllers: [SyncController, StreamController, AccessAdminController, HealthController, MetricsController],
   providers: [
     { provide: APP_FILTER, useClass: ApiExceptionFilter },
     Db,

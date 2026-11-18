@@ -86,6 +86,22 @@ describe('ModelServer', () => {
     expect(s.lastVersion).toBe(2);
   });
 
+  it('keeps a deleted row in its site and its id taken', () => {
+    const s = model();
+    s.push(ADMIN, {
+      clientId: 'admin',
+      mutations: [
+        create(1, T1, B),
+        m(2, 'ticket.delete', { id: T1 }),
+        create(3, T2, A),
+        m(4, 'ticket.delete', { id: T2 }),
+      ],
+    });
+    const res = s.push(TECH, { clientId: 'c1', mutations: [create(1, T1, A), create(2, T2, A)] });
+    expect(res.results.map((r) => r.code)).toEqual(['NO_ACCESS', 'ALREADY_EXISTS']);
+    expect(s.liveRows()).toEqual([]);
+  });
+
   it('logs a move as a delete at the old site and a put at the new one, parts included, in one transaction', () => {
     const s = model();
     s.push(ADMIN, {

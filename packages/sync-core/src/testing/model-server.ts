@@ -52,6 +52,10 @@ class BufferedTx implements MutatorTx {
     return this.loaded.get(`${entity}/${id}`)?.row;
   }
 
+  exists(entity: EntityName, id: string): boolean {
+    return this.loaded.get(`${entity}/${id}`)?.siteId !== undefined;
+  }
+
   scan(entity: 'part', by: { ticketId: string }): Row[] {
     const ids = this.scanned.get(`${entity}/${by.ticketId}`) ?? [];
     return ids.map((id) => this.get(entity, id)).filter((row): row is Row => row !== undefined);
@@ -257,9 +261,10 @@ export class ModelServer implements SimServer {
       }
     }
 
+    // A deleted row still belongs to its site.
     this.authorize(
       user,
-      [...loaded.values()].filter((l) => l.row !== undefined).map((l) => l.siteId as string),
+      [...loaded.values()].filter((l) => l.siteId !== undefined).map((l) => l.siteId as string),
     );
     const tx = new BufferedTx(loaded, scanned);
     def.apply(tx, m.args, { now: new Date(this.clock()).toISOString() });

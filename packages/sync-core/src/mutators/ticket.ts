@@ -1,12 +1,6 @@
 import type { Row, TicketStatus } from '../protocol/types';
 import { MutationRejected, defineMutator, type MutatorTx } from './define';
-import {
-  createTicketArgs,
-  deleteTicketArgs,
-  moveTicketArgs,
-  setStatusArgs,
-  updateTicketArgs,
-} from './schemas';
+import { createTicketArgs, deleteTicketArgs, moveTicketArgs, setStatusArgs, updateTicketArgs } from './schemas';
 import { ALLOWED_TRANSITIONS } from './transitions';
 
 /** Same answer for "never existed", "deleted", "moved away" and "no access", so ids cannot be probed. */
@@ -20,7 +14,8 @@ export const createTicket = defineMutator({
   args: createTicketArgs,
   reads: (a) => [{ entity: 'ticket', id: a.id }],
   apply(tx, a, ctx) {
-    if (tx.get('ticket', a.id)) throw new MutationRejected('ALREADY_EXISTS', 'A ticket with this id already exists');
+    // A deleted id is taken too: reviving it would hand an old ticket's id to new content.
+    if (tx.exists('ticket', a.id)) throw new MutationRejected('ALREADY_EXISTS', 'A ticket with this id already exists');
     tx.put('ticket', a.id, {
       id: a.id,
       siteId: a.siteId,

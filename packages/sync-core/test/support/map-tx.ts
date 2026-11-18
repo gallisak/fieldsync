@@ -12,6 +12,10 @@ export class MapTx implements MutatorTx {
     return this.rows.get(`${entity}/${id}`);
   }
 
+  exists(entity: EntityName, id: string): boolean {
+    return this.rows.has(`${entity}/${id}`);
+  }
+
   put(entity: EntityName, id: string, row: Row): void {
     this.rows.set(`${entity}/${id}`, row);
   }

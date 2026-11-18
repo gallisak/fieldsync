@@ -1,12 +1,23 @@
 import { Injectable } from '@nestjs/common';
-import { MutationRejected, getMutator, type EntityName, type Mutation, type MutatorTx, type Row } from '@fieldsync/sync-core';
+import {
+  MutationRejected,
+  getMutator,
+  type EntityName,
+  type Mutation,
+  type MutatorTx,
+  type Row,
+} from '@fieldsync/sync-core';
 import type { PoolClient } from 'pg';
-import { authorize } from '../../access';
+import { AccessService } from '../../access/access.service';
 import type { AuthUser } from '../../auth';
 import { ChangeLogRepository, type LogRow } from '../repositories/change-log.repository';
 
 const LOCK_ORDER: Record<EntityName, number> = { ticket: 0, part: 1 };
 
+/** The same answer as for a row that does not exist, so ids of other sites cannot be probed. */
+const noAccess = () => new MutationRejected('NO_ACCESS', 'Ticket is unavailable: deleted, moved, or access revoked');
+
+/** `row` is undefined for a missing or deleted row; `siteId` is set whenever the id exists, deleted or not. */
 interface Loaded {
   row: Row | undefined;
   siteId?: string;
@@ -31,6 +42,10 @@ class BufferedTx implements MutatorTx {
 
   get(entity: EntityName, id: string): Row | undefined {
     return this.loaded.get(`${entity}/${id}`)?.row;
+  }
+
+  exists(entity: EntityName, id: string): boolean {
+    return this.loaded.get(`${entity}/${id}`)?.siteId !== undefined;
   }
 
   scan(entity: 'part', by: { ticketId: string }): Row[] {
@@ -64,7 +79,10 @@ export class MutationExecutor {
   /** Test-only seam for pausing or failing a transaction at a precise point; empty in production. */
   readonly hooks: ExecutorHooks = {};
 
-  constructor(private readonly changeLog: ChangeLogRepository) {}
+  constructor(
+    private readonly access: AccessService,
+    private readonly changeLog: ChangeLogRepository,
+  ) {}
 
   /** Applies one mutation inside the caller's transaction; returns the site ids it touched. */
   async execute(c: PoolClient, user: AuthUser, m: Mutation, clientId: string): Promise<string[]> {
@@ -97,22 +115,23 @@ export class MutationExecutor {
           ORDER BY id FOR UPDATE`,
         [spec.entity, spec.by.ticketId],
       );
-      scanned.set(`${spec.entity}/${spec.by.ticketId}`, rows.map((r) => r.id));
+      scanned.set(
+        `${spec.entity}/${spec.by.ticketId}`,
+        rows.map((r) => r.id),
+      );
       for (const r of rows) loaded.set(`${spec.entity}/${r.id}`, { row: r.data, siteId: r.site_id });
     }
 
-    // Sites come from the rows as stored, never from the arguments (v2 args carry no siteId to trust).
-    const existingSites = [...loaded.values()].filter((l) => l.row !== undefined).map((l) => l.siteId as string);
-    await authorize(c, user, existingSites);
+    // Read in this transaction, after the row locks: a revocation committed before it is always seen.
+    const sites = await this.access.accessibleSites(c, user);
+    // Sites come from the rows as stored, never from the arguments; a deleted row still belongs to its site.
+    if ([...loaded.values()].some((l) => l.siteId !== undefined && !sites.has(l.siteId))) throw noAccess();
 
     const { rows: clock } = await c.query<{ now: Date }>(`SELECT transaction_timestamp() AS now`);
     const tx = new BufferedTx(loaded, scanned);
     def.apply(tx, m.args, { now: clock[0].now.toISOString() });
-    await authorize(
-      c,
-      user,
-      tx.writes.flatMap((w) => (w.op === 'put' ? [w.row?.siteId as string] : [])),
-    );
+    // Covers the target site of a create or a move.
+    if (tx.writes.some((w) => w.op === 'put' && !sites.has(w.row?.siteId as string))) throw noAccess();
 
     const touched = await this.write(c, tx.writes, clientId, m);
     await this.hooks.afterWrites?.(c, m);

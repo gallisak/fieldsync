@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { APP_FILTER } from '@nestjs/core';
+import { AccessService } from './access/access.service';
 import { AuthGuard } from './auth';
 import { ApiExceptionFilter } from './common/api-exception.filter';
 import { ConfigModule } from './config/config.module';
@@ -22,6 +23,7 @@ import { SyncController } from './sync.controller';
     { provide: APP_FILTER, useClass: ApiExceptionFilter },
     Db,
     AuthGuard,
+    AccessService,
     PushService,
     MutationExecutor,
     ChangeLogRepository,

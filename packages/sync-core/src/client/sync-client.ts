@@ -93,6 +93,10 @@ class MapTx implements MutatorTx {
     return this.state.get(`${entity}/${id}`);
   }
 
+  exists(entity: EntityName, id: string): boolean {
+    return this.state.has(`${entity}/${id}`);
+  }
+
   put(entity: EntityName, id: string, row: Row): void {
     this.state.set(`${entity}/${id}`, row);
   }

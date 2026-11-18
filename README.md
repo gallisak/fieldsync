@@ -78,7 +78,7 @@ in `packages/sync-core/test/repro/`.
 | F5 | Poison mutation | A rejected mutation fails the whole push with 500 and blocks the queue forever | `f05-poison.integration.spec.ts` | fixed |
 | F6 | Poison mutation | `constructor` / `__proto__` resolve to prototype members of the mutator registry → 500 | `f06-proto-name.integration.spec.ts` | fixed |
 | F7 | Poison mutation | Out-of-order id answered with a generic 400 the client retries unchanged | `f07-out-of-order.integration.spec.ts` | fixed |
-| F8 | Write access | Authorization trusts the client-supplied `siteId` | `f08-write-access.integration.spec.ts` | fixed for live rows; tombstoned ids open |
+| F8 | Write access | Authorization trusts the client-supplied `siteId` | `f08-write-access.integration.spec.ts` | fixed |
 | F9 | Read access | Site filter applied only when `cursor = 0` | `f09-read-access.integration.spec.ts` | fixed |
 | F10 | Authenticity | `clientId` ownership never checked on push or pull | `f10-client-ownership.integration.spec.ts` | fixed |
 | F11 | Authenticity | Bearer token accepted in the SSE query string; tokens stored in plaintext | `f11-token-in-url.integration.spec.ts` | open |
@@ -267,6 +267,37 @@ committed earlier in the same request stay committed and are reported by the nex
 
 **Alternatives considered.** Silently skipping ahead would accept a gap and could reorder a client's own
 mutations; applying out-of-order ids would break the "one id, applied at most once" rule the dedup relies on.
+
+### F8 — writes authorized against the site the client names
+
+**What.** The starter authorized a mutation by the `siteId` in its arguments, before any row was loaded. A
+site-A technician could update, extend or delete a site-B ticket by sending `siteId: A`. Once that was fixed
+for live rows, a deleted row was still skipped. `ticket.create` with the id of a deleted site-B ticket revived
+it in site A, and the id of one's own deleted ticket revived it as well.
+
+**Why it is dangerous.** Any technician can rewrite or destroy any site's data just by knowing an id. A revived
+id hands an old ticket's identity, its parts' `ticketId` and the clients' memory of it, to unrelated content.
+
+**Reproduce.** `apps/server/test/repro/f08-write-access.integration.spec.ts`:
+- update, part.add and delete of a site-B ticket with `siteId: A` must all be `NO_ACCESS`, with the row
+  unchanged;
+- `ticket.create` with the id of a site-B ticket, live or deleted, must be `NO_ACCESS`;
+- `ticket.create` with the id of one's own deleted ticket must be `ALREADY_EXISTS`;
+- creating in, or moving to, a site the user cannot see must be `NO_ACCESS`.
+
+**Fix.** `AccessService` reads the user's sites once per mutation, inside its transaction and after the row
+locks, so a revocation committed earlier is always seen. Before the mutator runs, every loaded row that
+exists must be in those sites, deleted rows included: the site is the one stored with the row, never one from
+the arguments. After it runs, every row it writes must be in them; that covers the target site of a create
+or a move. The executor gives the mutator `undefined` for a deleted row, but `MutatorTx.exists()` still
+reports the id as taken, and `ticket.create` refuses any id that exists in any state. Every refusal is
+`NO_ACCESS` with the same message as "not found", so ids of other sites cannot be probed. The same rules are in
+the simulation's `ModelServer`. `AccessService.fingerprint()` replaces the cursor module's copy, so there is
+one format.
+
+**Alternatives considered.** Checking access in each mutator would repeat it seven times and could not see
+deleted rows. Allowing a revived id would need a new identity in the log (a `del` and a `put` of unrelated
+content) that clients cannot tell apart from an edit.
 
 ### F9 — incremental pulls return every site
 

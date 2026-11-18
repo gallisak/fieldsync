@@ -1,10 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import type { Change, PullQuery, PullResponse } from '@fieldsync/sync-core';
 import type { PoolClient } from 'pg';
-import { accessibleSites } from './access';
+import { AccessService } from './access/access.service';
 import type { AuthUser } from './auth';
 import { Db } from './database/db.service';
-import { decodeCursor, encodeCursor, siteFingerprint, type CursorData } from './sync/pull/cursor';
+import { decodeCursor, encodeCursor, type CursorData } from './sync/pull/cursor';
 import { ChangeLogRepository, type LogState, type StoredLogRow } from './sync/repositories/change-log.repository';
 import { ClientRepository } from './sync/repositories/client.repository';
 import { RejectionRepository } from './sync/repositories/rejection.repository';
@@ -24,6 +24,7 @@ const toChange = (r: StoredLogRow): Change => ({
 export class PullService {
   constructor(
     private readonly db: Db,
+    private readonly access: AccessService,
     private readonly log: ChangeLogRepository,
     private readonly clients: ClientRepository,
     private readonly rejections: RejectionRepository,
@@ -36,8 +37,8 @@ export class PullService {
   async pull(user: AuthUser, q: PullQuery): Promise<PullResponse> {
     return this.db.tx(
       async (c) => {
-        const sites = await accessibleSites(c, user);
-        const fp = siteFingerprint(user, sites);
+        const sites = [...(await this.access.accessibleSites(c, user))];
+        const fp = this.access.fingerprint(user, sites);
         const state = await this.log.state(c);
         // Snapshot mode (P6.1) is not there yet: no cursor means a delta from 0, still filtered by site.
         const cur = q.cursor ? decodeCursor(q.cursor) : { k: 'd' as const, v: 0, fp };

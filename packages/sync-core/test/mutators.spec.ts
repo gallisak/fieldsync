@@ -12,6 +12,10 @@ class FakeTx implements MutatorTx {
     return this.rows.get(`${entity}/${id}`);
   }
 
+  exists(entity: EntityName, id: string) {
+    return this.rows.has(`${entity}/${id}`);
+  }
+
   put(entity: EntityName, id: string, row: Row) {
     this.rows.set(`${entity}/${id}`, row);
   }

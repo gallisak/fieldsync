@@ -1,13 +1,9 @@
 import type { SyncClock } from '../client/sync-client';
 
-const settle = async (): Promise<void> => {
+export const settle = async (): Promise<void> => {
   for (let i = 0; i < 100; i++) await Promise.resolve();
 };
 
-/**
- * Virtual time: nothing ever waits for real time. There is no "run until idle", because clients re-arm their
- * poll timer forever; callers advance by a fixed amount of virtual time instead.
- */
 export class Scheduler {
   now = 0;
   private seq = 0;
@@ -27,7 +23,6 @@ export class Scheduler {
     return id;
   }
 
-  /** Runs every event due within the next `ms`, in (time, insertion) order. */
   async advance(ms: number): Promise<void> {
     const end = this.now + ms;
     for (;;) {

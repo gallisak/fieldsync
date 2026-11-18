@@ -1,4 +1,3 @@
-/** Request-level error codes (non-2xx envelope) that a client branches on. */
 export type ApiErrorCode =
   | 'UPGRADE_REQUIRED'
   | 'UNAUTHENTICATED'
@@ -7,7 +6,6 @@ export type ApiErrorCode =
   | 'BAD_REQUEST'
   | 'UNAVAILABLE';
 
-/** Why a single mutation was rejected; travels in push results and pull rejections. */
 export type RejectionCode =
   | 'BAD_ARGS'
   | 'NO_ACCESS'
@@ -16,4 +14,4 @@ export type RejectionCode =
   | 'INVALID_TRANSITION'
   | 'NEGATIVE_QUANTITY'
   | 'INTERNAL'
-  | 'QUEUE_FULL'; // client only: too many changes waiting to sync
+  | 'QUEUE_FULL';

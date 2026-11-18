@@ -1,5 +1,3 @@
-// Lets a plain `node` child process run the server straight from src/*.ts (transpile only, no type check),
-// with the compiler options of the repository's tsconfig.
 const { readFileSync } = require('fs');
 const { dirname, join } = require('path');
 const ts = require('typescript');

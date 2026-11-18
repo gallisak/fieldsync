@@ -17,7 +17,6 @@ export const MUTATOR_NAMES = [
 export type MutatorName = (typeof MUTATOR_NAMES)[number];
 
 export interface Mutation {
-  /** Strictly increasing per client, starting at 1. */
   id: number;
   name: MutatorName;
   args: Record<string, unknown>;
@@ -52,7 +51,6 @@ export interface Change {
   data: Row | null;
 }
 
-/** Opaque position in the server's change stream: stored and echoed by the client, never parsed. */
 export type Cursor = string & { readonly __brand: 'Cursor' };
 
 export type SnapshotReason = 'initial' | 'cursor_expired' | 'access_changed' | 'cursor_ahead';
@@ -66,12 +64,10 @@ export interface PulledRejection {
 
 export interface PullResponse {
   mode: 'delta' | 'snapshot';
-  /** Present on the first page of a snapshot. */
   reason?: SnapshotReason;
   changes: Change[];
   cursor: Cursor;
   hasMore: boolean;
-  /** Only on the final page; `null` means "do not acknowledge anything from this page". */
   lastMutationId: number | null;
   rejections: PulledRejection[];
 }

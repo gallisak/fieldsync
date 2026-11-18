@@ -4,9 +4,6 @@ import { ChangeLogRepository } from '../../src/sync/repositories/change-log.repo
 import { DEMO, TOKENS, createTicket, pull, seed } from '../support/api';
 import { createTestApp, describeDb, type TestApp } from '../support/pg';
 
-/**
- * F9: pull applies the site filter only for `cursor = 0`; every incremental pull returns all sites' changes.
- */
 describeDb('F9 read access on every pull path', () => {
   let t: TestApp;
   beforeAll(async () => {

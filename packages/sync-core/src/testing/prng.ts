@@ -1,4 +1,3 @@
-/** A small seeded generator: the same seed always yields the same sequence of numbers in [0, 1). */
 export function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
@@ -9,7 +8,6 @@ export function mulberry32(seed: number): () => number {
   };
 }
 
-/** 0 … n-1 */
 export const int = (rng: () => number, n: number): number => Math.floor(rng() * n);
 export const pick = <T>(rng: () => number, xs: readonly T[]): T => xs[int(rng, xs.length)];
 export const chance = (rng: () => number, p: number): boolean => rng() < p;

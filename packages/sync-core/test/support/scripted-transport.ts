@@ -6,7 +6,6 @@ export type Reply<T> = T | Error | Promise<T> | (() => T | Error | Promise<T>);
 
 export interface Call {
   kind: Kind;
-  /** Every argument as passed, so tests survive signature changes (e.g. a trailing AbortSignal). */
   args: unknown[];
   at: number;
 }
@@ -27,11 +26,7 @@ export function deferred<T>(): Deferred<T> {
   return { promise, resolve, reject };
 }
 
-/**
- * Transport whose replies are queued per test. An empty queue falls back to the `always*` reply, or rejects
- * as if offline. After `maxCalls` calls every request hangs: a client that spins on resolved promises would
- * otherwise starve the event loop and hang the test instead of failing it.
- */
+/** After `maxCalls` every request hangs, so a client that spins on resolved promises fails the test, not hangs it. */
 export class ScriptedTransport implements Transport {
   readonly calls: Call[] = [];
   private readonly queues: { push: Reply<PushResponse>[]; pull: Reply<PullResponse>[] } = { push: [], pull: [] };
@@ -63,7 +58,6 @@ export class ScriptedTransport implements Transport {
     return this.calls.filter((c) => c.kind === kind);
   }
 
-  /** Mutations sent in every push so far, in order. */
   pushedMutations(): PushRequest['mutations'] {
     return this.callsOf('push').flatMap((c) => (c.args[0] as PushRequest).mutations);
   }

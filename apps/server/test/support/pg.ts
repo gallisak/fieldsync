@@ -8,10 +8,6 @@ import { AppModule } from '../../src/app.module';
 import { APP_CONFIG, parseConfig } from '../../src/config/env';
 import { Db } from '../../src/database/db.service';
 
-/**
- * Returns DATABASE_URL. In CI a missing URL is a hard error, so integration suites can never be
- * skipped silently; locally it returns undefined and the suites are skipped.
- */
 export function requireDatabaseUrl(): string | undefined {
   const url = process.env.DATABASE_URL;
   if (!url && process.env.CI) throw new Error('DATABASE_URL is required in CI');
@@ -22,7 +18,6 @@ export function describeDb(name: string, fn: () => void): void {
   (requireDatabaseUrl() ? describe : describe.skip)(name, fn);
 }
 
-/** Polls `condition` every 20 ms; a timeout is a setup failure, not a test result. */
 export async function until(condition: () => Promise<boolean>, what: string, timeoutMs = 3_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!(await condition())) {
@@ -31,10 +26,7 @@ export async function until(condition: () => Promise<boolean>, what: string, tim
   }
 }
 
-/**
- * Number of backends waiting, directly or through a chain, on a lock held by `pid`. Must run outside any
- * transaction: pg_stat_activity is snapshotted once per transaction.
- */
+/** Must run outside a transaction: pg_stat_activity is snapshotted once per transaction. */
 export async function waitersOn(pool: Pool, pid: number): Promise<number> {
   const { rows } = await pool.query<{ n: number }>(
     `WITH RECURSIVE w(pid) AS (
@@ -50,17 +42,11 @@ export async function waitersOn(pool: Pool, pid: number): Promise<number> {
 export interface TestApp {
   app: INestApplication;
   http: ReturnType<typeof request>;
-  /** The application's own pool; its search_path points at this test's private schema. */
   pool: Pool;
   schema: string;
   close(): Promise<void>;
 }
 
-/**
- * Boots the full AppModule against a fresh, empty Postgres schema. Each call gets its own schema,
- * so test files can run in parallel without seeing each other's rows. `env` overrides configuration
- * (for example DB_POOL_MAX); `logger` receives the app's log output, which is off by default.
- */
 export async function createTestApp(
   env: Record<string, string> = {},
   opts: { logger?: LoggerService } = {},

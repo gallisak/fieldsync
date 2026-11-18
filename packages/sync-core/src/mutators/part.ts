@@ -1,7 +1,6 @@
 import { MutationRejected, defineMutator } from './define';
 import { addPartArgs, adjustPartArgs } from './schemas';
 
-/** The part inherits the ticket's site; adding an id that already exists is a no-op. */
 export const addPart = defineMutator({
   args: addPartArgs,
   reads: (a) => [

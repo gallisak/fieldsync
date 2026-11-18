@@ -3,7 +3,6 @@ import { MIN_PROTOCOL, PROTOCOL, PROTOCOL_HEADER } from '@fieldsync/sync-core';
 import type { Request } from 'express';
 import { ApiError } from './errors';
 
-/** A missing header means a v1 client. */
 @Injectable()
 export class ProtocolGuard implements CanActivate {
   canActivate(ctx: ExecutionContext): boolean {

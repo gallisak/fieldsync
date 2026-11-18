@@ -7,7 +7,6 @@ export const LEGACY_CLIENT_ID_KEY = 'fs_client_id';
 
 export type LegacySource = Pick<Storage, 'getItem' | 'removeItem'>;
 
-/** State found in `localStorage` from before IndexedDB storage; the cursor is never carried over. */
 export interface LegacyState {
   clientId?: string;
   lastMutationId: number;
@@ -17,17 +16,12 @@ export interface LegacyState {
   rejections: StoredRejection[];
 }
 
-/** The starter's blob: no queue; the client id lived under its own key. */
 interface StarterBlob {
   cursor: unknown;
   lastMutationId: number;
   base: Record<string, Row>;
 }
 
-/**
- * Reads either format the web app has written: the starter's blob, or the whole state of
- * `LocalStorageSyncStorage` (which also holds unsynced mutations). `undefined` when absent or unreadable.
- */
 export function readLegacyState(source: LegacySource): LegacyState | undefined {
   const raw = source.getItem(LEGACY_STATE_KEY);
   if (raw === null) return undefined;

@@ -8,9 +8,7 @@ export interface PokeStreamOptions {
   url: string;
   token: string;
   onPoke(): void;
-  /** The server accepted the stream (status 200). */
   onOpen?(): void;
-  /** Bytes arrived (events or heartbeat). */
   onData?(): void;
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
@@ -23,17 +21,10 @@ const globalTimers = {
   clearTimeout: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>),
 };
 
-/** True for a frame (lines between blank lines) that carries `event: poke`. */
 function isPoke(frame: string): boolean {
   return frame.split('\n').some((line) => /^event: ?poke$/.test(line));
 }
 
-/**
- * Reads the server's poke stream over `fetch`, so the token travels in the `Authorization` header and never in
- * the URL. Resolves when the server ends the stream; rejects with a `TransportError` (`http` for a non-200
- * answer, `timeout` when the watchdog fires, `network` otherwise), or with the abort reason when `signal`
- * aborts.
- */
 export async function openPokeStream(opts: PokeStreamOptions): Promise<void> {
   const fetchImpl = opts.fetchImpl ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
   const timers = opts.timers ?? globalTimers;
@@ -59,7 +50,7 @@ export async function openPokeStream(opts: PokeStreamOptions): Promise<void> {
   };
 
   try {
-    arm(); // also bounds the wait for the response headers
+    arm();
     let res: Response;
     try {
       res = await fetchImpl(opts.url, {
@@ -97,7 +88,7 @@ export async function openPokeStream(opts: PokeStreamOptions): Promise<void> {
       if (chunk.done) return;
       arm();
       opts.onData?.();
-      buffer += chunk.value.replace(/\r/g, ''); // CRLF line endings become LF
+      buffer += chunk.value.replace(/\r/g, '');
       for (let end = buffer.indexOf('\n\n'); end >= 0; end = buffer.indexOf('\n\n')) {
         const frame = buffer.slice(0, end);
         buffer = buffer.slice(end + 2);
@@ -107,6 +98,6 @@ export async function openPokeStream(opts: PokeStreamOptions): Promise<void> {
   } finally {
     if (watchdog !== undefined) timers.clearTimeout(watchdog);
     opts.signal?.removeEventListener('abort', onAbort);
-    controller.abort(); // releases the connection when the loop ends for any reason
+    controller.abort();
   }
 }

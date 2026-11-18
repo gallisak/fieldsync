@@ -8,7 +8,7 @@ import type { Transport } from '../transport/http';
 import { checkConvergence, checkSafety } from './invariants';
 import { ModelServer } from './model-server';
 import { chance, int, mulberry32, pick, uuidFrom } from './prng';
-import { Scheduler } from './scheduler';
+import { Scheduler, settle } from './scheduler';
 import type { AuthUser, SimServer, SyncServerPort } from './server-port';
 import { SimNetwork, type Faults } from './sim-network';
 
@@ -24,7 +24,6 @@ export interface SimReport {
   applied: number;
   rejected: number;
   endTime: number;
-  /** One line per step: the step, the virtual time and the action. */
   trace: string[];
 }
 
@@ -39,11 +38,8 @@ export interface Device {
   storage: MemoryStorage;
   hub: MemoryTabHub;
   tabs: SyncClient[];
-  /** `clientId/mutationId` of every mutation this device stored, under the client id in force at the time. */
   issued: string[];
-  /** The user's sites as the server saw them when it computed the last pull page this device received. */
   sitesAtLastPull: Set<string>;
-  /** Bookkeeping for invariant 3. */
   lastCursorVersion: number;
   snapshotSinceLastCheck: boolean;
 }
@@ -71,7 +67,6 @@ interface Sim {
 
 const STATUSES: TicketStatus[] = ['open', 'in_progress', 'done', 'cancelled'];
 
-/** Reports every mutation it stores, so the harness knows exactly what was issued. */
 class DeviceStorage extends MemoryStorage {
   constructor(
     idGen: () => string,
@@ -87,7 +82,6 @@ class DeviceStorage extends MemoryStorage {
   }
 }
 
-/** Three sites, one admin and four technicians, each with a random non-empty set of sites. */
 async function seedWorld(rng: () => number, server: SimServer): Promise<World> {
   const sites = [uuidFrom(rng), uuidFrom(rng), uuidFrom(rng)];
   for (const site of sites) await server.addSite(site);
@@ -101,11 +95,6 @@ async function seedWorld(rng: () => number, server: SimServer): Promise<World> {
   return { sites, users };
 }
 
-/**
- * A mutation from the mix: create 20 %, update 20 %, setStatus 20 % (30 % of them with a stale `from`), delete
- * 5 %, part.add 15 %, part.adjust 20 %. Targets come from the tab's own view, in 10 % of cases from the
- * server's full list instead. `undefined` when there is no target.
- */
 function drawMutation(sim: Sim, d: Device): Action | undefined {
   const { rng, server, world } = sim;
   const tab = int(rng, d.tabs.length);
@@ -166,7 +155,6 @@ function drawMutation(sim: Sim, d: Device): Action | undefined {
   return mutate('part.adjust', { id: part.id, delta: int(rng, 7) - 3 });
 }
 
-/** An admin device moves one of the tickets it sees to another site. */
 function drawMove(sim: Sim): Action | undefined {
   const { rng, world } = sim;
   const admins = sim.devices.filter((d) => d.user.role === 'admin');
@@ -221,7 +209,6 @@ const ACTIONS: { weight: number; flag?: keyof SimConfig['flags']; draw(sim: Sim)
   { weight: 3, flag: 'gc', draw: (sim) => ({ kind: 'long-offline', device: int(sim.rng, sim.devices.length) }) },
 ];
 
-/** A weighted draw; an action whose flag is off or that has nothing to act on is drawn again. */
 function pickAction(sim: Sim, flags: SimConfig['flags']): Action {
   const enabled = ACTIONS.filter((a) => !a.flag || flags[a.flag]);
   const total = enabled.reduce((sum, a) => sum + a.weight, 0);
@@ -240,7 +227,7 @@ async function perform(a: Action, sim: Sim): Promise<void> {
       try {
         devices[a.device].tabs[a.tab].mutate(a.name, a.args).catch(() => undefined);
       } catch (err) {
-        if (!(err instanceof MutationRejected)) throw err; // refused locally: nothing was issued
+        if (!(err instanceof MutationRejected)) throw err;
       }
       return;
     case 'advance':
@@ -256,26 +243,27 @@ async function perform(a: Action, sim: Sim): Promise<void> {
       return sim.openTab(devices[a.device]);
     case 'close-tab':
       return devices[a.device].tabs.splice(a.tab, 1)[0].dispose();
+    // A real server's I/O lets pending client work run meanwhile; settling first keeps model and Postgres runs equal.
     case 'grant':
+      await settle();
       return server.grant(a.userId, a.siteId);
     case 'revoke':
+      await settle();
       return server.revoke(a.userId, a.siteId);
     case 'gc':
+      await settle();
       return server.gc(a.cut);
     case 'long-offline':
       net.setOffline(a.device, true);
       await s.advance(60_000);
+      if (server.refresh) await server.refresh();
       await server.gc(server.lastVersion);
       net.setOffline(a.device, false);
   }
 }
 
-/**
- * Runs `steps` random actions against a server (`ModelServer` unless `makeServer` gives another) over a faulty
- * network, checking safety after each, then heals the network, lets every client settle and checks convergence;
- * a violation throws `SimulationFailure`. Everything random comes from one generator seeded with `seed`, and
- * time is virtual, so a seed always replays the same run.
- */
+const PAGE_LIMIT = 3;
+
 export async function runSimulation(
   cfg: SimConfig,
   makeServer: (clock: () => number) => SimServer = (clock) => new ModelServer(clock),
@@ -284,8 +272,7 @@ export async function runSimulation(
   const s = new Scheduler();
   const server = makeServer(() => s.now);
   const world = await seedWorld(rng, server);
-  // Each page's cursor carries the fingerprint of the site set it was computed for, so equal cursors mean equal
-  // sets: the sites recorded here by cursor are the ones "as of that pull" for invariant 1.
+  // A cursor carries its site set's fingerprint, so the sites recorded per cursor are those "as of that pull".
   const served = new Map<string, Set<string>>();
   const port: SyncServerPort = {
     push: (user, req) => server.push(user, req),
@@ -305,10 +292,11 @@ export async function runSimulation(
     const transport: Transport = {
       push: (req, signal) => network.push(req, signal),
       pull: async (q, signal) => {
-        const res = await network.pull(q, signal);
+        const res = await network.pull({ ...q, limit: PAGE_LIMIT }, signal);
         const sites = served.get(res.cursor);
         if (!sites) throw new Error(`a pull answered with a cursor the server never issued: ${res.cursor}`);
-        d.sitesAtLastPull = sites;
+        // A snapshot page with more to come is only staged in memory; the base still reflects the earlier sites.
+        if (res.mode === 'delta' || !res.hasMore) d.sitesAtLastPull = sites;
         if (res.mode === 'snapshot') d.snapshotSinceLastCheck = true;
         return res;
       },

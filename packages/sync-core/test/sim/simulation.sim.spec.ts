@@ -1,8 +1,7 @@
 import { DEFAULT_FAULTS, SimulationFailure, runSimulation, type SimConfig } from '../../src/testing';
 import { REGRESSION_SEEDS } from './regression-seeds';
 
-/** Crashes, tabs and access changes. Change-log gc (F13) is switched on by P6.2. */
-const FLAGS: SimConfig['flags'] = { crash: true, tabs: true, access: true, gc: false };
+const FLAGS: SimConfig['flags'] = { crash: true, tabs: true, access: true, gc: true };
 
 function envInt(name: string): number | undefined {
   const raw = process.env[name];
@@ -12,10 +11,6 @@ function envInt(name: string): number | undefined {
   return n;
 }
 
-/**
- * `SIM_SEED` runs one seed; `SIM_SEEDS` runs the regression seeds and then seeds 1 … n (default 500, 0 for the
- * regression seeds only); `SIM_STEPS` sets the steps (default 400).
- */
 const ONLY = envInt('SIM_SEED');
 const STEPS = envInt('SIM_STEPS') ?? 400;
 const SEEDS = ONLY !== undefined ? [ONLY] : Array.from({ length: envInt('SIM_SEEDS') ?? 500 }, (_, i) => i + 1);
@@ -38,7 +33,6 @@ async function failure(seed: number, steps: number, flags = FLAGS): Promise<Simu
   }
 }
 
-/** On a failure, binary-searches the step count down and reports the smallest failing run and how to repeat it. */
 async function expectPasses(seed: number, steps: number, flags = FLAGS): Promise<void> {
   if (!(await failure(seed, steps, flags))) return;
   let lo = 0;

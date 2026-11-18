@@ -41,7 +41,9 @@ CI (`CI` set) a missing `DATABASE_URL` fails the run.
 
 1. The client queues named mutations with a per-client monotonic id and applies them optimistically.
 2. `POST /sync/push` sends the queue; the server applies each mutation in a transaction.
-3. `GET /sync/pull?cursor=N&clientId=…` returns changes with `version > N` for accessible sites.
+3. `GET /sync/pull?cursor=…&clientId=…` answers for the user's sites with the changes after the cursor
+   (`mode: 'delta'`). When no delta can bring the client up to date (no cursor, changed sites, a collected log, an
+   unknown version), it answers with a paged snapshot of every live row (`mode: 'snapshot'`), then a delta.
 4. `GET /sync/stream` emits `poke` events so clients pull promptly. The client reads it with `fetch` (the token goes
    in the `Authorization` header, never in the URL), reconnects with backoff and syncs after every reconnect.
 
@@ -63,6 +65,37 @@ CI (`CI` set) a missing `DATABASE_URL` fails the run.
 
 ### 7. Schema evolution
 
+**Protocol version on every request, not a handshake.** Every request carries `x-fieldsync-protocol`. When the
+version is outside `[MIN_PROTOCOL, PROTOCOL]`, `ProtocolGuard` answers `426 UPGRADE_REQUIRED` with
+`details: { min, current }`, before authentication. A missing or non-numeric header counts as version 1. The
+client then blocks with `blocked: 'upgrade'`: its timers and its stream stop, and storage, including the queue,
+is not touched. A newer build opened on the same storage pushes the queue.
+- *Why per request.* It is stateless: any instance behind a load balancer decides on its own, and no client can
+  skip the check. A deploy in the middle of a session is noticed at the very next request.
+- *Handshake endpoint* (ask once at start-up): one header less per request. But the server would have to
+  remember or trust what the client said, and an app left open across a deploy would keep using the old
+  protocol until it reloads.
+- *Cost:* a few bytes per request.
+
+Tests: `apps/server/test/protocol/upgrade.integration.spec.ts`, which sends old, missing, newer and malformed
+versions, with and without a token, to every guarded endpoint; and `packages/sync-core/test/client/upgrade.spec.ts`.
+
+**Local schema migrations never lose the queue.** The IndexedDB schema has a version (`LOCAL_SCHEMA`). Opening
+an older database runs every step after its version, in order, inside the upgrade transaction
+(`packages/sync-core/src/storage/idb-migrations.ts`). The rules:
+- steps are additive: new stores, new indexes, transformed rows;
+- base data may be dropped, but only together with setting the cursor to `null`, so the next pull fetches it
+  again as an `initial` snapshot;
+- the mutation queue, its ids and `nextMutationId` are never dropped or renumbered: they are the user's
+  unsynced work.
+
+Version 0 → 1 imports the state an older web app kept in `localStorage`, unsynced queue included. Version 1 → 2
+adds a `ticketId` index on `entities` (parts only), a harmless step that proves the mechanism. A tab still
+running the old code is closed by the upgrade and blocks with `upgrade` (see above). Tests in
+`packages/sync-core/test/storage/storage.spec.ts`: a version 1 database built by hand with three queued
+mutations and base rows keeps the mutations with their ids and order, its rows and cursor, and hands out the
+next id after them; and the `localStorage` import keeps its queue.
+
 ## Found issues
 
 Each issue is reproduced by an automated test that is committed as `it.failing` before the fix (red against
@@ -83,7 +116,7 @@ in `packages/sync-core/test/repro/`.
 | F10 | Authenticity | `clientId` ownership never checked on push or pull | `f10-client-ownership.integration.spec.ts` | fixed |
 | F11 | Authenticity | Bearer token accepted in the SSE query string; tokens stored in plaintext | `f11-token-in-url.integration.spec.ts` | fixed |
 | F12 | Access lifecycle | Revoked access and site moves never remove data from clients | `f12-revocation-move.integration.spec.ts` | fixed |
-| F13 | Log lifecycle | GC by age with no floor or reload signal; new clients replay a truncated log | `f13-gc.integration.spec.ts` | open |
+| F13 | Log lifecycle | GC by age with no floor or reload signal; new clients replay a truncated log | `f13-gc.integration.spec.ts` | fixed |
 | F14 | Client data loss | Pending queue not persisted; `lastMutationId` persisted only after pull | `f14-reload.spec.ts` | fixed |
 | F15 | Client data loss | Tabs share one `clientId` and storage blob with separate id counters | `f15-two-tabs.spec.ts` | fixed |
 | F16 | Client data loss | Pending mutations dropped on push ack, before the pull delivers their effects | `f16-ack-flicker.spec.ts` | fixed |
@@ -390,7 +423,7 @@ simulation runs with access changes on.
   one, in the same transaction.
 - *Access changes.* Every cursor carries a fingerprint of the site set it was issued for. When the user's
   current sites give a different fingerprint, pull answers `mode: 'snapshot', reason: 'access_changed'` with
-  every live row of the current sites, in version order. A paged snapshot replaces this single page later.
+  every live row of the current sites. Since F13 the snapshot is paged.
 - *Client.* A snapshot page replaces the client's base entirely. Queued mutations stay and are replayed on
   top; one that touches a row now out of reach is rejected `NO_ACCESS` and lands in rejections.
 - *Admin endpoints.* `POST`/`DELETE /admin/users/:userId/sites/:siteId` (admin only, each in a transaction)
@@ -403,6 +436,82 @@ simulation runs with access changes on.
   still give a granted site nothing to send.
 - Revocation tombstones keyed by user would need their own lifecycle.
 - A snapshot costs one read of the user's sites when access changes, which is rare.
+
+### F13 — a collected change log leaves new and stale clients incomplete
+
+**What.** GC deleted log rows by age, with no floor and no signal to clients. A client built its base only from
+the log. A new client (no cursor) replayed the log from version 0, which no longer held the older entities. A
+client whose cursor predated the cut silently missed whatever had been collected.
+
+**Why it is dangerous.** A new device shows only the rows that changed recently, and nothing says that the rest
+is missing.
+
+**Reproduce.** `apps/server/test/repro/f13-gc.integration.spec.ts`:
+- a database with 2 000 entities and an empty log: a new client must end with all 2 000. Before the fix it
+  ended with 0;
+- after GC, a stale client and a new client must both equal the server;
+- a pull whose transaction started before GC keeps the page it read, and the next pull from its cursor must be
+  told that the cursor expired. Before the fix it got an empty delta and lost versions 6–10 without a sign.
+
+The simulation against Postgres with GC on fails 39 of 50 seeds (invariant 4) and every differential seed with
+the old `GcService`.
+
+**Fix, part 1: paged snapshot.**
+- *When.* `snapshotReason` (`packages/sync-core/src/protocol/cursor.ts`, shared by the server and the model)
+  decides, in this order:
+  - no cursor → `initial`;
+  - the cursor's site fingerprint differs → `access_changed`;
+  - `v < min_retained_version` → `cursor_expired`;
+  - `v > last_version` → `cursor_ahead`;
+  - otherwise the pull goes on from the cursor: a delta, or the next page of a snapshot.
+
+  A snapshot in progress restarts from its first page for the same reasons: the sites changed, or GC collected
+  the log that its delta would need.
+- *Pages.* `SnapshotService` pins the first page at `v = last_version`, read in the same transaction. It reads
+  the live rows of the user's sites in primary-key order `(entity, id)`, starting after the previous page's
+  key. A middle page's cursor is `{ k: 's', v, after: [entity, id], fp }`, and the last page's is the delta
+  cursor `{ k: 'd', v, fp }`. `reason` is set on the first page only.
+- *Acknowledgement.* Each page is read in its own transaction, so later pages may hold rows newer than `v`.
+  Mutations committed after `v` are delivered only by the delta that follows. So the last page acknowledges
+  (`lastMutationId`, rejections) only when nothing was committed since `v`. Otherwise it sends
+  `lastMutationId: null` and the delta acknowledges, the same rule as F2 and F16.
+- *Client.* The pages are collected in memory (`phase: 'resyncing'`); storage is not touched until the last
+  page. That page commits the whole snapshot as the new base, with the queue on top. A reload mid-snapshot
+  starts over, and a page with a `reason` starts the collection over. After a snapshot the client always pulls
+  once more: the delta from `v` replays what changed while the pages were read. Every change is a full row, so
+  a replayed one is harmless.
+- *Model.* `ModelServer` pages in the same order with the same rules. In the simulation clients ask for 3-row
+  pages, so snapshots span several pulls with writes landing between them.
+
+**Alternatives considered.**
+- One transaction held across all pages (a `WITH HOLD` cursor or an exported snapshot) would make every page
+  consistent with `v`. But it keeps a transaction open, and holds back vacuum, for as long as a slow client
+  pages.
+- Paging in version order needs another index on `entities`; the primary key already serves
+  `(entity, id) > (…)`.
+- Writing each page to storage as it arrives would let a reload resume, but would leave the base half replaced
+  in between. Keeping the pages in memory costs one restart after a reload.
+
+**Fix, part 2: safe compaction.** `GcService.collect(cutoff = now − CHANGELOG_RETENTION_SECONDS)` runs as one
+transaction:
+- `pg_try_advisory_xact_lock(727002, hashtext(current_schema()))`; when another run holds it, this one returns.
+  The lock is per schema, so a run in one schema never makes another schema's run skip;
+- `cut = max(version)` of the log rows older than the cutoff. When there is one, the log rows and the entity
+  tombstones up to `cut` are deleted, and `min_retained_version` is raised to `cut` (never lowered). A pull reads
+  the floor and the log in one snapshot, so it sees either the old log or the new floor, never a gap;
+- rejections and `clients` rows are deleted after `CLIENT_RETENTION_DAYS` (90), not after the log retention (7
+  days). A client that was offline longer than the log is kept still learns why its mutation was refused, in the
+  same pull that answers it with a `cursor_expired` snapshot;
+- `sync_state` is updated last: writers take it last and hold it to commit, so taking it first would stall every
+  push for the whole collection.
+
+The interval timer skips a tick while a run is still going.
+
+**Alternatives considered.**
+- Keeping tombstones forever would let a stale client learn every deletion from the log, but the log is gone
+  anyway; the snapshot replaces the base, so tombstones older than the floor have no reader.
+- Deleting rejections with the log would make a long-offline client drop a refused mutation as if it had been
+  applied.
 
 ### F14 — a reload loses offline work and reuses mutation ids
 
@@ -603,7 +712,8 @@ depended on how the garbage happened to parse. It also made any client bug in cu
 answered 200.
 
 **Fix.** The cursor is now opaque: `base64url(JSON)` of `{ k: 'd', v, fp }` (`fp` identifies the site set it
-was issued for). `decodeCursor` validates it with zod and anything else is `400 BAD_REQUEST`. All query
+was issued for). Inside a paged snapshot it is `{ k: 's', v, after, fp }`, where `after` must be an entity key
+(F13). `decodeCursor` validates it with zod and anything else is `400 BAD_REQUEST`. All query
 parameters go through `pullQuerySchema` (`limit` 1–500, `ackedMutationId` ≥ 0), so other garbage is a 400 as
 well instead of being clamped or defaulted.
 
@@ -697,10 +807,12 @@ Each step is one random action:
 - a network partition;
 - a device crash and restart on the same storage;
 - opening or closing a second tab;
-- granting or revoking a technician's site, or an admin moving a ticket to another site.
+- granting or revoking a technician's site, or an admin moving a ticket to another site;
+- change-log GC, and a device offline for long enough to fall behind it.
 
 The network loses requests and responses, delivers duplicates, cuts a batch midway and delays every hop by up to
-400 ms, so answers overtake each other. After the last step the network heals and every client settles.
+400 ms, so answers overtake each other. Clients pull 3 rows per page, so snapshots and deltas span several pulls
+and writes land between the pages. After the last step the network heals and every client settles.
 
 Checked after every step:
 1. after a pull, no client holds a row outside the sites its user had when the server computed that pull;
@@ -715,7 +827,7 @@ Checked at the end:
 7. every part quantity equals what it was added with plus each applied adjustment.
 
 ```sh
-npm run sim                                  # regression seeds, then seeds 1–500 × 400 steps (about 40 s)
+npm run sim                                  # regression seeds, then seeds 1–500 × 400 steps (about 45 s)
 SIM_SEED=1234 npm run sim                    # one seed
 SIM_SEED=1234 SIM_STEPS=57 npm run sim       # one seed, a shorter run
 SIM_SEEDS=50 npm run sim                     # seeds 1–50 (0: regression seeds only)
@@ -733,21 +845,28 @@ rejection codes. Timestamps are left out of the comparison, because the model us
 uses the transaction time. A server call is awaited in full before anything else happens, so a seed replays
 exactly on Postgres too.
 
-Change-log garbage collection (F13) is not simulated yet: with it switched on, every seed fails on
-invariant 4, which is that defect.
+Change-log garbage collection runs too: a GC step at a random recent version, and a "long offline" step that
+partitions a device for a minute, collects the whole log and heals it. On Postgres the GC step backdates the log
+up to the cut and calls the real `GcService`. Granting, revoking and GC first let every pending client step
+finish: a call into Postgres does that anyway while it waits for I/O, the model does not, and without it the
+two would draw different random numbers.
 
 **Regression seeds** (`packages/sync-core/test/sim/regression-seeds.ts`). They run first. Each entry is the
 smallest failing run found when that one fix was reverted on its own, which is evidence that the simulation
 catches it. Each entry also keeps the flags it was found with. The "Seeds 1–100 failing" column shows how
 many of seeds 1–100 failed with that fix reverted.
 
-| Seed | Steps | Access changes | Seeds 1–100 failing | Found |
+| Seed | Steps | Flags | Seeds 1–100 failing | Found |
 |---|---|---|---|---|
-| 30 | 1 | off | 100 | F4: a server that does not deduplicate applies a retried mutation twice |
-| 56 | 3 | off | 100 | F5: a rejection that does not advance the client blocks its queue |
-| 91 | 2 | off | 68 | F15: a follower tab that ignores `state-changed` keeps a stale base |
-| 86 | 27 | off | 41 | F15: a leader that ignores `queue-changed` never pushes another tab's mutation |
-| 31 | 12 | on | 100 | F12: without a snapshot on an access change, a client keeps revoked rows and misses granted ones (server or client side reverted) |
+| 30 | 1 | crash, tabs | 100 | F4: a server that does not deduplicate applies a retried mutation twice |
+| 47 | 3 | crash, tabs | 100 | F5: a rejection that does not advance the client blocks its queue |
+| 91 | 2 | crash, tabs | 69 | F15: a follower tab that ignores `state-changed` keeps a stale base |
+| 91 | 45 | crash, tabs | 56 | F15: a leader that ignores `queue-changed` never pushes another tab's mutation |
+| 69 | 6 | + access | 97 | F12: without a snapshot on an access change, a client keeps revoked rows and misses granted ones (server or client side reverted) |
+| 10 | 11 | + access, gc | 71 | F13: GC without a retained floor lets a client whose cursor it passed miss the collected changes |
+
+Paging by 3 rows (F13, part 1) changed every run, so the F5, F15 (leader) and F12 entries were searched again
+with their fixes reverted; the old seeds no longer failed.
 
 ## Load results
 

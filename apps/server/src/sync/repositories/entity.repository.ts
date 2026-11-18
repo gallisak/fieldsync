@@ -4,14 +4,20 @@ import type { PoolClient } from 'pg';
 
 @Injectable()
 export class EntityRepository {
-  /** Every live row of the given sites as `put` changes, in version order: a full replacement for a base. */
-  async live(c: PoolClient, sites: string[]): Promise<Change[]> {
+  async livePage(
+    c: PoolClient,
+    sites: string[],
+    after: [EntityName, string] | undefined,
+    n: number,
+  ): Promise<Change[]> {
     if (sites.length === 0) return [];
     const { rows } = await c.query<{ entity: EntityName; id: string; site_id: string; data: Row; version: string }>(
       `SELECT entity, id, site_id, data, version FROM entities
-        WHERE NOT deleted AND site_id = ANY($1::uuid[])
-        ORDER BY version`,
-      [sites],
+        WHERE site_id = ANY($1::uuid[]) AND NOT deleted
+          AND ($2::text IS NULL OR (entity, id) > ($2::text, $3::uuid))
+        ORDER BY entity, id
+        LIMIT $4`,
+      [sites, after?.[0] ?? null, after?.[1] ?? null, n],
     );
     return rows.map((r) => ({
       version: Number(r.version),

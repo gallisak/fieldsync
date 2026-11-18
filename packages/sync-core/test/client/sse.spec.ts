@@ -1,7 +1,6 @@
 import { PROTOCOL, PROTOCOL_HEADER, TransportError, openPokeStream } from '../../src';
 import { flush } from '../support/scripted-transport';
 
-/** A fake server: `fetchImpl` answers with a body the test writes chunk by chunk. */
 function fakeStream(status = 200, errorBody?: unknown) {
   let body!: ReadableStreamDefaultController<Uint8Array>;
   const stream = new ReadableStream<Uint8Array>({ start: (c) => void (body = c) });
@@ -9,7 +8,6 @@ function fakeStream(status = 200, errorBody?: unknown) {
   const requests: { url: string; init: RequestInit }[] = [];
   const fetchImpl = (async (url: string, init: RequestInit) => {
     requests.push({ url, init });
-    // Like a real fetch: aborting the request errors the body that is being read.
     init.signal?.addEventListener('abort', () => body.error(new DOMException('aborted', 'AbortError')));
     if (status !== 200) return new Response(JSON.stringify(errorBody), { status });
     return new Response(stream, { status, headers: { 'content-type': 'text/event-stream' } });

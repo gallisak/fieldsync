@@ -3,10 +3,6 @@ import { randomUUID } from 'crypto';
 import { DEMO, TOKENS, listen, openStream, push, seed } from '../support/api';
 import { createTestApp, describeDb, type TestApp } from '../support/pg';
 
-/**
- * F11: the SSE stream accepts the bearer token from the query string, which puts it in access logs, proxy
- * logs and browser history; and tokens are stored in plaintext, so a database dump hands out every account.
- */
 describeDb('F11 stream token in the URL', () => {
   let t: TestApp;
   beforeAll(async () => {
@@ -31,7 +27,6 @@ describeDb('F11 stream token in the URL', () => {
     }
   });
 
-  // Nothing logs per request yet (structured request logs come in P7.1); this pins it from now on.
   it('never writes a token to the log during a push or a stream connect', async () => {
     const lines: string[] = [];
     const record = (...args: unknown[]) => void lines.push(args.map(String).join(' '));
@@ -56,7 +51,7 @@ describeDb('F11 stream token in the URL', () => {
     } finally {
       await logged.close();
     }
-    expect(lines.length).toBeGreaterThan(0); // the capture works: Nest logs its start-up
+    expect(lines.length).toBeGreaterThan(0);
     for (const token of Object.values(TOKENS)) expect(lines.filter((l) => l.includes(token))).toEqual([]);
   });
 });

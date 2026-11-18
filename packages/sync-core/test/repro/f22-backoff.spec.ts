@@ -4,14 +4,9 @@ import { ScriptedTransport, emptyPull, flush } from '../support/scripted-transpo
 
 const SITE = '33333333-3333-4333-8333-333333333333';
 
-/**
- * F22: retries use a fixed 5 s delay with no backoff or jitter (every client hammers a recovering server in
- * lockstep), and a push answered with 200 but no results makes the client re-push immediately, forever.
- */
 describe('F22 retry scheduling', () => {
   afterEach(() => jest.useRealTimers());
 
-  // A fixed jitter source makes the delays deterministic.
   const makeClient = (transport: ScriptedTransport) =>
     new SyncClient({ clientId: 'c1', transport, storage: new MemoryStorage(), random: () => 0.5 });
 

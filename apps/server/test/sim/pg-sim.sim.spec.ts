@@ -4,21 +4,17 @@ import type { Pool } from 'pg';
 import { createTestApp, describeDb, type TestApp } from '../support/pg';
 import { PgServer } from './pg-server';
 
-/** As in the model runs: crashes, tabs and access changes; gc (F13) comes with P6.2. */
-const FLAGS: SimConfig['flags'] = { crash: true, tabs: true, access: true, gc: false };
+const FLAGS: SimConfig['flags'] = { crash: true, tabs: true, access: true, gc: true };
 const STEPS = 200;
 const SEEDS = Array.from({ length: 50 }, (_, i) => i + 1);
 const DIFFERENTIAL_SEEDS = Array.from({ length: 10 }, (_, i) => i + 1);
 
 const config = (seed: number): SimConfig => ({ seed, steps: STEPS, clients: 3, faults: DEFAULT_FAULTS, flags: FLAGS });
 
-/** The whole server state that both implementations must agree on. */
 interface ServerDump {
   lastVersion: number;
   entities: Record<string, { siteId: string; version: number; row: Row | null }>;
-  /** clientId → last mutation id */
   clients: Record<string, number>;
-  /** clientId/mutationId → rejection code */
   rejections: Record<string, string>;
 }
 
@@ -81,7 +77,6 @@ describeDb('simulation against Postgres', () => {
     expect(await runPg(7)).toEqual(await runPg(7));
   }, 60_000);
 
-  // Any difference is a bug in one of the two: the schedule depends on every answer the server gave.
   it.each(DIFFERENTIAL_SEEDS)(
     'seed %i: Postgres and the model take the same steps and end in the same state',
     async (seed) => {

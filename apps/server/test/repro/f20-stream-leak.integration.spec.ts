@@ -2,10 +2,6 @@ import { StreamService } from '../../src/stream.service';
 import { TOKENS, listen, openStream, seed } from '../support/api';
 import { createTestApp, describeDb, type TestApp } from '../support/pg';
 
-/**
- * F20: stream subscribers are never removed when the socket closes, so the set grows without bound and
- * every poke writes to dead sockets.
- */
 describeDb('F20 stream subscribers are released', () => {
   let t: TestApp;
   beforeAll(async () => {

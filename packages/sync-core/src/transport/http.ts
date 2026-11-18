@@ -5,15 +5,10 @@ import { TransportError } from './errors';
 export interface PullParams {
   cursor: Cursor | null;
   clientId: string;
-  /** Rejections of mutations up to this id are already known to the client and are not sent again. */
   ackedMutationId: number;
   limit: number;
 }
 
-/**
- * Both methods reject with a `TransportError`, or with the abort reason when `signal` aborts (the caller gave
- * up, e.g. on dispose).
- */
 export interface Transport {
   push(req: PushRequest, signal?: AbortSignal): Promise<PushResponse>;
   pull(params: PullParams, signal?: AbortSignal): Promise<PullResponse>;
@@ -46,8 +41,7 @@ export class HttpTransport implements Transport {
   }
 
   private async call<T>(path: string, init: RequestInit, signal?: AbortSignal): Promise<T> {
-    // One controller per request: aborted by the caller's signal or by the timeout, whichever comes first.
-    // Built by hand (not AbortSignal.any/timeout) so it works on older runtimes and leaves no timer behind.
+    // Built by hand, not with AbortSignal.any/timeout: works on older runtimes and leaves no timer behind.
     const controller = new AbortController();
     let timedOut = false;
     const timer = setTimeout(() => {
@@ -94,7 +88,7 @@ export class HttpTransport implements Transport {
 
   private failure(err: unknown, timedOut: boolean, signal?: AbortSignal): unknown {
     if (timedOut) return new TransportError('timeout', undefined, undefined, undefined, undefined, { cause: err });
-    if (signal?.aborted) return signal.reason ?? err; // the caller gave up: not a transport failure
+    if (signal?.aborted) return signal.reason ?? err;
     return new TransportError('network', undefined, undefined, undefined, undefined, { cause: err });
   }
 }

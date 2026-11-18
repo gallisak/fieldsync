@@ -3,10 +3,6 @@ import request from 'supertest';
 import { DEMO, TOKENS, createTicket, listen, push, seed } from '../support/api';
 import { createTestApp, describeDb, waitersOn, type TestApp } from '../support/pg';
 
-/**
- * F4: the "already applied?" check reads clients.last_mutation_id outside the transaction and without a row
- * lock, so identical requests sent in parallel (a retry racing the original) all apply.
- */
 describeDb('F4 parallel duplicate push', () => {
   let t: TestApp;
   beforeAll(async () => {
@@ -29,8 +25,7 @@ describeDb('F4 parallel duplicate push', () => {
     ]);
     expect(added.status).toBeLessThan(300);
 
-    // Hold the part row so every request is inside its transaction before any of them commits. This makes
-    // the race deterministic instead of depending on request timing.
+    // Holding the part row makes the race deterministic: every request is inside its transaction before any commits.
     const blocker = await t.pool.connect();
     let responses: request.Response[];
     try {

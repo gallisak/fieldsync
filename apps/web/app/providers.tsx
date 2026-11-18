@@ -26,14 +26,11 @@ export function Providers({ children }: { children: ReactNode }) {
     const c = new SyncClient({
       transport: new HttpTransport(API, token),
       storage: new LocalStorageSyncStorage('fs_state'),
-      // Read over fetch so the token goes in the Authorization header, never in the URL.
       stream: { url: `${API}/sync/stream`, token },
-      // Tabs share this storage: one of them talks to the server, the others follow.
       tabs: new WebLocksCoordinator('fs_state'),
     });
     setClient(c);
     c.start();
-    // A new token or unmounting must not leave the old client syncing and its stream open (F21).
     return () => c.dispose();
   }, [token]);
 
@@ -64,10 +61,6 @@ export function useSyncClient(): SyncClient | null {
   return useContext(ClientContext);
 }
 
-/**
- * Runs an action that may call `client.mutate`; a mutation the client refuses up front (`MutationRejected`)
- * becomes a message to show instead of an error thrown out of an event handler.
- */
 export function useRefusal(): [string | null, (action: () => unknown) => void] {
   const [message, setMessage] = useState<string | null>(null);
   const act = useCallback((action: () => unknown) => {
@@ -82,7 +75,6 @@ export function useRefusal(): [string | null, (action: () => unknown) => void] {
   return [message, act];
 }
 
-/** Re-renders whenever the client state changes. */
 export function useSyncState(client: SyncClient | null): number {
   return useSyncExternalStore(
     (cb) => (client ? client.subscribe(cb) : () => undefined),

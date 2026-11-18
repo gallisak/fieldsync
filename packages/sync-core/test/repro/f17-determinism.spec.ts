@@ -4,11 +4,6 @@ import { ScriptedTransport } from '../support/scripted-transport';
 const SITE = '33333333-3333-4333-8333-333333333333';
 const TICKET = '11111111-1111-4111-8111-111111111111';
 
-/**
- * F17: `ticket.create` draws its id from `crypto.randomUUID()` and its timestamps from `new Date()` inside the
- * mutator. The client replays the queue on every `view()`, so each render sees a different ticket, and the
- * server creates yet another one.
- */
 describe('F17 deterministic mutators', () => {
   afterEach(() => jest.useRealTimers());
 

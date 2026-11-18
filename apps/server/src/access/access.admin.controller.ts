@@ -16,10 +16,6 @@ import { ProtocolGuard } from '../common/protocol.guard';
 import { Db } from '../database/db.service';
 import { StreamService } from '../stream.service';
 
-/**
- * Grants and revokes a user's access to a site. Each change commits in its own transaction; then the user's
- * open streams are refreshed and poked, and their next pull is an `access_changed` snapshot.
- */
 @Controller('admin/users/:userId/sites/:siteId')
 @UseGuards(ProtocolGuard, AuthGuard)
 export class AccessAdminController {

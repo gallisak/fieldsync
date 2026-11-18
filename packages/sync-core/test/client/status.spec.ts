@@ -10,7 +10,6 @@ const calm: SyncFacts = {
 };
 
 describe('deriveStatus', () => {
-  // Each row adds one fact on top of the previous ones, so it also proves the priority order.
   const cases: [string, Partial<SyncFacts>, SyncBadge][] = [
     ['nothing to do', {}, 'synced'],
     ['queued changes', { pendingCount: 2 }, 'pending'],

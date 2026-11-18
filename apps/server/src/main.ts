@@ -7,7 +7,6 @@ import { ConfigError, loadConfig } from './config/env';
 async function bootstrap() {
   let config;
   try {
-    // Validate before Nest starts so a bad environment fails with a readable message, not a DI stack trace.
     config = loadConfig();
   } catch (err) {
     if (!(err instanceof ConfigError)) throw err;

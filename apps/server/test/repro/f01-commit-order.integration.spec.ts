@@ -6,10 +6,6 @@ import { createTestApp, describeDb, until, type TestApp } from '../support/pg';
 
 const PAUSE_KEY = 727101;
 
-/**
- * F1: change_log.version came from a sequence — allocated at INSERT, visible at COMMIT. A transaction that
- * took a lower version but commits later is skipped by any reader whose cursor already moved past it.
- */
 describeDb('F1 change order vs commit order', () => {
   let t: TestApp;
   beforeAll(async () => {
@@ -38,12 +34,10 @@ describeDb('F1 change order vs commit order', () => {
     try {
       await gate.query('SELECT pg_advisory_lock($1)', [PAUSE_KEY]);
 
-      // A writes its change, then stops before COMMIT.
       const a = create('F1 A');
       const pushA = push(http, TOKENS.admin, 'client-a', [a]).then((r) => r);
       await until(async () => pausedPid !== undefined, 'A to pause');
 
-      // B starts while A is open. It either commits (versions from a sequence) or queues behind A.
       const b = create('F1 B');
       let bDone = false;
       const pushB = push(http, TOKENS.admin, 'client-b', [b]).then((r) => ((bDone = true), r));

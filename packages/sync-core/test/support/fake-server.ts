@@ -14,14 +14,9 @@ import {
   type Transport,
 } from '../../src';
 
-/**
- * A minimal in-memory server with the real protocol rules that matter for client tests: per-client ordered,
- * deduplicated mutation ids, a change log, and `lastMutationId` reported with the final pull page.
- */
 export class FakeServer {
   readonly state = new Map<string, Row>();
   readonly log: Change[] = [];
-  /** `<clientId>/<mutationId>` of every mutation actually applied, in order. */
   readonly applied: string[] = [];
   duplicates = 0;
   private readonly clients = new Map<string, number>();
@@ -74,10 +69,6 @@ export class FakeServer {
     };
   }
 
-  /**
-   * A transport into this server. `holdPush` keeps push responses from arriving (the server has already applied
-   * them), as when a tab dies with a request in flight.
-   */
   transport(opts: { holdPush?: () => boolean } = {}): Transport & { calls: number } {
     const t = {
       calls: 0,

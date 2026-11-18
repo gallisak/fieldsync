@@ -6,14 +6,9 @@ interface Member {
 }
 
 export interface MemoryTab extends TabCoordinator {
-  /** The tab dies: like `close()` for the others (the lock is freed), but nothing is said or delivered again. */
   kill(): void;
 }
 
-/**
- * In-process twin of Web Locks + BroadcastChannel for tests and the simulator: the earliest started tab that is
- * still alive leads; messages are delivered asynchronously to every other live tab.
- */
 export class MemoryTabHub {
   private readonly members: Member[] = [];
   private leader?: Member;

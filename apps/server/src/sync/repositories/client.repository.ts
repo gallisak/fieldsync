@@ -36,7 +36,6 @@ export class ClientRepository {
     ]);
   }
 
-  /** 0 when the client does not exist or belongs to another user. */
   async lastMutationId(q: Pool | PoolClient, clientId: string, userId: string): Promise<number> {
     const { rows } = await q.query<{ last_mutation_id: string }>(
       `SELECT last_mutation_id FROM clients WHERE client_id = $1 AND user_id = $2`,

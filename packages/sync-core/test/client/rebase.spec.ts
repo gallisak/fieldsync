@@ -54,7 +54,6 @@ const page = (
   ...last,
 });
 
-/** Storage whose base already holds `rows` (cursor `c0`), as after an earlier sync. */
 async function seeded(rows: Row[]): Promise<MemoryStorage> {
   const storage = new MemoryStorage();
   await storage.load();
@@ -71,10 +70,6 @@ async function seeded(rows: Row[]): Promise<MemoryStorage> {
 const enqueue = (storage: MemoryStorage, name: MutatorName, args: Record<string, unknown>) =>
   storage.enqueue({ name, args, createdAt: '2026-01-01T10:00:00.000Z' });
 
-/**
- * The view is always the server's base with every unacknowledged local mutation replayed on top, whatever the
- * base does underneath; mutations leave the queue only when a pull acknowledges them.
- */
 describe('rebase of pending mutations', () => {
   const clients: SyncClient[] = [];
   const open = (storage: MemoryStorage, transport = new ScriptedTransport()) => {
@@ -91,7 +86,6 @@ describe('rebase of pending mutations', () => {
     const rest = deferred<PullResponse>();
     const transport = new ScriptedTransport()
       .replyPush({ results: [{ id: 1, status: 'applied' }], lastMutationId: 1 })
-      // Another user's edit arrives on a page that does not acknowledge our mutation yet.
       .replyPull(
         page([put(2, ticket(A, { title: 'old title', description: 'their text' }))], 'c1', {
           hasMore: true,
@@ -136,7 +130,6 @@ describe('rebase of pending mutations', () => {
     await enqueue(storage, 'ticket.setStatus', { id: A, from: 'open', to: 'in_progress' });
     await enqueue(storage, 'ticket.update', { id: A, patch: { title: 'second' } });
 
-    // Snapshot pages are committed through storage exactly like delta pages.
     const { cursor } = await storage.load();
     const snapshot = [put(10, ticket(A, { title: 'server title', description: 'server text' })), put(11, ticket(D))];
     expect(
@@ -171,7 +164,6 @@ describe('rebase of pending mutations', () => {
     await enqueue(storage, 'ticket.update', { id: A, patch: { title: 'mine' } });
     const transport = new ScriptedTransport()
       .replyPush({ results: [{ id: 1, status: 'applied' }], lastMutationId: 1 })
-      // Access changed: B's site is gone, D's is new. The pull is taken before mutation 1 committed.
       .replyPull({
         ...page([put(5, ticket(A, { title: 'server title', description: 'server text' })), put(6, ticket(D))], 's1', {
           hasMore: false,
@@ -179,7 +171,8 @@ describe('rebase of pending mutations', () => {
         }),
         mode: 'snapshot',
         reason: 'access_changed',
-      });
+      })
+      .replyPull(page([], 's2', { hasMore: false, lastMutationId: 0 }));
     const client = open(storage, transport);
     await client.ready;
 
@@ -192,6 +185,65 @@ describe('rebase of pending mutations', () => {
     expect(client.view().get(`ticket/${A}`)).toMatchObject({ title: 'mine', description: 'server text' });
   });
 
+  it('stages a paged snapshot in memory, commits it with the last page, then pulls the delta after it', async () => {
+    const storage = await seeded([ticket(A, { title: 'old title' }), ticket(B)]);
+    const lastPage = deferred<PullResponse>();
+    const transport = new ScriptedTransport().replyPull(
+      {
+        ...page([put(3, ticket(D))], 's1', { hasMore: true, lastMutationId: null }),
+        mode: 'snapshot',
+        reason: 'cursor_expired',
+      },
+      () => lastPage.promise,
+      page([put(9, ticket(D, { title: 'changed while paging' }))], 'd2', { hasMore: false, lastMutationId: 0 }),
+    );
+    const client = open(storage, transport);
+    await client.ready;
+
+    const synced = client.sync();
+    await flush();
+    expect(client.facts.phase).toBe('resyncing');
+    expect((await storage.load()).cursor).toBe('c0');
+    expect([...client.view().keys()].sort()).toEqual([`ticket/${A}`, `ticket/${B}`]);
+
+    lastPage.resolve({
+      ...page([put(5, ticket(A, { title: 'server title' }))], 'd1', { hasMore: false, lastMutationId: 0 }),
+      mode: 'snapshot',
+    });
+    await synced;
+
+    expect(transport.callsOf('pull').map((c) => (c.args[0] as { cursor: string }).cursor)).toEqual(['c0', 's1', 'd1']);
+    const state = await storage.load();
+    expect(state.cursor).toBe('d2');
+    expect([...state.base.keys()].sort()).toEqual([`ticket/${A}`, `ticket/${D}`]);
+    expect(state.base.get(`ticket/${A}`)).toMatchObject({ title: 'server title' });
+    expect(state.base.get(`ticket/${D}`)).toMatchObject({ title: 'changed while paging' });
+    expect(client.facts.phase).toBe('idle');
+  });
+
+  it('drops the rows staged from a snapshot the server restarted', async () => {
+    const storage = await seeded([ticket(A)]);
+    const transport = new ScriptedTransport().replyPull(
+      {
+        ...page([put(2, ticket(B))], 's1', { hasMore: true, lastMutationId: null }),
+        mode: 'snapshot',
+        reason: 'initial',
+      },
+      {
+        ...page([put(3, ticket(D))], 'd1', { hasMore: false, lastMutationId: 0 }),
+        mode: 'snapshot',
+        reason: 'access_changed',
+      },
+      page([], 'd1', { hasMore: false, lastMutationId: 0 }),
+    );
+    const client = open(storage, transport);
+    await client.ready;
+
+    await client.sync();
+
+    expect([...(await storage.load()).base.keys()]).toEqual([`ticket/${D}`]);
+  });
+
   it('drops exactly the acknowledged mutations and replays the rest on the new base', async () => {
     const storage = await seeded([ticket(A, { title: 'old title' })]);
     await enqueue(storage, 'ticket.update', { id: A, patch: { title: 'first' } });
@@ -202,7 +254,6 @@ describe('rebase of pending mutations', () => {
         results: [1, 2, 3].map((id) => ({ id, status: 'applied' as const })),
         lastMutationId: 3,
       })
-      // The pull's snapshot was taken after mutations 1 and 2 committed, before 3.
       .replyPull(
         page([put(2, ticket(A, { title: 'first', status: 'in_progress' }))], 'c1', {
           hasMore: false,
@@ -218,6 +269,6 @@ describe('rebase of pending mutations', () => {
     expect((await storage.load()).pending.map((m) => m.id)).toEqual([3]);
     expect(client.pendingCount).toBe(1);
     expect(client.view().get(`ticket/${A}`)).toMatchObject({ title: 'second', status: 'in_progress' });
-    expect(transport.callsOf('push')).toHaveLength(1); // 3 was already answered; it waits for its pull
+    expect(transport.callsOf('push')).toHaveLength(1);
   });
 });

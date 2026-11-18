@@ -43,7 +43,7 @@ describe('client facts and view', () => {
     expect(client.facts).toMatchObject({ connection: 'offline', phase: 'idle', pendingCount: 1 });
     expect(deriveStatus(client.facts)).toBe('offline');
 
-    void client.sync(); // the retry
+    void client.sync();
     await flush();
     expect(client.facts).toMatchObject({ connection: 'online', phase: 'pulling' });
     held.resolve(emptyPull(1));

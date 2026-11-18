@@ -1,10 +1,6 @@
 import { MemoryStorage, SyncClient } from '../../src';
 import { ScriptedTransport, flush } from '../support/scripted-transport';
 
-/**
- * F21: `dispose()` only clears the retry timer. A request in flight is never aborted (and has no timeout),
- * so a hung pull keeps the client's sync slot busy and its resources alive after the UI is gone.
- */
 describe('F21 dispose', () => {
   afterEach(() => jest.useRealTimers());
 

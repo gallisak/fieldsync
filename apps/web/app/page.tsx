@@ -2,23 +2,39 @@
 
 import Link from 'next/link';
 import { useState } from 'react';
-import { useRefusal, useSyncClient, useSyncState } from './providers';
-import { StatusBar } from './status-bar';
+import { MutationRejected } from '@fieldsync/sync-core';
+import { toast } from 'sonner';
+import { SignOutButton } from '@/features/auth/sign-out';
+import { useSyncClient, useSyncSelector, useSyncStatus } from '@/shared/api';
+
+const selectView = <T,>(view: T) => view;
+
+function act(action: () => unknown): void {
+  try {
+    action();
+  } catch (err) {
+    if (!(err instanceof MutationRejected)) throw err;
+    toast.error(err.message);
+  }
+}
 
 export default function HomePage() {
   const client = useSyncClient();
-  useSyncState(client);
+  useSyncSelector(selectView);
+  const { badge, facts } = useSyncStatus();
   const [title, setTitle] = useState('');
   const [siteId, setSiteId] = useState('00000000-0000-4000-8000-0000000000a1');
-  const [refusal, act] = useRefusal();
 
-  if (!client) return <p>Loading…</p>;
   const tickets = client.rows('ticket');
 
   return (
-    <>
+    <main className="mx-auto max-w-3xl space-y-4 p-4">
       <h1>Tickets</h1>
-      <StatusBar client={client} />
+      <p className="text-sm text-muted-foreground">
+        {badge} · {facts.pendingCount} pending
+        {facts.storage === 'memory' ? ' · this browser cannot store data: changes are lost on reload' : ''}
+      </p>
+      <SignOutButton />
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -33,7 +49,6 @@ export default function HomePage() {
         <input value={siteId} onChange={(e) => setSiteId(e.target.value)} size={38} />
         <button type="submit">Create</button>
       </form>
-      {refusal && <p role="alert">{refusal}</p>}
       {tickets.length === 0 && <p>No tickets yet.</p>}
       <ul>
         {tickets.map((t) => (
@@ -42,6 +57,6 @@ export default function HomePage() {
           </li>
         ))}
       </ul>
-    </>
+    </main>
   );
 }

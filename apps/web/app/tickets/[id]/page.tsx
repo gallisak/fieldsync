@@ -2,18 +2,29 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { ALLOWED_TRANSITIONS, type TicketStatus } from '@fieldsync/sync-core';
-import { useRefusal, useSyncClient, useSyncState } from '../../providers';
-import { StatusBar } from '../../status-bar';
+import { ALLOWED_TRANSITIONS, MutationRejected, type TicketStatus } from '@fieldsync/sync-core';
+import { toast } from 'sonner';
+import { SignOutButton } from '@/features/auth/sign-out';
+import { useSyncClient, useSyncSelector, useSyncStatus } from '@/shared/api';
+
+const selectView = <T,>(view: T) => view;
+
+function act(action: () => unknown): void {
+  try {
+    action();
+  } catch (err) {
+    if (!(err instanceof MutationRejected)) throw err;
+    toast.error(err.message);
+  }
+}
 
 export default function TicketPage({ params: { id } }: { params: { id: string } }) {
   const client = useSyncClient();
-  useSyncState(client);
-  const ticket = client?.view().get(`ticket/${id}`);
+  const ticket = useSyncSelector(selectView).get(`ticket/${id}`);
+  const { badge, facts } = useSyncStatus();
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [partName, setPartName] = useState('');
-  const [refusal, act] = useRefusal();
 
   useEffect(() => {
     if (ticket) {
@@ -23,18 +34,25 @@ export default function TicketPage({ params: { id } }: { params: { id: string } 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticket?.id]);
 
-  if (!client) return <p>Loading…</p>;
-  if (!ticket) return <p>Ticket not found. <Link href="/">Back</Link></p>;
+  if (!ticket)
+    return (
+      <p>
+        Ticket not found. <Link href="/">Back</Link>
+      </p>
+    );
 
   const status = ticket.status as TicketStatus;
   const parts = client.rows('part').filter((p) => p.ticketId === id);
 
   return (
-    <>
+    <main className="mx-auto max-w-3xl space-y-4 p-4">
       <Link href="/">← All tickets</Link>
       <h1>{String(ticket.title)}</h1>
-      <StatusBar client={client} />
-      {refusal && <p role="alert">{refusal}</p>}
+      <p className="text-sm text-muted-foreground">
+        {badge} · {facts.pendingCount} pending
+        {facts.storage === 'memory' ? ' · this browser cannot store data: changes are lost on reload' : ''}
+      </p>
+      <SignOutButton />
 
       <section>
         <input value={title} onChange={(e) => setTitle(e.target.value)} />
@@ -101,6 +119,6 @@ export default function TicketPage({ params: { id } }: { params: { id: string } 
           </ul>
         </section>
       )}
-    </>
+    </main>
   );
 }

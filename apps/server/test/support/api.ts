@@ -1,7 +1,7 @@
 import type { INestApplication } from '@nestjs/common';
 import { PROTOCOL, PROTOCOL_HEADER, type Mutation, type Row } from '@fieldsync/sync-core';
 import { randomUUID } from 'crypto';
-import { request as httpRequest, type ClientRequest } from 'http';
+import { request as httpRequest, type ClientRequest, type IncomingMessage } from 'http';
 import type { AddressInfo } from 'net';
 import type { Pool } from 'pg';
 import type request from 'supertest';
@@ -58,10 +58,14 @@ export async function listen(app: INestApplication): Promise<string> {
 export interface OpenStream {
   status: number;
   req: ClientRequest;
+  res: IncomingMessage;
   received(): string;
 }
 
-export function openStream(baseUrl: string, opts: { token?: string; query?: string } = {}): Promise<OpenStream> {
+export function openStream(
+  baseUrl: string,
+  opts: { token?: string; query?: string; read?: boolean } = {},
+): Promise<OpenStream> {
   return new Promise((resolve, reject) => {
     const req = httpRequest(`${baseUrl}/sync/stream${opts.query ? `?${opts.query}` : ''}`, {
       headers: {
@@ -72,8 +76,8 @@ export function openStream(baseUrl: string, opts: { token?: string; query?: stri
     req.on('response', (res) => {
       let body = '';
       res.setEncoding('utf8');
-      res.on('data', (chunk: string) => (body += chunk));
-      resolve({ status: res.statusCode ?? 0, req, received: () => body });
+      if (opts.read !== false) res.on('data', (chunk: string) => (body += chunk));
+      resolve({ status: res.statusCode ?? 0, req, res, received: () => body });
     });
     req.on('error', reject);
     req.end();

@@ -1,14 +1,12 @@
 'use client';
 
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { ALLOWED_TRANSITIONS, type TicketStatus } from '@fieldsync/sync-core';
 import { useRefusal, useSyncClient, useSyncState } from '../../providers';
 import { StatusBar } from '../../status-bar';
 
-export default function TicketPage() {
-  const { id } = useParams<{ id: string }>();
+export default function TicketPage({ params: { id } }: { params: { id: string } }) {
   const client = useSyncClient();
   useSyncState(client);
   const ticket = client?.view().get(`ticket/${id}`);

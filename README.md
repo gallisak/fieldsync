@@ -62,11 +62,11 @@ sequenceDiagram
   participant O as Other clients
   UI->>C: mutate(name, args): validated, applied in memory
   C->>IDB: [IDB tx] next id + append to queue
-  Note over C,IDB: write fails: the change is taken back off the screen and the user is told; tab dies first: it is lost
+  Note over C,IDB: write fails: the change is taken back off the screen and the user is told. Tab dies first: it is lost
   C->>API: POST /sync/push (≤100)
   Note over C,API: request or response lost: retried, deduplicated
   API->>PG: [tx per mutation] lock client row → dedup → SAVEPOINT → rows FOR UPDATE → authorize on stored site → mutator → lock sync_state, versions → change_log + entities (or rollback to savepoint + mutation_rejections) → last_mutation_id → COMMIT
-  Note over API,PG: transient error: whole tx retried ×3, then 503; any database-side error: 503; id not consumed
+  Note over API,PG: transient error: whole tx retried ×3, then 503. Any database-side error: 503, id not consumed
   API-->>O: SSE poke after commit (best effort, a 30 s jittered poll covers a lost one)
   C->>API: GET /sync/pull?cursor
   API->>PG: [REPEATABLE READ READ ONLY] sites + fingerprint → floor check → delta or snapshot page → lastMutationId + rejections

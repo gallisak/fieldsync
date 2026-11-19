@@ -60,7 +60,7 @@ function writeLegacy(tx: IDBTransaction, legacy: LegacyState): void {
     entities.put({ entity: key.slice(0, key.indexOf('/')), siteId: row.siteId, data: row }, key);
   }
   for (const m of legacy.pending) tx.objectStore('mutations').put(m);
-  for (const r of legacy.rejections) tx.objectStore('rejections').put(r);
+  for (const { id: _id, ...r } of legacy.rejections) tx.objectStore('rejections').add(r);
 }
 
 export class IdbStorage implements SyncStorage {
@@ -118,14 +118,14 @@ export class IdbStorage implements SyncStorage {
         if (m.id > acked) break;
         const r = reasons.get(m.id);
         if (r) {
-          const rejection: StoredRejection = {
+          const rejection: Omit<StoredRejection, 'id'> = {
             mutation: m,
             code: r.code,
             message: r.message,
             ...(r.details === undefined ? {} : { details: r.details }),
             at,
           };
-          await tx.objectStore('rejections').put(rejection);
+          await tx.objectStore('rejections').add(rejection);
         }
         await mutations.delete(m.id);
       }
@@ -137,9 +137,9 @@ export class IdbStorage implements SyncStorage {
     return true;
   }
 
-  async dismissRejection(mutationId: number): Promise<void> {
+  async dismissRejection(rejectionId: number): Promise<void> {
     const tx = await this.tx(['rejections']);
-    await tx.objectStore('rejections').delete(mutationId);
+    await tx.objectStore('rejections').delete(rejectionId);
     await tx.done;
   }
 

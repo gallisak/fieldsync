@@ -9,7 +9,7 @@ import { CLIENT_INTERNALS, type ClientInternals } from './internals';
 import { openPokeStream } from './sse';
 import type { BlockReason, SyncFacts } from './status';
 import type { Transport } from '../transport/http';
-import type { Change, Cursor, EntityName, MutatorName, Row } from '../protocol/types';
+import type { Change, Cursor, EntityName, MutatorName, PullResponse, Row } from '../protocol/types';
 
 export type Rejection = StoredRejection;
 
@@ -162,6 +162,7 @@ export class SyncClient {
   private unsubscribe: (() => void)[] = [];
   private started = false;
   private disposed = false;
+  private selfBlocked = false;
 
   constructor(opts: SyncClientOptions) {
     this.transport = opts.transport;
@@ -196,6 +197,11 @@ export class SyncClient {
     return this.derive().pending;
   }
 
+  /** False until the first pull is stored: an empty view then means "not loaded yet", not "nothing there". */
+  get hasSynced(): boolean {
+    return this.cursor !== null;
+  }
+
   /** Changes whenever the set of sites the server replicates to this user changes. */
   get siteFingerprint(): string | null {
     return this.cursor ? (decodeCursor(this.cursor)?.fp ?? null) : null;
@@ -205,9 +211,9 @@ export class SyncClient {
     return this.rejected;
   }
 
-  async dismissRejection(mutationId: number): Promise<void> {
+  async dismissRejection(rejectionId: number): Promise<void> {
     await this.serial(async () => {
-      await this.storage.dismissRejection(mutationId);
+      await this.storage.dismissRejection(rejectionId);
       this.adopt(await this.storage.load());
       this.emit();
     });
@@ -255,7 +261,7 @@ export class SyncClient {
     });
     durable.then(
       () => {
-        if (this.isLeader) void this.sync();
+        if (this.isLeader) this.trigger();
         this.tabs?.post({ t: 'queue-changed' });
       },
       () => undefined,
@@ -309,6 +315,11 @@ export class SyncClient {
     return this.running;
   }
 
+  // A poke, a poll or a new mutation during a backoff wait would retry at once: the timer runs the next attempt.
+  private trigger(): void {
+    if (this.retryTimer === undefined) void this.sync();
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -350,6 +361,10 @@ export class SyncClient {
   }
 
   private adopt(s: PersistedState): void {
+    if (s.clientId !== this.id) {
+      this.pushedUpTo = 0;
+      this.outOfOrderRetried = false;
+    }
     this.id = s.clientId;
     this.base = s.base;
     this.cursor = s.cursor;
@@ -392,7 +407,12 @@ export class SyncClient {
       this.setFacts({ phase: 'idle' });
     } catch (err) {
       this.setFacts({ phase: 'idle' });
-      await this.onSyncError(err);
+      try {
+        await this.onSyncError(err);
+      } catch (inner) {
+        console.error('sync stopped:', inner);
+        this.block('error');
+      }
     }
   }
 
@@ -436,12 +456,14 @@ export class SyncClient {
         }
       }
     }
-    const retryable = !e || e.kind !== 'http' || e.status! >= 500 || e.status === 408 || e.status === 429;
+    // A 4xx without an error code comes from a proxy or gateway, not from the server's own validation.
+    const retryable =
+      !e || e.kind !== 'http' || e.status! >= 500 || e.status === 408 || e.status === 429 || e.code === undefined;
     if (!retryable) {
       console.error('sync stopped:', err);
       return this.block('error');
     }
-    this.setFacts({ connection: 'offline' });
+    this.setFacts({ connection: e?.kind === 'http' ? 'unavailable' : 'offline' });
     const delay = nextDelay(this.attempt++, this.random);
     this.retryTimer = this.clock.setTimeout(() => {
       this.retryTimer = undefined;
@@ -450,6 +472,11 @@ export class SyncClient {
   }
 
   private block(reason: BlockReason): void {
+    this.selfBlocked = true;
+    if (this.isLeader && this.tabs) {
+      this.isLeader = false;
+      this.tabs.resign();
+    }
     this.closeStream();
     this.clearRetry();
     if (this.pollTimer !== undefined) this.clock.clearTimeout(this.pollTimer);
@@ -472,12 +499,23 @@ export class SyncClient {
   private async pull(): Promise<void> {
     let cursor = this.cursor;
     let staged: Change[] | undefined;
+    let droppedCursor = false;
     for (;;) {
       this.setFacts({ phase: staged ? 'resyncing' : 'pulling' });
-      const resp = await this.transport.pull(
-        { cursor, clientId: this.id, ackedMutationId: this.lastMutationId, limit: 500 },
-        this.abort.signal,
-      );
+      let resp: PullResponse;
+      try {
+        resp = await this.transport.pull(
+          { cursor, clientId: this.id, ackedMutationId: this.lastMutationId, limit: 500 },
+          this.abort.signal,
+        );
+      } catch (err) {
+        // A stored cursor the server cannot read would fail every pull, across reloads: start from a snapshot.
+        const unreadable = err instanceof TransportError && err.status === 400 && err.code === 'BAD_REQUEST';
+        if (!unreadable || cursor === null || cursor !== this.cursor || droppedCursor) throw err;
+        droppedCursor = true;
+        cursor = null;
+        continue;
+      }
       this.setFacts({ connection: 'online' });
       let snapshot: Change[] | undefined;
       if (resp.mode === 'snapshot') {
@@ -533,29 +571,40 @@ export class SyncClient {
       this.pollTimer = undefined;
       return;
     }
-    void this.reload().then(() => {
-      if (this.disposed || !this.isLeader) return;
-      this.lead();
-      void this.sync();
-    });
+    this.pushedUpTo = 0;
+    this.outOfOrderRetried = false;
+    if (this.currentFacts.blocked && !this.selfBlocked) this.setFacts({ blocked: null });
+    void this.reload()
+      .catch((err: unknown) => console.error('fieldsync: could not reload local state', err))
+      .then(() => {
+        if (this.disposed || !this.isLeader) return;
+        this.lead();
+        void this.sync();
+      });
   }
 
   private onTabMessage(m: TabMessage): void {
     if (this.disposed) return;
     switch (m.t) {
       case 'queue-changed':
-        void this.reload().then(() => {
-          if (this.isLeader) void this.sync();
-        });
+        void this.reload().then(
+          () => {
+            if (this.isLeader) this.trigger();
+          },
+          (err: unknown) => console.error('fieldsync: could not reload local state', err),
+        );
         return;
       case 'sync-request':
-        if (this.isLeader) void this.sync();
+        if (!this.isLeader) return;
+        // A tab that opened after the last status change has not heard it yet.
+        this.tabs?.post({ t: 'status', facts: this.currentFacts });
+        this.trigger();
         return;
       case 'state-changed':
-        void this.reload();
+        void this.reload().catch((err: unknown) => console.error('fieldsync: could not reload local state', err));
         return;
       case 'status':
-        if (this.isLeader) return;
+        if (this.isLeader || this.selfBlocked) return;
         this.setFacts({ connection: m.facts.connection, phase: m.facts.phase, blocked: m.facts.blocked });
     }
   }
@@ -577,12 +626,12 @@ export class SyncClient {
           ...config,
           signal: abort.signal,
           timers: this.clock,
-          onOpen: () => void this.sync(),
+          onOpen: () => this.trigger(),
           onData: () => {
             if (!receiving) attempt = 0;
             receiving = true;
           },
-          onPoke: () => void this.sync(),
+          onPoke: () => this.trigger(),
         });
       } catch (err) {
         if (this.disposed || this.currentFacts.blocked || abort.signal.aborted) return;
@@ -612,7 +661,7 @@ export class SyncClient {
     if (this.disposed || this.currentFacts.blocked) return;
     this.pollTimer = this.clock.setTimeout(
       () => {
-        void this.sync();
+        this.trigger();
         this.schedulePoll();
       },
       POLL_MS * (0.5 + this.random()),

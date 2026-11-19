@@ -283,6 +283,23 @@ describeDb('concurrency on real Postgres', () => {
       expect(await count(`entities WHERE id = $1`, [m.args.id])).toBe(1);
     });
 
+    it('a database that cancels the statement is answered 503 and does not consume the id', async () => {
+      failAfterLogInsert('cancelled', async (c) => {
+        await c.query('SELECT pg_cancel_backend(pg_backend_pid())');
+      });
+      const m = create(2, 'cancelled');
+
+      const res = await push(t.http, TOKENS.admin, 'c1', [m]);
+
+      expect(res.status).toBe(503);
+      expect(await count(`mutation_rejections WHERE client_id = $1`, ['c1'])).toBe(0);
+      expect(await lastMutationId('c1')).toBe(1);
+
+      executor.hooks.afterLogInsert = undefined;
+      const again = await push(t.http, TOKENS.admin, 'c1', [m]);
+      expect(again.body.results).toEqual([{ id: 2, status: 'applied' }]);
+    });
+
     it('an exception rolls back to the savepoint: no row, INTERNAL rejection, the next mutation applies', async () => {
       failAfterLogInsert('bug', async () => {
         throw new Error('executor bug');

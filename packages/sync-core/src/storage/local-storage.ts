@@ -8,10 +8,7 @@ interface LegacyBlob {
 }
 
 export class LocalStorageSyncStorage extends WholeStateStorage {
-  constructor(
-    private readonly key: string,
-    private readonly legacyClientIdKey = 'fs_client_id',
-  ) {
+  constructor(private readonly key: string) {
     super();
   }
 
@@ -24,6 +21,7 @@ export class LocalStorageSyncStorage extends WholeStateStorage {
     } catch {
       return undefined;
     }
+    if (typeof parsed !== 'object' || parsed === null) return undefined;
     if ('nextMutationId' in parsed) return parsed;
     const converted = this.fromLegacy(parsed);
     this.write(converted);
@@ -34,13 +32,11 @@ export class LocalStorageSyncStorage extends WholeStateStorage {
     globalThis.localStorage.setItem(this.key, JSON.stringify(state));
   }
 
+  // The starter's counter can be behind the server (saved only after a pull): a fresh client id starts both at 0.
   private fromLegacy(blob: LegacyBlob): WholeState {
-    const clientId = globalThis.localStorage.getItem(this.legacyClientIdKey) ?? newClientId();
     return {
-      ...emptyState(clientId),
+      ...emptyState(newClientId()),
       cursor: typeof blob.cursor === 'string' ? (blob.cursor as WholeState['cursor']) : null,
-      lastMutationId: blob.lastMutationId,
-      nextMutationId: blob.lastMutationId + 1,
       base: Object.entries(blob.base),
     };
   }

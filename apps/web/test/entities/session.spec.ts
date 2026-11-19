@@ -1,4 +1,11 @@
-import { readSession, signIn, signOut, updateAccess, type Session } from '@/entities/session/model/session-store';
+import {
+  StorageUnavailableError,
+  readSession,
+  signIn,
+  signOut,
+  updateAccess,
+  type Session,
+} from '@/entities/session/model/session-store';
 
 const store = new Map<string, string>();
 Object.assign(globalThis, {
@@ -67,6 +74,21 @@ describe('session store', () => {
       updateAccess(session.token, me);
       expect(readSession()).toBeNull();
     });
+  });
+
+  it('reads as signed out when the browser blocks site data, and says so on sign-in', () => {
+    const blocked = () => {
+      throw new DOMException('denied', 'SecurityError');
+    };
+    const real = globalThis.localStorage;
+    Object.assign(globalThis, { localStorage: { getItem: blocked, setItem: blocked, removeItem: blocked } });
+    try {
+      expect(readSession()).toBeNull();
+      expect(() => signIn(session)).toThrow(StorageUnavailableError);
+      expect(() => signOut()).not.toThrow();
+    } finally {
+      Object.assign(globalThis, { localStorage: real });
+    }
   });
 
   it('signs out', () => {

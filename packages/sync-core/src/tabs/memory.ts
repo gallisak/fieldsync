@@ -3,6 +3,7 @@ import type { TabCoordinator, TabMessage } from './coordinator';
 interface Member {
   onLeaderChange: (isLeader: boolean) => void;
   onMessage: (m: TabMessage) => void;
+  candidate: boolean;
 }
 
 export interface MemoryTab extends TabCoordinator {
@@ -25,7 +26,7 @@ export class MemoryTabHub {
     return {
       start: (onLeaderChange, onMessage) => {
         if (member) return;
-        member = { onLeaderChange, onMessage };
+        member = { onLeaderChange, onMessage, candidate: true };
         this.members.push(member);
         this.elect();
       },
@@ -36,13 +37,18 @@ export class MemoryTabHub {
           if (other !== sender) queueMicrotask(() => this.members.includes(other) && other.onMessage(m));
         }
       },
+      resign: () => {
+        if (!member) return;
+        member.candidate = false;
+        this.elect();
+      },
       close: leave,
       kill: leave,
     };
   }
 
   private elect(): void {
-    const next = this.members[0];
+    const next = this.members.find((m) => m.candidate);
     if (next === this.leader) return;
     this.leader = next;
     if (next) queueMicrotask(() => this.members.includes(next) && next.onLeaderChange(true));

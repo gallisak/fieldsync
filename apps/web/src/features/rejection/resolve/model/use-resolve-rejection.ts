@@ -12,7 +12,7 @@ export function useResolveRejection(rejection: StoredRejection) {
   const retry = useSyncSelector(useCallback((view) => buildRetry(rejection, view), [rejection]));
 
   const dismiss = () => {
-    client.dismissRejection(rejection.mutation.id).catch((err: unknown) => {
+    client.dismissRejection(rejection.id).catch((err: unknown) => {
       console.error('fieldsync: could not dismiss a rejection', err);
       toast.error('Could not dismiss this message. Try again.');
     });

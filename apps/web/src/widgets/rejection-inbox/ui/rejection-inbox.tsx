@@ -47,7 +47,7 @@ export function RejectionInbox({ trigger }: { trigger: ReactElement }) {
                   </h3>
                   {g.rejections.map((r) => (
                     <RejectionItem
-                      key={r.mutation.id}
+                      key={r.id}
                       rejection={r}
                       actions={<ResolveRejectionActions rejection={r} />}
                     />

@@ -58,7 +58,7 @@ sequenceDiagram
   C->>API: POST /sync/push (≤100)
   Note over C,API: request or response lost: retried, deduplicated
   API->>PG: [tx per mutation] lock client row → dedup → SAVEPOINT → rows FOR UPDATE → authorize on stored site → mutator → lock sync_state, versions → change_log + entities (or rollback to savepoint + mutation_rejections) → last_mutation_id → COMMIT
-  Note over API,PG: transient error: whole tx retried ×3, then 503, id not consumed
+  Note over API,PG: transient error: whole tx retried ×3, then 503; any database-side error: 503; id not consumed
   API-->>O: SSE poke after commit (best effort, a 30 s jittered poll covers a lost one)
   C->>API: GET /sync/pull?cursor
   API->>PG: [REPEATABLE READ READ ONLY] sites + fingerprint → floor check → delta or snapshot page → lastMutationId + rejections
@@ -110,8 +110,9 @@ need a clock and a network more than generic shrinking; step-count bisection giv
 Postgres runs are serialised, so real races are covered by the concurrency integration tests instead.
 
 **3. Offline-first client.** *Chosen:* transactional storage (IndexedDB via `idb`) that owns the queue and the
-id counter; one leader tab by Web Lock with `BroadcastChannel`; full-jitter backoff; status as facts mapped to
-one badge. Notifications: SSE over `fetch` with the `Authorization` header. *Options:* `SharedWorker` (missing on
+id counter; one leader tab by Web Lock with `BroadcastChannel` (a leader blocked by `426`/`401` hands it on);
+full-jitter backoff; status as facts mapped to one badge: offline, server unavailable, syncing, waiting, then
+rejected (it also has its own inbox button). Notifications: SSE over `fetch` with the `Authorization` header. *Options:* `SharedWorker` (missing on
 Chrome for Android), per-tab client ids (more server clients, still racing storage); `EventSource` + URL ticket
 (an extra endpoint and state), WebSocket (two-way protocol for one-way, payload-free pokes). *Limits:* without
 IndexedDB the client falls back to memory with a visible warning.
@@ -135,8 +136,9 @@ then followed by a delta from it. *Options:* keep the log forever; one transacti
 pages (holds back vacuum). *Limits:* the client stages snapshot pages in memory (fine for tens of thousands of rows).
 
 **7. Schema evolution.** *Chosen:* protocol version on every request, `426` with `{ min, current }`; the client
-blocks with its queue intact. IndexedDB migrations run in order inside the upgrade transaction, are additive,
-may drop base only together with the cursor, and never touch the queue. *Options:* a start-up handshake (an app
+blocks with its queue intact. IndexedDB migrations run in order inside the upgrade transaction, keep data (add,
+or copy into a new store: v3 re-keys rejections by their own id), may drop base only together with the cursor,
+and never touch the queue. *Options:* a start-up handshake (an app
 open across a deploy keeps the old protocol). *Limits:* none beyond a header per request.
 
 **Persistence.** Raw `pg`, not an ORM: correctness lives in explicit `FOR UPDATE`, savepoints, isolation levels
@@ -171,7 +173,8 @@ on a lock: one `applied`, nine `duplicate`. *Fix:* lock the client row in the mu
 **F5 · a rejection blocks the queue.** *What:* `MutationRejected` became a 500 and the counter stayed. *Risk:* one
 stale edit freezes the device. *Reproduce:* `f05-poison`: applied, conflict, applied → `lastMutationId = 3`.
 *Fix:* `SAVEPOINT`, store the reason, advance the counter; other errors as `INTERNAL`; transient ones retried
-then `503`. *Alternatives:* reject the batch and let the client drop the head; reason only in the response.
+then `503`; an error of the database itself (lock or statement timeout, shutdown, resources) is `503` too and
+does not consume the id. *Alternatives:* reject the batch and let the client drop the head; reason only in the response.
 
 **F6 · prototype names reach the registry.** *What:* `MUTATORS['constructor']` is truthy → `TypeError` → 500.
 *Risk:* a client-controlled permanent block. *Reproduce:* `f06-proto-name`. *Fix:* `z.enum` names on the wire
@@ -238,7 +241,8 @@ delete and move cover the parts. *Alternatives:* `ON DELETE CASCADE` (never reac
 **F20 · stream subscribers never released.** *What:* no removal on close, no backpressure, no heartbeat. *Risk:*
 unbounded memory, writes to dead sockets. *Reproduce:* `f20-stream-leak` (500 cycles → gauge 0; 200 000 pokes to
 a non-reader). *Fix:* remove on `close`, coalesce while `writableNeedDrain`, shared heartbeat, per-user cap
-(429), close on shutdown. *Alternatives:* `once('drain')` per write, dropping slow clients.
+(the oldest stream is closed: a socket left half-open by a network switch must not lock the user out), close on
+shutdown. *Alternatives:* `once('drain')` per write, dropping slow clients.
 
 **F21 · dispose leaves requests and timers.** *What:* `dispose()` cleared only the retry timer, requests had no
 timeout, the web effect no cleanup. *Risk:* leaked clients; a hung request blocks syncing forever.
@@ -385,3 +389,5 @@ The load process itself was busy (event-loop delay p99 633 ms), so the lags are 
 - Same-field edits are last-writer-wins without telling the loser.
 - The ticket table is not virtualised (needed above ~1 000 tickets per site).
 - The load run used one machine and one generator process; a distributed run would measure the server alone.
+- Next.js stays on 14.2 (latest patch) and NestJS on 10.4: the remaining `npm audit` advisories are fixed only in
+  Next 16 and Nest 11, majors that need React 19 and an Express 5 migration.

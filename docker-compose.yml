@@ -7,7 +7,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-fieldsync}
     ports: ["5432:5432"]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER}"]
+      # Over TCP: the socket also answers the temporary server the image runs during initdb.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 3s
       retries: 20
   server:
@@ -24,6 +25,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    restart: on-failure
     ports: ["3001:3001"]
   web:
     build:

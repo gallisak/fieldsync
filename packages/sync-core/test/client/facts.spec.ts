@@ -172,7 +172,7 @@ describe('client facts and view', () => {
     expect(deriveStatus(client.facts)).toBe('rejected');
     expect(client.rejections[0]).toMatchObject({ mutation: { id: 1 }, code: 'NO_ACCESS', message: 'Ticket is unavailable' });
 
-    await client.dismissRejection(1);
+    await client.dismissRejection(client.rejections[0].id);
     expect(client.rejections).toHaveLength(0);
     expect(client.facts.unresolvedRejections).toBe(0);
     expect((await storage.load()).rejections).toHaveLength(0);

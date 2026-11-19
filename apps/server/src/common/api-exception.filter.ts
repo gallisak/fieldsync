@@ -1,6 +1,6 @@
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException, Logger } from '@nestjs/common';
 import type { Response } from 'express';
-import { isTransient } from '../database/db.service';
+import { isOperational } from '../database/db.service';
 import { ApiError } from './errors';
 
 const CODE_BY_STATUS: Record<number, string> = {
@@ -46,8 +46,8 @@ export class ApiExceptionFilter implements ExceptionFilter {
       return;
     }
 
-    if (isTransient(err)) {
-      this.logger.warn(`transient database error: ${err instanceof Error ? err.message : String(err)}`);
+    if (isOperational(err)) {
+      this.logger.warn(`database unavailable: ${err instanceof Error ? err.message : String(err)}`);
       res.status(503).json({ code: 'UNAVAILABLE', message: 'Temporarily unavailable, retry later' });
       return;
     }

@@ -14,6 +14,7 @@ const rejected = (
   code: RejectionCode,
   mutation: StoredMutation = setStatus('in_progress', 'open'),
 ): StoredRejection => ({
+  id: 1,
   mutation,
   code,
   message: 'no',

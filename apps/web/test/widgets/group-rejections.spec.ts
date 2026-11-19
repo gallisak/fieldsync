@@ -3,7 +3,8 @@ import { groupRejections } from '@/widgets/rejection-inbox/model/group-rejection
 
 let nextId = 0;
 const rejected = (name: StoredMutation['name'], args: Record<string, unknown>): StoredRejection => ({
-  mutation: { id: ++nextId, name, args, createdAt: '2026-01-01T00:00:00.000Z' },
+  id: ++nextId,
+  mutation: { id: nextId, name, args, createdAt: '2026-01-01T00:00:00.000Z' },
   code: 'NO_ACCESS',
   message: 'no',
   at: '2026-01-01T00:00:00.000Z',

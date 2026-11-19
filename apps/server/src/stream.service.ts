@@ -1,4 +1,4 @@
-import { HttpException, HttpStatus, Inject, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import type { Response } from 'express';
 import { AccessService } from './access/access.service';
 import type { AuthUser } from './auth/auth.guard';
@@ -43,9 +43,12 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   add(userId: string, sites: Iterable<string>, res: Response): void {
     // The client may have left while its sites were being read; its 'close' has already fired.
     if (!res.socket || res.socket.destroyed) return;
-    const open = [...this.subscribers].filter((s) => s.userId === userId).length;
-    if (open >= this.config.STREAM_MAX_PER_USER) {
-      throw new HttpException('Too many open streams', HttpStatus.TOO_MANY_REQUESTS);
+    // A peer that vanished without closing its socket (network switch) still counts; the newest stream is live.
+    const open = [...this.subscribers].filter((s) => s.userId === userId);
+    const excess = open.length + 1 - this.config.STREAM_MAX_PER_USER;
+    for (const stale of excess > 0 ? open.slice(0, excess) : []) {
+      this.subscribers.delete(stale);
+      stale.res.end();
     }
 
     res.writeHead(200, {

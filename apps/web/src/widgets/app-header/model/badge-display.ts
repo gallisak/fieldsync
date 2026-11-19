@@ -26,6 +26,12 @@ export function badgeDisplay(badge: SyncBadge, facts: SyncFacts): BadgeDisplay {
         className: 'border-transparent bg-slate-200 text-slate-800',
         tooltip: 'Changes are kept and sent when the connection returns.',
       };
+    case 'unavailable':
+      return {
+        text: `Server unavailable · ${facts.pendingCount} saved on this device`,
+        className: 'border-transparent bg-slate-200 text-slate-800',
+        tooltip: 'Retrying automatically. Changes are kept.',
+      };
     case 'rejected':
       return {
         text:

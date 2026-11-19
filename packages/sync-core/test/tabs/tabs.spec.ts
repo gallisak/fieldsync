@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
-import { MemoryStorage, MemoryTabHub, SyncClient, type TabCoordinator, type Transport } from '../../src';
+import { MemoryStorage, MemoryTabHub, SyncClient, TransportError, type TabCoordinator, type Transport } from '../../src';
 import { FakeServer } from '../support/fake-server';
+import { ScriptedTransport } from '../support/scripted-transport';
 
 const SITE = '33333333-3333-4333-8333-333333333333';
 const create = (title: string) => ({ id: randomUUID(), siteId: SITE, title, description: '' });
@@ -126,6 +127,23 @@ describe('several tabs on one storage', () => {
       await eventually(() => server.applied.length === 2, 'both changes to reach the server');
       await eventually(() => broken.pendingCount === 0 && good.pendingCount === 0, 'both tabs to see them acknowledged');
     });
+  });
+
+  it('a leader that is told to update hands leadership to a tab that can still sync', async () => {
+    jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const server = new FakeServer();
+    const hub = new MemoryTabHub();
+    const outdated = new TransportError('http', 426, 'UPGRADE_REQUIRED');
+    const old = open(new MemoryStorage(), new ScriptedTransport().alwaysPush(outdated).alwaysPull(outdated), hub.join());
+    const current = open(new MemoryStorage(), server.transport(), hub.join());
+    await Promise.all([old.ready, current.ready]);
+
+    await eventually(() => old.facts.blocked === 'upgrade', 'the old tab to be told to update');
+    await current.mutate('ticket.create', create('from the current tab'));
+
+    await eventually(() => server.applied.length === 1, 'the current tab to push');
+    expect(current.facts.blocked).toBeNull();
+    jest.restoreAllMocks();
   });
 
   it('stays correct with two leaders at once (no coordination at all)', async () => {

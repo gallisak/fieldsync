@@ -15,7 +15,7 @@ const rejection = (
   code: RejectionCode,
   m: StoredMutation = mutation('ticket.setStatus', { id: 't', from: 'in_progress', to: 'done' }),
   extra: Partial<StoredRejection> = {},
-): StoredRejection => ({ mutation: m, code, message: 'server says no', at: '2026-01-01T00:00:00.000Z', ...extra });
+): StoredRejection => ({ id: m.id, mutation: m, code, message: 'server says no', at: '2026-01-01T00:00:00.000Z', ...extra });
 
 describe('rejection messages', () => {
   it.each<[RejectionCode, StoredRejection, string, string]>([

@@ -27,7 +27,9 @@ export function useResolveRejection(rejection: StoredRejection) {
         if (retrying) return;
         setRetrying(true);
         const stored = await mutate(retry.name, retry.args);
-        if (!stored || !(await dismiss())) setRetrying(false);
+        // Once the retry is queued the button stays off: a second click would queue it twice.
+        if (stored) await dismiss();
+        else setRetrying(false);
       }
     : null;
 

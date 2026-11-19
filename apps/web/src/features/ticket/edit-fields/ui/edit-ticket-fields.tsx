@@ -35,7 +35,8 @@ export function EditTicketFields({ ticket }: { ticket: Ticket }) {
     const stored = Object.keys(patch).length > 0 ? save(patch) : null;
     if (!stored) return;
     const before = { ...seen.current };
-    seen.current = values;
+    // A copy: the effect writes into seen.current when the ticket changes, which must not alter the submitted values.
+    seen.current = { ...values };
     form.reset(values);
     if (await stored) return;
     // Not kept on this device: the edit is back to unsaved, so the user can try again.

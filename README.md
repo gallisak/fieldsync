@@ -1,983 +1,386 @@
 # FieldSync
 
-An offline-first field-service platform: technicians open and update service tickets (and the
-parts used) without connectivity; changes sync to an authoritative Postgres-backed server.
+Offline-first field service: technicians edit tickets and parts without a network; changes sync to an
+authoritative Postgres-backed server. Task: `ЗАВДАННЯ.md`.
 
 ## Run
 
-    cp .env.example .env             # local configuration, git-ignored
-    docker compose up --build        # web :3000, api :3001, postgres :5432
+    cp .env.example .env                 # one config for server, tests, web and compose; real env vars win
+    docker compose up --build            # web :3000, api :3001, postgres :5432
 
-or locally:
+Locally: `docker compose up -d postgres`, `npm install`, `npm run build:core`, then
+`npm run build -w @fieldsync/server && npm start -w @fieldsync/server` and `npm run dev -w @fieldsync/web`.
+Demo tokens: `admin-token` (all sites), `tech-a-token` (North Plant), `tech-b-token` (South Plant).
 
-    cp .env.example .env
-    docker compose up -d postgres
-    npm install
-    npm run build:core
-    npm run build -w @fieldsync/server && npm start -w @fieldsync/server
-    npm run dev -w @fieldsync/web
+    npm run lint && npm run typecheck && npm test   # integration tests need DATABASE_URL (from .env); CI fails without it
+    npm run sim                                     # simulation, see below
+    LOAD_SEED=1 npm run load                        # load run against a running server, see below
 
-Configuration lives in one `.env` at the repository root; `.env.example` lists every variable with its meaning.
-The server, its integration tests, the web app and docker compose all read it, and a variable that is set in the
-real environment wins over the file (that is how CI and the containers are configured). Docker images never
-contain a `.env`. Demo tokens (with `SEED_DEMO=true`): `admin-token` (all sites), `tech-a-token` (North Plant),
-`tech-b-token` (South Plant).
+### Manual acceptance (Chrome, containers; the offline shell needs the production build)
 
-### Checks
-
-    docker compose up -d postgres
-    npm run lint && npm run typecheck && npm test
-
-Integration tests take `DATABASE_URL` from `.env` (or the environment). Without it they are skipped locally; in
-CI (`CI` set) a missing `DATABASE_URL` fails the run.
-
-### Manual acceptance
-
-Run the containers (`docker compose up --build`) and use Chrome. The offline shell is a service worker, which
-only a production build registers, so step 3 does not work under `npm run dev`.
-
-1. Open http://localhost:3000 and sign in with `tech-a-token`. The badge in the header reads **All changes
-   saved**.
-2. In DevTools → Network choose **Offline**. Then:
-   - create a ticket (**New ticket** → **Create**);
-   - change its title and press **Save**;
-   - add a part under **Parts used**, and press **+** twice;
-   - press **Start work**.
-
-   The badge reads **Offline · 6 saved on this device**, and every change is visible.
-3. Reload the page, still offline. Use a normal reload: Shift-reload bypasses the service worker. Everything is
-   still there.
-4. Open http://localhost:3000 in a second tab and set that tab to **Offline** too, since DevTools sets it per
-   tab. Create another ticket there. Both tabs list both tickets.
-5. Set both tabs back to **No throttling**. The badge passes through **Syncing…** to **All changes saved**.
-   Close the second tab.
-6. Set the first tab to **Offline** again. In a private window, sign in with `admin-token`: both tickets are
-   there. Open the first one and press **Cancel**.
-7. In the technician tab, which has not heard of the cancel, open the first ticket and press **Mark done**. Go
-   online. The badge reads **1 change was rejected**. Clicking it opens the inbox: **Status was changed by
-   someone else**, **It is now cancelled.**
-8. Revoke tech A's site as the admin. The technician's list empties itself:
+1. Sign in at http://localhost:3000 with `tech-a-token`. Badge: **All changes saved**.
+2. DevTools → Network → **Offline**. Create a ticket, edit its title, add a part and press **+** twice, press
+   **Start work**. Badge: **Offline · 6 saved on this device**.
+3. Reload normally (not Shift-reload), still offline: everything is there.
+4. Open a second tab, set it **Offline** too, create a ticket: both tabs list both tickets.
+5. Both tabs back online: **Syncing…** → **All changes saved**. Close the second tab.
+6. First tab offline again. In a private window sign in with `admin-token`, open the first ticket, **Cancel**.
+7. In the technician tab press **Mark done** on it, go online: **1 change was rejected**, the inbox says
+   **Status was changed by someone else. It is now cancelled.**
+8. Revoke tech A's site; the technician's list empties (`-X POST` gives it back):
 
        curl -X DELETE -H 'authorization: Bearer admin-token' -H 'x-fieldsync-protocol: 2' \
          http://localhost:3001/admin/users/00000000-0000-4000-8000-000000000002/sites/00000000-0000-4000-8000-0000000000a1
 
-   The same request with `-X POST` gives the site back.
-
 ## Architecture
 
-- `packages/sync-core` – protocol types, shared mutators, sync client (runs in Node and the browser)
-- `apps/server` – NestJS API (`pg`, raw SQL): push, pull, SSE stream, change-log GC
-- `apps/web` – Next.js (App Router) UI
+- `packages/sync-core`: protocol, mutators (the business rules, run on both sides), sync client, storage, tab
+  coordination, simulation kit. Knows nothing of React, Nest or Postgres.
+- `apps/server`: NestJS + raw `pg`. Controller → service → repository. Push, pull, SSE pokes, admin access, GC,
+  logs and `/metrics`.
+- `apps/web`: Next.js 14, Feature-Sliced Design, shadcn/ui. Reads only the local view, writes only through
+  `client.mutate`.
 
-### Protocol in brief
+The client shows `view = base + queued mutations replayed`. Push sends the queue; pull brings changes into
+`base`; a mutation leaves the queue only when the pull that carries its effect is committed.
 
-1. The client queues named mutations with a per-client monotonic id and applies them optimistically.
-2. `POST /sync/push` sends the queue; the server applies each mutation in a transaction.
-3. `GET /sync/pull?cursor=…&clientId=…` answers for the user's sites with the changes after the cursor
-   (`mode: 'delta'`). When no delta can bring the client up to date (no cursor, changed sites, a collected log, an
-   unknown version), it answers with a paged snapshot of every live row (`mode: 'snapshot'`), then a delta.
-4. `GET /sync/stream` emits `poke` events so clients pull promptly. The client reads it with `fetch` (the token goes
-   in the `Authorization` header, never in the URL), reconnects with backoff and syncs after every reconnect.
+```mermaid
+sequenceDiagram
+  participant UI
+  participant C as SyncClient (leader tab)
+  participant IDB as IndexedDB
+  participant API as NestJS
+  participant PG as Postgres
+  participant O as Other clients
+  UI->>C: mutate(name, args): validated, applied in memory
+  C->>IDB: [IDB tx] next id + append to queue
+  Note over C,IDB: crash before commit: the change is lost and was never shown as saved
+  C->>API: POST /sync/push (≤100)
+  Note over C,API: request or response lost: retried, deduplicated
+  API->>PG: [tx per mutation] lock client row → dedup → SAVEPOINT → rows FOR UPDATE → authorize on stored site → mutator → lock sync_state, versions → change_log + entities (or rollback to savepoint + mutation_rejections) → last_mutation_id → COMMIT
+  Note over API,PG: transient error: whole tx retried ×3, then 503, id not consumed
+  API-->>O: SSE poke after commit (best effort; 30 s jittered poll covers a lost one)
+  C->>API: GET /sync/pull?cursor
+  API->>PG: [REPEATABLE READ READ ONLY] sites + fingerprint → floor check → delta or snapshot page → lastMutationId + rejections
+  API-->>C: changes, cursor, lastMutationId (last page only)
+  C->>IDB: [IDB tx] apply page, cursor, drop acknowledged, store rejections
+  Note over C,IDB: commit guarded by the expected cursor: a stale or overlapping pull is dropped
+  C-->>UI: subscribe() → re-render
+```
+
+Protocol v2: header `x-fieldsync-protocol: 2` on every request (else `426 UPGRADE_REQUIRED`). Cursor is opaque
+`base64url(JSON)` with a site fingerprint; a malformed one is `400`. Pull answers `delta` or a paged `snapshot`
+with `reason` (`initial`, `access_changed`, `cursor_expired`, `cursor_ahead`). Errors are `{ code, message, details? }`.
 
 ## Guarantee model
 
+- **Order**: versions come from one counter row locked until commit, so version order is commit order and gap-free.
+  A client that has seen version *n* has seen everything ≤ *n* of its sites.
+- **Delivery**: at-least-once. Changes are full rows, so re-applying any suffix converges. Pokes are at-most-once;
+  a 30 s jittered poll bounds staleness.
+- **Mutation application**: effectively-once. The client resends until acknowledged; the server deduplicates on
+  `(clientId, mutationId)` under the client row lock, in the same transaction as the effect. Holds while the
+  `clients` row exists (`CLIENT_RETENTION_DAYS`, 90, longer than log retention).
+- **Rejection**: consumes its id, is stored in `mutation_rejections`, returned in the push response and in every
+  pull until acknowledged; a lost response cannot hide it.
+- **Atomicity**: one mutation = one transaction (effect, log, counter, ack). A crash leaves all or nothing.
+
+## Observability
+
+- Logs: JSON (pino); every line carries `requestId`, `userId`, `clientId`, `mutationId`; one `mutation` line per
+  mutation with status, code and duration. `Authorization`, cookies and URL tokens are redacted.
+- `/metrics` (Prometheus, optional `METRICS_TOKEN`): `fieldsync_mutations_total{status}`,
+  `fieldsync_mutations_rejected_total{code}`, `fieldsync_delivery_lag_seconds`, `fieldsync_active_streams`,
+  `fieldsync_change_log_rows`, `fieldsync_full_resyncs_total{reason}`, push/pull durations, GC deletions.
+- `/health` is liveness; `/ready` checks the database and the last migration.
+
 ## Decision records
 
-### 1. Protocol correctness
+**1. Protocol correctness.** *Options:* sequence versions (the starter, F1); an `xmin`/`pg_snapshot_xmin`
+watermark; an advisory lock; one counter row. *Chosen:* `UPDATE sync_state … RETURNING`, the last lock of
+every write. *Why:* commit order without tying cursors to transaction ids. Idempotency: client row `FOR UPDATE`
++ per-mutation transaction + `SAVEPOINT` + stored rejections (a unique constraint alone gives a 500, not
+`duplicate`; serializable relies on retries). *Limits:* the tail of every write is serialised: fine at the
+measured 62 mutations/s; batching or the watermark is the escape hatch.
 
-### 2. Deterministic simulation
+**2. Deterministic simulation.** *Options:* property tests with fast-check; an own harness. *Chosen:* own
+harness: virtual clock, seeded network model (loss, duplicates, reorder, delay, cut batches), crashes, tabs,
+access changes, GC; a model server plus the same runs on Postgres with a differential check. *Why:* the bugs
+need a clock and a network more than generic shrinking; step-count bisection gives short repros. *Limits:*
+Postgres runs are serialised, so real races are covered by the concurrency integration tests instead.
 
-### 3. Offline-first client
+**3. Offline-first client.** *Chosen:* transactional storage (IndexedDB via `idb`) that owns the queue and the
+id counter; one leader tab by Web Lock with `BroadcastChannel`; full-jitter backoff; status as facts mapped to
+one badge. Notifications: SSE over `fetch` with the `Authorization` header. *Options:* `SharedWorker` (missing on
+Chrome for Android), per-tab client ids (more server clients, still racing storage); `EventSource` + URL ticket
+(an extra endpoint and state), WebSocket (two-way protocol for one-way, payload-free pokes). *Limits:* without
+IndexedDB the client falls back to memory with a visible warning.
 
-### 4. Partial replication and access
+**4. Partial replication and access.** *Chosen:* authorize every write on the sites stored with the loaded rows,
+read inside the transaction; the cursor carries a fingerprint of the user's sites, and a different
+fingerprint answers a snapshot that replaces the client's base. A move logs `del` (old site) + `put` (new).
+*Options:* targeted "drop site / add site" deltas, per-user revocation tombstones, row-level security.
+*Why:* one mechanism covers grant, revoke and new devices. *Limits:* an access change costs a full snapshot.
 
-### 5. Merge semantics
+**5. Merge semantics.** *Chosen:* `ticket.update` takes a patch: per-field last-writer-wins in server order;
+`part.adjust` sends deltas (commutative); a delta below zero is rejected `NEGATIVE_QUANTITY` rather than
+clamped (clamping changes the sum depending on order); status follows a state machine and a stale `from` is
+`STATUS_CONFLICT` with the current status, shown in the inbox with retry/dismiss. *Options:* optimistic
+versions per ticket (every unrelated edit becomes a conflict), CRDT registers. *Limits:* two edits of the same
+field: the later one wins silently.
 
-### 6. Change-log lifecycle
+**6. Change-log lifecycle.** *Chosen:* GC deletes log rows up to a cut and raises `min_retained_version`; a cursor
+below it gets a `cursor_expired` snapshot. Snapshots are keyset-paged, pinned at the version of the first page,
+then followed by a delta from it. *Options:* keep the log forever; one transaction or exported snapshot across
+pages (holds back vacuum). *Limits:* the client stages snapshot pages in memory (fine for tens of thousands of rows).
 
-### 7. Schema evolution
+**7. Schema evolution.** *Chosen:* protocol version on every request, `426` with `{ min, current }`; the client
+blocks with its queue intact. IndexedDB migrations run in order inside the upgrade transaction, are additive,
+may drop base only together with the cursor, and never touch the queue. *Options:* a start-up handshake (an app
+open across a deploy keeps the old protocol). *Limits:* none beyond a header per request.
 
-**Protocol version on every request, not a handshake.** Every request carries `x-fieldsync-protocol`. When the
-version is outside `[MIN_PROTOCOL, PROTOCOL]`, `ProtocolGuard` answers `426 UPGRADE_REQUIRED` with
-`details: { min, current }`, before authentication. A missing or non-numeric header counts as version 1. The
-client then blocks with `blocked: 'upgrade'`: its timers and its stream stop, and storage, including the queue,
-is not touched. A newer build opened on the same storage pushes the queue.
-- *Why per request.* It is stateless: any instance behind a load balancer decides on its own, and no client can
-  skip the check. A deploy in the middle of a session is noticed at the very next request.
-- *Handshake endpoint* (ask once at start-up): one header less per request. But the server would have to
-  remember or trust what the client said, and an app left open across a deploy would keep using the old
-  protocol until it reloads.
-- *Cost:* a few bytes per request.
-
-Tests: `apps/server/test/protocol/upgrade.integration.spec.ts`, which sends old, missing, newer and malformed
-versions, with and without a token, to every guarded endpoint; and `packages/sync-core/test/client/upgrade.spec.ts`.
-
-**Local schema migrations never lose the queue.** The IndexedDB schema has a version (`LOCAL_SCHEMA`). Opening
-an older database runs every step after its version, in order, inside the upgrade transaction
-(`packages/sync-core/src/storage/idb-migrations.ts`). The rules:
-- steps are additive: new stores, new indexes, transformed rows;
-- base data may be dropped, but only together with setting the cursor to `null`, so the next pull fetches it
-  again as an `initial` snapshot;
-- the mutation queue, its ids and `nextMutationId` are never dropped or renumbered: they are the user's
-  unsynced work.
-
-Version 0 → 1 imports the state an older web app kept in `localStorage`, unsynced queue included. Version 1 → 2
-adds a `ticketId` index on `entities` (parts only), a harmless step that proves the mechanism. A tab still
-running the old code is closed by the upgrade and blocks with `upgrade` (see above). Tests in
-`packages/sync-core/test/storage/storage.spec.ts`: a version 1 database built by hand with three queued
-mutations and base rows keeps the mutations with their ids and order, its rows and cursor, and hands out the
-next id after them; and the `localStorage` import keeps its queue.
+**Persistence.** Raw `pg`, not an ORM: correctness lives in explicit `FOR UPDATE`, savepoints, isolation levels
+and lock order (client → ticket → parts → `sync_state`), which an ORM would hide.
 
 ## Found issues
 
-Each issue is reproduced by an automated test that is committed as `it.failing` before the fix (red against
-the starter) and switched to `it` with the fix. Server tests live in `apps/server/test/repro/`, client tests
-in `packages/sync-core/test/repro/`.
-
-| # | Category | Defect | Reproduced by | Status |
-|---|---|---|---|---|
-| F1 | Ordering | Log versions come from a sequence: allocated at insert, visible at commit, so a late commit is skipped by readers | `f01-commit-order.integration.spec.ts` | fixed |
-| F2 | Ordering | Pull reads changes and `lastMutationId` in separate snapshots and reports it on non-final pages | `f02-pull-snapshot.integration.spec.ts` | fixed |
-| F3 | Ordering | A poke during an in-flight sync is dropped | `f03-lost-poke.spec.ts` | fixed |
-| F4 | Duplicate push | Dedup check runs outside the transaction without a lock; parallel duplicates all apply | `f04-parallel-duplicate.integration.spec.ts` | fixed |
-| F5 | Poison mutation | A rejected mutation fails the whole push with 500 and blocks the queue forever | `f05-poison.integration.spec.ts` | fixed |
-| F6 | Poison mutation | `constructor` / `__proto__` resolve to prototype members of the mutator registry → 500 | `f06-proto-name.integration.spec.ts` | fixed |
-| F7 | Poison mutation | Out-of-order id answered with a generic 400 the client retries unchanged | `f07-out-of-order.integration.spec.ts` | fixed |
-| F8 | Write access | Authorization trusts the client-supplied `siteId` | `f08-write-access.integration.spec.ts` | fixed |
-| F9 | Read access | Site filter applied only when `cursor = 0` | `f09-read-access.integration.spec.ts` | fixed |
-| F10 | Authenticity | `clientId` ownership never checked on push or pull | `f10-client-ownership.integration.spec.ts` | fixed |
-| F11 | Authenticity | Bearer token accepted in the SSE query string; tokens stored in plaintext | `f11-token-in-url.integration.spec.ts` | fixed |
-| F12 | Access lifecycle | Revoked access and site moves never remove data from clients | `f12-revocation-move.integration.spec.ts` | fixed |
-| F13 | Log lifecycle | GC by age with no floor or reload signal; new clients replay a truncated log | `f13-gc.integration.spec.ts` | fixed |
-| F14 | Client data loss | Pending queue not persisted; `lastMutationId` persisted only after pull | `f14-reload.spec.ts` | fixed |
-| F15 | Client data loss | Tabs share one `clientId` and storage blob with separate id counters | `f15-two-tabs.spec.ts` | fixed |
-| F16 | Client data loss | Pending mutations dropped on push ack, before the pull delivers their effects | `f16-ack-flicker.spec.ts` | fixed |
-| F17 | Determinism | `ticket.create` generates its id and timestamps inside the mutator | `f17-determinism.spec.ts` | fixed |
-| F18 | Merge semantics | `ticket.update` overwrites title and description wholesale | `f18-field-merge.spec.ts` | fixed |
-| F19 | Merge semantics | `ticket.delete` leaves the ticket's parts behind | `f19-orphan-parts.spec.ts` | fixed |
-| F20 | Resource leak (server) | Stream subscribers never removed; no backpressure or heartbeat | `f20-stream-leak.integration.spec.ts` | fixed |
-| F21 | Resource leak (client) | `dispose()` does not abort requests; no request timeout; web effect has no cleanup | `f21-dispose.spec.ts` | fixed |
-| F22 | Resource / behaviour | Fixed 5 s retry without backoff or jitter; immediate re-push loop | `f22-backoff.spec.ts` | fixed |
-| F23 | Input handling | Malformed cursor silently becomes a full-history pull | `f23-bad-cursor.integration.spec.ts` | fixed |
-| F24 | Vacuous test | Assertion inside `catch`: passes when nothing throws | `mutators.spec.ts` (rewritten) | fixed — see below |
-| F25 | Vacuous test | Mocked pool, SQL never inspected; passes with F9 present | replaced by `f09-read-access` | fixed — see below |
-| F26 | Vacuous test | Fake DB ignores the query; encodes F8 | replaced by `f08-write-access` | fixed — see below |
-| F27 | Vacuous test | `SELECT 1` "integration", `it.todo`, silent skip without `DATABASE_URL`, web not type-checked | replaced by the repro suites; tooling | fixed — see below |
-| F28 | Resilience (server) | A dropped database connection raises an unhandled `'error'` event and crashes the server process | `f28-connection-loss.integration.spec.ts` | fixed |
-| F29 | Resilience (client) | A page kept in the back/forward cache keeps the tab leadership; no live tab syncs | `f29-bfcache-leader.spec.ts` | fixed |
-
-### F1 — change versions visible out of commit order
-
-**What.** `change_log.version` was a `bigserial`: the number is taken at `INSERT`, but the row becomes visible
-at `COMMIT`. Transaction A takes version 10, transaction B takes 11 and commits first; a pull between the two
-commits returns 11 and moves the client's cursor past 10. When A commits, its row is never delivered.
-
-**Why it is dangerous.** Silent, permanent divergence under perfectly normal concurrent writes: nothing errors,
-the client just never sees one change (and every later change to that row is applied on a stale base).
-
-**Reproduce.** `apps/server/test/repro/f01-commit-order.integration.spec.ts`: push A is paused inside its
-transaction (a test hook in `MutationExecutor` blocks on an advisory lock after A's writes), push B runs, an
-admin pull happens, then A is released; the next pull from the returned cursor must contain A's change.
-
-**Fix.** Versions come from a single `sync_state` row:
-`UPDATE sync_state SET last_version = last_version + n RETURNING last_version`, run after the mutator and
-after every entity row lock, as the last lock of the transaction. The row lock is held until `COMMIT`, so a
-transaction holding version 10 always commits before any other transaction can even obtain 11 — version
-order equals commit order and the log is gap-free. All rows of one mutation share a `tx_seq` (its first
-version) and carry `client_id`/`mutation_id`. Migration `003_version_allocation.sql` re-syncs the counter
-with `max(version)` and drops the sequence. Write rules: a `put` that changes a row's site logs a `del` under
-the old site before the `put` under the new one (this is how a moved ticket leaves the old site's clients);
-deleting a row that does not exist logs nothing.
-
-**Alternatives considered.** Reading only below the oldest in-flight transaction (`pg_snapshot_xmin` /
-`txid_current_snapshot()`, as several sync engines do) keeps writes fully parallel but couples the cursor to
-Postgres transaction ids and still needs care around wraparound and replicas; a logical-replication / outbox
-consumer that assigns versions after commit adds a moving part and a lag. The single counter row serialises
-only the short tail of each write transaction (allocation → commit), which is far below this system's write
-rate.
-
-### F2 — pull acknowledges a mutation before delivering its changes
-
-**What.** Pull read the change page, then `clients.last_mutation_id`, in separate statements on the pool (two
-snapshots), and returned `lastMutationId` on every page. With more than one page of changes, page 1 already
-said "your mutation 1 is applied" while the change it produced was on page 2 — or had committed between the two
-reads and was on no page yet.
-
-**Why it is dangerous.** The client drops a pending mutation once it is acknowledged and shows `base` instead.
-Between the two pages the user's own edit disappears from the screen; if the next page fails, it stays gone
-until a later sync.
-
-**Reproduce.** `apps/server/test/repro/f02-pull-snapshot.integration.spec.ts`: 600 changes are seeded, then
-mutation 1 creates a ticket (version 601); page 1 (limit 500) must not contain it and must not acknowledge
-mutation 1.
-
-**Fix.** Pull is one `REPEATABLE READ READ ONLY` transaction: accessible sites, `sync_state`, the changes, the
-client row and its rejections all come from the same snapshot. `lastMutationId` is `null` on every page with
-`hasMore` and is reported only on the last page, where every change up to that snapshot has been delivered.
-A page never splits one mutation: if the page boundary falls inside a transaction (`tx_seq`), the rest of that
-transaction is appended. On the last page the cursor jumps to `sync_state.last_version`, so a user whose sites
-had no new changes does not re-scan the same range on every pull. Rejections stored by push (F5) are returned
-on the last page for mutation ids above `ackedMutationId`.
-
-**Alternatives considered.** Returning `lastMutationId` as "the highest mutation whose changes are all on this
-page" needs per-page bookkeeping of which client wrote which row, and still breaks when a mutation writes to a
-site the reader cannot see; deferring the acknowledgement to the end of paging is simpler and exact.
-
-### F3 — a poke during a sync is lost
-
-**What.** `sync()` returned the running promise when a sync was already in flight and then forgot the request.
-Afterwards it ran again only if local mutations were pending.
-
-**Why it is dangerous.** The stream pokes exactly when another device changed something. If that happens while
-this client is mid-pull (whose snapshot predates the change), the change stays invisible until some unrelated
-event triggers the next sync — possibly minutes, possibly never on a quiet device.
-
-**Reproduce.** `packages/sync-core/test/repro/f03-lost-poke.spec.ts`: a pull is held, `sync()` is called again,
-the pull is released; a second pull must follow.
-
-**Fix.** Single flight with a remembered request: a `sync()` during a run sets `rerun` and returns the running
-promise; when the run settles, `rerun` starts exactly one more. Every trigger goes through it: a stored
-mutation, a stream poke, `start()`, the browser's `online` and `visibilitychange` events and a background poll
-every 30 s × (0.5 + random), all injectable (`env`, `clock`, `random`) so tests need no DOM.
-
-**Alternatives considered.** Queuing every request would run one sync per poke during a burst; cancelling the
-running sync for a new one throws away a nearly finished pull. One extra run covers any number of requests
-that arrived during the current one.
-
-### F4 — parallel duplicate pushes all apply
-
-**What.** The "already applied?" check read `clients.last_mutation_id` with a plain `SELECT` outside the
-mutation's transaction and without a lock, then the transaction applied the mutation and upserted the counter.
-Two identical requests in flight (a client retrying a push whose response was lost, while the original is still
-running) both saw the old counter and both applied. The upsert could also move the counter backwards.
-
-**Why it is dangerous.** Non-idempotent mutations run twice: a `part.adjust` doubles the stock change. Retries
-after timeouts are the normal case on a mobile network, so this is not a rare race.
-
-**Reproduce.** `apps/server/test/repro/f04-parallel-duplicate.integration.spec.ts`: the test holds the part's
-row lock, sends 10 identical `part.adjust` requests, waits until all 10 are queued inside Postgres, then
-releases. Exactly one must apply, nine must be `duplicate`, and the quantity must change once.
-
-**Fix.** Each mutation runs in one transaction that first creates (if needed) and locks the client's row
-(`INSERT … ON CONFLICT DO NOTHING`, then `SELECT … FOR UPDATE`). Every push of one client queues on that lock, so
-the duplicate check, the mutation and `last_mutation_id = id` happen atomically and in order. The counter is
-set with a plain `UPDATE` under the lock after `id = last + 1` was checked, so it can only move forward.
-
-**Alternatives considered.** A unique `(client_id, mutation_id)` constraint on the log alone would turn the
-second apply into a constraint error (a 500), not a `duplicate` answer, and does not cover mutations that write
-no log row. Serializable isolation would abort one of the racers and rely on retries for correctness.
-
-### F5 — one rejected mutation blocks the client's queue forever
-
-**What.** A mutator's `MutationRejected` (a business rule, e.g. a status conflict) was never caught: the
-transaction rolled back, the request ended with HTTP 500, and `last_mutation_id` stayed where it was.
-
-**Why it is dangerous.** The client cannot tell a rejection from an outage, so it retries the same queue head
-every few seconds forever, and nothing queued behind it ever reaches the server. One stale edit silently
-freezes a technician's device.
-
-**Reproduce.** `apps/server/test/repro/f05-poison.integration.spec.ts`: a batch of `applied`, a status
-conflict and another valid mutation must answer `applied, rejected (STATUS_CONFLICT), applied` with
-`lastMutationId = 3`.
-
-**Fix.** The mutation runs under `SAVEPOINT m`. On a rejection the savepoint is rolled back (no partial write
-survives), the reason is stored in `mutation_rejections`, and `last_mutation_id` advances anyway — a rejected
-mutation is consumed exactly like an applied one. The result is `rejected` with `code`, `message` and
-`details`; a retry of the same id answers `duplicate` with the stored reason, so it survives a lost response
-(the last pull page reports it as well). Any other non-transient error takes the same path as `INTERNAL` (stack
-logged, generic message to the client). Transient database errors (serialization failure, deadlock,
-connection loss) are not rejections: the whole transaction is retried up to three times and then the request
-ends with `503 UNAVAILABLE`; the id is not consumed.
-
-**Alternatives considered.** Rejecting the whole batch and asking the client to drop the head moves the
-decision to the client, which cannot distinguish "rejected" from "failed" reliably; storing nothing and
-returning the reason only in the response loses it when the response is lost.
-
-### F6 — prototype names reach the mutator registry
-
-**What.** Mutators lived in a plain object and were looked up with `MUTATORS[m.name]`. `constructor`,
-`__proto__`, `toString` … are truthy properties of every object, so the lookup "found" a mutator, then
-`def.reads` was not a function and the request died with a `TypeError` (500).
-
-**Why it is dangerous.** The name is client-controlled. One such mutation at the head of a queue makes every
-retry fail the same way, so a single bad (or malicious) client entry blocks that client's queue forever; the
-generic 500 also hid the cause.
-
-**Reproduce.** `apps/server/test/repro/f06-proto-name.integration.spec.ts` (both names; a following valid
-mutation must apply).
-
-**Fix.** Two independent layers. The wire schema validates `name` with `z.enum(MUTATOR_NAMES)`, so an unknown
-name is a `400 BAD_REQUEST` before anything runs. The registry is a `ReadonlyMap` behind `getMutator(name)`,
-which returns `undefined` for anything not registered (`test/mutators/registry.spec.ts` checks the prototype
-names), and the server turns that into a `BAD_ARGS` rejection instead of a crash.
-
-**Alternatives considered.** `Object.create(null)` or `hasOwnProperty` checks fix the lookup but keep the
-"index a bag of functions with client input" pattern that caused it; a `switch` over names duplicates the
-list the schema already owns.
-
-### F7 — out-of-order mutation id answered with a retryable 400
-
-**What.** A mutation id greater than `last + 1` was answered with `400 Bad Request` and a free-text message.
-The client treats any failed push as "offline" and retries the same request unchanged.
-
-**Why it is dangerous.** Once client and server disagree about the next id (reloads, two tabs — F14/F15), the
-client loops forever and nothing new reaches the server; the response gives it nothing to recover with.
-
-**Reproduce.** `apps/server/test/repro/f07-out-of-order.integration.spec.ts`: a fresh client sending id 5 must
-get `409 OUT_OF_ORDER` with `details.expected = 1`.
-
-**Fix.** The check runs inside the transaction under the client row lock and throws
-`409 { code: 'OUT_OF_ORDER', details: { expected } }`. The rest of the batch is not attempted; mutations
-committed earlier in the same request stay committed and are reported by the next pull. The client's recovery
-(renumbering from `expected`) is part of the client work in Phase 3.
-
-**Alternatives considered.** Silently skipping ahead would accept a gap and could reorder a client's own
-mutations; applying out-of-order ids would break the "one id, applied at most once" rule the dedup relies on.
-
-### F8 — writes authorized against the site the client names
-
-**What.** The starter authorized a mutation by the `siteId` in its arguments, before any row was loaded. A
-site-A technician could update, extend or delete a site-B ticket by sending `siteId: A`. Once that was fixed
-for live rows, a deleted row was still skipped. `ticket.create` with the id of a deleted site-B ticket revived
-it in site A, and the id of one's own deleted ticket revived it as well.
-
-**Why it is dangerous.** Any technician can rewrite or destroy any site's data just by knowing an id. A revived
-id hands an old ticket's identity, its parts' `ticketId` and the clients' memory of it, to unrelated content.
-
-**Reproduce.** `apps/server/test/repro/f08-write-access.integration.spec.ts`:
-- update, part.add and delete of a site-B ticket with `siteId: A` must all be `NO_ACCESS`, with the row
-  unchanged;
-- `ticket.create` with the id of a site-B ticket, live or deleted, must be `NO_ACCESS`;
-- `ticket.create` with the id of one's own deleted ticket must be `ALREADY_EXISTS`;
-- creating in, or moving to, a site the user cannot see must be `NO_ACCESS`.
-
-**Fix.** `AccessService` reads the user's sites once per mutation, inside its transaction and after the row
-locks, so a revocation committed earlier is always seen. Before the mutator runs, every loaded row that
-exists must be in those sites, deleted rows included: the site is the one stored with the row, never one from
-the arguments. After it runs, every row it writes must be in them; that covers the target site of a create
-or a move. The executor gives the mutator `undefined` for a deleted row, but `MutatorTx.exists()` still
-reports the id as taken, and `ticket.create` refuses any id that exists in any state. Every refusal is
-`NO_ACCESS` with the same message as "not found", so ids of other sites cannot be probed. The same rules are in
-the simulation's `ModelServer`. `AccessService.fingerprint()` replaces the cursor module's copy, so there is
-one format.
-
-**Alternatives considered.** Checking access in each mutator would repeat it seven times and could not see
-deleted rows. Allowing a revived id would need a new identity in the log (a `del` and a `put` of unrelated
-content) that clients cannot tell apart from an edit.
-
-### F9 — incremental pulls return every site
-
-**What.** The site filter was `cursor = 0 ? sites : null`: only the very first pull was restricted to the
-user's sites; every pull with a cursor returned all sites' changes.
-
-**Why it is dangerous.** Every technician's device receives every other site's tickets after its first sync —
-a data leak that looks correct in a quick test, because the initial load is filtered.
-
-**Reproduce.** `apps/server/test/repro/f09-read-access.integration.spec.ts`: a site-A technician pulls, a
-site-B ticket is created, the incremental pull must not contain site B. A technician with no sites gets an
-empty last page without the log being read.
-
-**Fix.** There is one delta query and it always takes the site list: a `LATERAL` per accessible site
-(`site_id = s AND version > cursor ORDER BY version LIMIT n`), merged by version. A user with no sites gets an
-empty page without querying the log. The cursor carries a fingerprint of the site set it was issued for, which
-P5/P6 use to detect access changes.
-
-**Alternatives considered.** Row-level security in Postgres would make the filter impossible to forget but
-moves authorization out of the code that is tested here and complicates pooling with a per-request role.
-
-### F10 — another user's `clientId` is accepted
-
-**What.** `clients.user_id` was written but never compared with the caller. Any user could push under another
-user's `clientId` and pull with it.
-
-**Why it is dangerous.** Pushing under a foreign `clientId` burns that client's mutation ids, so the owner's
-real mutations are later answered `duplicate` and silently lost; pulling with it leaked the owner's
-`lastMutationId`.
-
-**Reproduce.** `apps/server/test/repro/f10-client-ownership.integration.spec.ts`: another user pushing under a
-technician's `clientId` gets `403 CLIENT_MISMATCH`. Pulling with it shows neither the owner's `lastMutationId`
-nor the owner's rejections.
-
-**Fix.** Push locks the client row and answers `403 CLIENT_MISMATCH` when it belongs to another user, before
-anything else. Pull reports `lastMutationId` and rejections only for the caller's own client (`0` and `[]`
-otherwise), and the push response's `lastMutationId` is read with the same condition.
-
-**Alternatives considered.** Deriving the client id on the server (e.g. `userId + device`) would remove the
-check but breaks the client's ability to create its id offline before it has ever talked to the server.
-
-### F11 — the stream token in the URL, every token in plaintext
-
-**What.** `/sync/stream` accepted the bearer token as `?token=`, because `EventSource` cannot send headers.
-`users.token` held every token as plain text.
-
-**Why it is dangerous.** A token in a URL is written to access logs and proxy logs, kept in browser history
-and sent on as `Referer`. With plaintext storage, a database dump, a backup or a read-only SQL login hands out
-every account.
-
-**Reproduce.** `apps/server/test/repro/f11-token-in-url.integration.spec.ts`:
-- a stream opened with `?token=` must get `401`;
-- no `users` row may contain a token;
-- the app's log output during a push and a stream connect must contain no token.
-
-**Fix.** `AuthGuard` (`src/auth/`) reads the token only from `Authorization: Bearer`, and the query-string branch
-is gone. Users are looked up by `sha256(token)`. Migration `004_token_hash.sql` hashes the existing tokens in
-place and drops the plaintext column; checked on a database that had plaintext users. The demo seed stores
-hashes too. CORS allows exactly the headers the clients send: `authorization`, `content-type`,
-`x-fieldsync-protocol` and `x-request-id`. The web client has opened its stream with `fetch` and the header
-since the poke-stream work. A headless-Chrome run against the rebuilt containers shows the stream request with
-the header and no token in the URL, a poke arriving in under 200 ms, and no CORS errors. Controllers take the
-user from `@CurrentUser()`.
-
-**Alternatives considered.** A short-lived, single-use stream ticket in the URL would keep `EventSource` but adds
-an endpoint and server state. A cookie would bring CSRF and cross-site `SameSite` concerns. A slow password
-hash (bcrypt, argon2) protects low-entropy secrets; the tokens are random, so a fast hash is enough and costs
-nothing per request. The demo tokens are guessable on purpose.
-
-### F12 — revoked access and site moves never leave the client
-
-**What.** Pull only ever sent changes from the log. When a technician lost a site, no change said so, and its
-rows stayed on the device. When the technician gained a site, its existing rows were older than the cursor and
-never arrived. A ticket moved to another site kept appearing in the old site's clients.
-
-**Why it is dangerous.** A revoked user keeps reading, and showing, data they no longer may see. A new
-assignment looks empty until rows happen to change.
-
-**Reproduce.** `apps/server/test/repro/f12-revocation-move.integration.spec.ts`:
-- a client whose site is revoked must end with none of its rows;
-- a client that loses a ticket to a site move must drop it;
-- a move must reach the old site as deletes of the ticket and each part, the new site as puts, and a client
-  that sees both as a delete followed by a put, so the row survives.
-
-`apps/server/test/access/admin.integration.spec.ts` drives the same flow through the admin endpoints. The
-simulation runs with access changes on.
-
-**Fix.**
-- *Moves.* A write that changes a row's site logs a delete under the old site before the put under the new
-  one, in the same transaction.
-- *Access changes.* Every cursor carries a fingerprint of the site set it was issued for. When the user's
-  current sites give a different fingerprint, pull answers `mode: 'snapshot', reason: 'access_changed'` with
-  every live row of the current sites. Since F13 the snapshot is paged.
-- *Client.* A snapshot page replaces the client's base entirely. Queued mutations stay and are replayed on
-  top; one that touches a row now out of reach is rejected `NO_ACCESS` and lands in rejections.
-- *Admin endpoints.* `POST`/`DELETE /admin/users/:userId/sites/:siteId` (admin only, each in a transaction)
-  change access. They then re-read the user's sites for their open streams and poke them, so the snapshot
-  arrives at once.
-- *Model.* `ModelServer` answers snapshots the same way; the differential test against Postgres covers them.
-
-**Alternatives considered.**
-- Logging a `del` for every row of a revoked site would write one log row per entity per revocation, and
-  still give a granted site nothing to send.
-- Revocation tombstones keyed by user would need their own lifecycle.
-- A snapshot costs one read of the user's sites when access changes, which is rare.
-
-### F13 — a collected change log leaves new and stale clients incomplete
-
-**What.** GC deleted log rows by age, with no floor and no signal to clients. A client built its base only from
-the log. A new client (no cursor) replayed the log from version 0, which no longer held the older entities. A
-client whose cursor predated the cut silently missed whatever had been collected.
-
-**Why it is dangerous.** A new device shows only the rows that changed recently, and nothing says that the rest
-is missing.
-
-**Reproduce.** `apps/server/test/repro/f13-gc.integration.spec.ts`:
-- a database with 2 000 entities and an empty log: a new client must end with all 2 000. Before the fix it
-  ended with 0;
-- after GC, a stale client and a new client must both equal the server;
-- a pull whose transaction started before GC keeps the page it read, and the next pull from its cursor must be
-  told that the cursor expired. Before the fix it got an empty delta and lost versions 6–10 without a sign.
-
-The simulation against Postgres with GC on fails 39 of 50 seeds (invariant 4) and every differential seed with
-the old `GcService`.
-
-**Fix, part 1: paged snapshot.**
-- *When.* `snapshotReason` (`packages/sync-core/src/protocol/cursor.ts`, shared by the server and the model)
-  decides, in this order:
-  - no cursor → `initial`;
-  - the cursor's site fingerprint differs → `access_changed`;
-  - `v < min_retained_version` → `cursor_expired`;
-  - `v > last_version` → `cursor_ahead`;
-  - otherwise the pull goes on from the cursor: a delta, or the next page of a snapshot.
-
-  A snapshot in progress restarts from its first page for the same reasons: the sites changed, or GC collected
-  the log that its delta would need.
-- *Pages.* `SnapshotService` pins the first page at `v = last_version`, read in the same transaction. It reads
-  the live rows of the user's sites in primary-key order `(entity, id)`, starting after the previous page's
-  key. A middle page's cursor is `{ k: 's', v, after: [entity, id], fp }`, and the last page's is the delta
-  cursor `{ k: 'd', v, fp }`. `reason` is set on the first page only.
-- *Acknowledgement.* Each page is read in its own transaction, so later pages may hold rows newer than `v`.
-  Mutations committed after `v` are delivered only by the delta that follows. So the last page acknowledges
-  (`lastMutationId`, rejections) only when nothing was committed since `v`. Otherwise it sends
-  `lastMutationId: null` and the delta acknowledges, the same rule as F2 and F16.
-- *Client.* The pages are collected in memory (`phase: 'resyncing'`); storage is not touched until the last
-  page. That page commits the whole snapshot as the new base, with the queue on top. A reload mid-snapshot
-  starts over, and a page with a `reason` starts the collection over. After a snapshot the client always pulls
-  once more: the delta from `v` replays what changed while the pages were read. Every change is a full row, so
-  a replayed one is harmless.
-- *Model.* `ModelServer` pages in the same order with the same rules. In the simulation clients ask for 3-row
-  pages, so snapshots span several pulls with writes landing between them.
-
-**Alternatives considered.**
-- One transaction held across all pages (a `WITH HOLD` cursor or an exported snapshot) would make every page
-  consistent with `v`. But it keeps a transaction open, and holds back vacuum, for as long as a slow client
-  pages.
-- Paging in version order needs another index on `entities`; the primary key already serves
-  `(entity, id) > (…)`.
-- Writing each page to storage as it arrives would let a reload resume, but would leave the base half replaced
-  in between. Keeping the pages in memory costs one restart after a reload.
-
-**Fix, part 2: safe compaction.** `GcService.collect(cutoff = now − CHANGELOG_RETENTION_SECONDS)` runs as one
-transaction:
-- `pg_try_advisory_xact_lock(727002, hashtext(current_schema()))`; when another run holds it, this one returns.
-  The lock is per schema, so a run in one schema never makes another schema's run skip;
-- `cut = max(version)` of the log rows older than the cutoff. When there is one, the log rows and the entity
-  tombstones up to `cut` are deleted, and `min_retained_version` is raised to `cut` (never lowered). A pull reads
-  the floor and the log in one snapshot, so it sees either the old log or the new floor, never a gap;
-- rejections and `clients` rows are deleted after `CLIENT_RETENTION_DAYS` (90), not after the log retention (7
-  days). A client that was offline longer than the log is kept still learns why its mutation was refused, in the
-  same pull that answers it with a `cursor_expired` snapshot;
-- `sync_state` is updated last: writers take it last and hold it to commit, so taking it first would stall every
-  push for the whole collection.
-
-The interval timer skips a tick while a run is still going.
-
-**Alternatives considered.**
-- Keeping tombstones forever would let a stale client learn every deletion from the log, but the log is gone
-  anyway; the snapshot replaces the base, so tombstones older than the floor have no reader.
-- Deleting rejections with the log would make a long-offline client drop a refused mutation as if it had been
-  applied.
-
-### F14 — a reload loses offline work and reuses mutation ids
-
-**What.** The queue of unsynced mutations lived only in memory, and `lastMutationId` was saved only after a
-successful pull. Mutation ids were computed as `lastMutationId + pending + 1`.
-
-**Why it is dangerous.** Closing the tab or a crash while offline silently discards everything the technician
-did since the last sync. Worse, a reload between "push acknowledged" and "pull done" starts numbering again
-from the old `lastMutationId`: the server answers `duplicate` for the new work and it is lost without any
-error.
-
-**Reproduce.** `packages/sync-core/test/repro/f14-reload.spec.ts`: two mutations, dispose, reopen on the same
-storage → both must still be queued and visible; a push is acknowledged, the pull fails, reopen, mutate → the
-new id must be above every id the server has seen.
-
-**Fix.** Storage became an asynchronous, transactional interface (`load`, `enqueue`, `commitPull`,
-`dismissRejection`, `resetClient`), and it owns the queue, the client id and the id counter. `enqueue` takes
-`nextMutationId` and appends the mutation in one atomic step, so an id is durable before it is ever sent and is
-never handed out twice. `commitPull` applies a page, moves the cursor and — on the last page only — drops
-acknowledged mutations and keeps rejected ones with their reason, all in one step guarded by the expected
-cursor. `mutate()` stays synchronous for the UI: the mutation shows at once from an in-memory "unsaved" list and
-gets its id when it is stored; nothing is pushed before that. The web app's `localStorage` backend migrates the
-starter's blob and adopts its `fs_client_id`, so an upgraded browser keeps its server-side identity (checked in
-a browser: the next mutation is accepted as number 5 of the old client).
-
-**Alternatives considered.** Persisting the in-memory structures after every change (the starter's `save`)
-keeps the race between "id handed out" and "id saved"; ids derived from a timestamp or random value would
-break the server's gap-free per-client ordering that duplicate detection relies on.
-
-### F15 — two tabs hand out the same mutation ids
-
-**What.** Every tab of the app shared one `clientId` and one storage blob, but each kept its own in-memory id
-counter and its own copy of the state, and each wrote the whole blob back.
-
-**Why it is dangerous.** Two tabs creating something offline both used id `n + 1`: the server applied the first
-and answered `duplicate` for the second, which was then silently gone; each tab also overwrote the other's saved
-state.
-
-**Reproduce.** `packages/sync-core/test/repro/f15-two-tabs.spec.ts`: two clients on one storage mutate at the
-same time; after reopening, both mutations are queued with different ids.
-
-**Fix.** Ids are allocated by the storage in the same atomic step that stores the mutation (`enqueue`; in
-IndexedDB one `readwrite` transaction, which browsers serialise across tabs), so tabs can no longer collide.
-On top, one tab leads (`WebLocksCoordinator`: a Web Lock held while the tab is open, messages over a
-`BroadcastChannel`): only the leader pushes, pulls and keeps the stream; the others store their mutations, tell
-the leader (`queue-changed`), reload after its commits (`state-changed`) and show its status. Closing or killing
-the leader frees the lock and the next tab takes over from storage. Leadership only saves requests —
-correctness does not depend on it: with two leaders the server drops duplicate pushes and `commitPull`'s cursor
-check drops the slower of two overlapping pulls (`test/tabs/tabs.spec.ts`, including a leader that dies with its
-push in flight). In Chrome, a second tab made no API request at all while its ticket was sent by the first, and
-took over the stream and the sync when the first tab closed.
-
-**Alternatives considered.** A `SharedWorker` owning the connection is cleaner but not available in Chrome for
-Android, the technicians' likely browser; per-tab client ids would avoid collisions but multiply server clients
-and still race on the shared storage.
-
-### F16 — an acknowledged change disappears until the pull arrives
-
-**What.** The client removed a mutation from its queue as soon as the push response said `applied`, but the
-change itself reaches `base` only with the next pull. In between, the view (base + queue) contained the change
-in neither place.
-
-**Why it is dangerous.** The user's edit visibly reverts for the length of a pull, and if the pull fails or the
-app is closed in that window, it is gone from the device until some later sync happens to deliver it.
-
-**Reproduce.** `packages/sync-core/test/repro/f16-ack-flicker.spec.ts`: the push is answered `applied`, the
-pull is held; the view must still show the created ticket.
-
-**Fix.** The push response no longer removes anything. The client keeps an in-memory `pushedUpTo` so it does
-not resend what the server has answered, and a mutation leaves the queue only inside `storage.commitPull` of
-the pull page that also writes its effect into `base` (the last page, which carries `lastMutationId`). After
-every committed page the client reloads base and queue from storage and replays the queue, so the view is
-always base + every unacknowledged mutation (`test/client/rebase.spec.ts`: a base change under a pending
-patch, a row deleted underneath, a snapshot replacing the base with three mutations queued, a pull that
-acknowledges two of three). Push failures are now decided by `TransportError`: network / 5xx retry; `401` and
-`426` block syncing with the queue kept; `OUT_OF_ORDER` resends from `expected` once; `OUT_OF_ORDER` with
-`expected = 1` after earlier acknowledgements, or `CLIENT_MISMATCH`, start over under a new client id with
-the queue renumbered; any other 4xx blocks instead of looping. The stored `lastMutationId` never goes
-backwards, so a server that lost the client is detected on the next push (checked in a browser against a
-server that had never seen the client: `409`, reset, the change is accepted as mutation 1 of the new client).
-
-**Alternatives considered.** Keeping acknowledged mutations in a separate "applied, not yet pulled" list
-duplicates the queue and still needs the same commit to retire them; applying the push result to `base`
-directly would put an unconfirmed server state into `base` and break the rule that `base` only ever holds
-what the server sent.
-
-### F17 — non-deterministic `ticket.create`
-
-**What.** `ticket.create` called `crypto.randomUUID()` and `new Date()` inside the mutator.
-
-**Why it is dangerous.** The client replays its queue on every `view()`, so each render produced a different
-ticket id (React keys and `/tickets/:id` links changed per render), and the server created yet another id.
-Every follow-up mutation that referenced the optimistic id was rejected, i.e. offline work on a new ticket was
-lost.
-
-**Reproduce.** `packages/sync-core/test/repro/f17-determinism.spec.ts`: two `view()` calls, five minutes of
-fake time apart, must show the same id and `createdAt`.
-
-**Fix.** Ids come from the arguments (the caller generates a UUID once); time comes from `ctx.now` — on the
-client the mutation's `createdAt`, stamped once at enqueue time and reused on every replay; on the server the
-transaction timestamp. An ESLint override bans `Date`, `Math.random`, `crypto` and `performance` inside
-`packages/sync-core/src/mutators/**`, and `test/mutators/registry.spec.ts` checks that identical inputs give
-identical rows.
-
-**Alternatives considered.** Generating the id on the server and mapping temporary ids afterwards (the
-classic "temp id" approach) needs an id-rewrite step for every queued mutation and every UI reference; with
-UUIDs a client-chosen id is collision-safe, and the server rejects reuse with `ALREADY_EXISTS`.
-
-### F18 — concurrent edits of different fields overwrite each other
-
-**What.** `ticket.update` took `title` and `description` and wrote both; the edit form sent both from state
-initialised once when the page opened.
-
-**Why it is dangerous.** Two technicians editing different fields of the same ticket: whoever syncs last
-silently restores the other field to the value it had when their form opened. Nothing is rejected, so nobody
-notices the loss.
-
-**Reproduce.** `packages/sync-core/test/repro/f18-field-merge.spec.ts`.
-
-**Fix.** `ticket.update` takes `{ id, patch }` and writes only the keys present in the patch (`title`,
-`description`, `assigneeId`; anything else, or an empty patch, is `BAD_ARGS`). Concurrent edits of different
-fields both survive; edits of the same field resolve last-writer-wins in server order. The edit form sends
-only the fields that differ from the ticket it was opened on.
-
-**Alternatives considered.** Optimistic concurrency (send the version you edited, reject on mismatch) is
-safer for same-field conflicts but turns every unrelated concurrent edit into a rejection the user must
-resolve; a per-field CRDT/register is more machinery than one text field per ticket needs.
-
-### F19 — deleting a ticket leaves its parts behind
-
-**What.** `ticket.delete` removed the ticket row only.
-
-**Why it is dangerous.** The parts stayed live forever: replicated to every client of the site, counted in any
-inventory view, and pointing at a ticket that no longer exists.
-
-**Reproduce.** `packages/sync-core/test/repro/f19-orphan-parts.spec.ts`.
-
-**Fix.** Mutators can declare `scans()` — rows found by a secondary attribute (`part` by `ticketId`). The
-server loads and locks them `FOR UPDATE` like `reads()` keys, the client scans its view, and `ticket.delete`
-deletes every scanned part before the ticket. `ticket.move` uses the same scan to move the parts with the
-ticket.
-
-**Alternatives considered.** An `ON DELETE CASCADE` in Postgres would not reach the change log (clients would
-never hear about the deleted parts) and would not run on the client; soft-hiding orphans in the UI leaves the
-data and the replication cost in place.
-
-### F20 — stream subscribers are never released
-
-**What.** The poke stream added every connection to a set and never removed it. Pokes were written without
-looking at backpressure, nothing was ever sent on a quiet stream, and shutdown left the responses open.
-
-**Why it is dangerous.** Every reconnect leaked a subscriber that kept being written to after its socket was
-gone, so memory grew without bound. A client that stopped reading made the server buffer every poke in
-memory. Proxies close idle connections, and the server could not stop while any stream was open.
-
-**Reproduce.** `apps/server/test/repro/f20-stream-leak.integration.spec.ts`:
-- 50 closed streams must be forgotten, and 500 open/close cycles must leave the `fieldsync_active_streams`
-  gauge at 0;
-- a client that leaves while its sites are read must not be kept;
-- 200 000 pokes to a client that does not read must keep the buffer under the high-water mark, and exactly one
-  poke must follow once it reads again;
-- a heartbeat must arrive;
-- a user is limited to `STREAM_MAX_PER_USER` streams;
-- shutdown must end open streams.
-
-**Fix.**
-- `StreamService` removes a subscriber on the response's `close`, and ignores a response whose socket is
-  already gone.
-- `add()` refuses with `429 TOO_MANY_REQUESTS` above `STREAM_MAX_PER_USER` per user. The client retries a
-  refused stream with backoff.
-- While `res.writableNeedDrain` is set, a poke only marks the subscriber dirty, and the next `drain` sends one
-  poke. Pokes carry no data, so one stands for all of them.
-- One shared timer writes `: hb` every `STREAM_HEARTBEAT_MS`, which the client's watchdog expects.
-- `onModuleDestroy` clears the timer and ends every response.
-- Responses carry `x-accel-buffering: no` so nginx does not buffer them.
-- The route lives in `stream.controller.ts`.
-
-**Alternatives considered.** A per-subscriber `once('drain')` per blocked write, as first planned, adds a
-listener for each and repeats a poke that is already buffered. Closing a slow client instead of coalescing would
-make it reconnect and sync for nothing. WebSockets would add a protocol where only server-to-client pokes are
-needed.
-
-### F21 — disposing the client leaves requests and timers alive
-
-**What.** `dispose()` only cleared the retry timer. A request in flight was never aborted and had no timeout,
-and the web app created a client and an `EventSource` in an effect without any cleanup.
-
-**Why it is dangerous.** Every token change or remount leaked a syncing client and an open stream; a hung
-request (a dead TCP connection on a mobile network) kept the single sync slot busy forever, so the client
-silently stopped syncing.
-
-**Reproduce.** `packages/sync-core/test/repro/f21-dispose.spec.ts`: dispose during a held pull; the request's
-`AbortSignal` must be aborted and no timer may remain.
-
-**Fix.** The client owns an `AbortController`; every transport call receives its signal, and `HttpTransport`
-combines it with a 20 s timeout in a per-request controller whose timer is cleared when the call ends. A timeout
-is a `TransportError('timeout')` (retried with backoff); an abort by the caller is reported as such and ignored.
-`dispose()` aborts, clears the retry and poll timers, removes the `online`/`visibilitychange` listeners, closes
-storage and drops subscribers. The web effect now returns a cleanup that disposes the client, which also
-closes its poke stream.
-
-**Alternatives considered.** `AbortSignal.any` / `AbortSignal.timeout` are shorter but missing on older
-browsers, and the timeout's timer would outlive a finished request.
-
-### F22 — fixed 5 s retry and an immediate re-push loop
-
-**What.** Every failure was retried after exactly 5 s, and after every sync the client started another one at
-once if anything was still queued — including when the server had answered `200` without handling anything.
-
-**Why it is dangerous.** After an outage every client retries in lockstep every 5 s (a thundering herd on a
-recovering server); a server bug that returns empty results turns each client into a hot loop.
-
-**Reproduce.** `packages/sync-core/test/repro/f22-backoff.spec.ts`: with the server unreachable the delays must
-grow and stay capped; a push answered without results must not be resent in a loop.
-
-**Fix.** Full-jitter exponential backoff, `delay = random() × min(60 s, 500 ms × 2^attempt)` (`nextDelay`, unit
-tested), reset after a successful run; the unconditional re-run is gone (see F3); a push answered without any
-result counts as a failure (`502`) and goes through the same backoff. In a browser with the server stopped, the
-gaps between failed syncs were 0.3, 0.8, 1.0, 2.0, 0.9, 6.7, 1.5 and 8.6 s, each below its bound.
-
-**Alternatives considered.** Equal or decorrelated jitter spread load similarly; full jitter is the simplest
-with the lowest total load, and needs no state beyond the attempt counter.
-
-### F23 — malformed cursor becomes a full-history pull
-
-**What.** The pull endpoint parsed its cursor with `Number(cursor) || 0`, so `cursor=banana`, `cursor=` or a
-truncated value all became cursor `0`.
-
-**Why it is dangerous.** A client with a corrupted cursor silently re-downloads the whole history instead of
-failing loudly; combined with F9 (no site filter on `cursor > 0`, but a filter on `0`) the outcome of a pull
-depended on how the garbage happened to parse. It also made any client bug in cursor handling invisible.
-
-**Reproduce.** `apps/server/test/repro/f23-bad-cursor.integration.spec.ts`: `GET /sync/pull?cursor=banana`
-answered 200.
-
-**Fix.** The cursor is now opaque: `base64url(JSON)` of `{ k: 'd', v, fp }` (`fp` identifies the site set it
-was issued for). Inside a paged snapshot it is `{ k: 's', v, after, fp }`, where `after` must be an entity key
-(F13). `decodeCursor` validates it with zod and anything else is `400 BAD_REQUEST`. All query
-parameters go through `pullQuerySchema` (`limit` 1–500, `ackedMutationId` ≥ 0), so other garbage is a 400 as
-well instead of being clamped or defaulted.
-
-**Alternatives considered.** Keeping a numeric cursor and only validating it (`/^\d+$/`) fixes the parsing but
-leaves the server unable to change what a cursor means (site fingerprint, snapshot paging) without another
-protocol break; signing the cursor (HMAC) would stop clients from forging positions, but a forged cursor can
-only point at data the caller may read anyway, so it buys nothing here.
-
-### F28 — a dropped database connection crashes the server
-
-Found while writing the concurrency proof (P2.7); not in the original list.
-
-**What.** When Postgres closes a pooled connection (restart, failover, `pg_terminate_backend`, an idle timeout
-in a proxy), node-postgres fails the running query *and* emits an `'error'` event — on the pool for an idle
-connection, on the client for a checked-out one. Neither had a listener, and an `'error'` event without a
-listener throws, so the whole Node process exited.
-
-**Why it is dangerous.** Any database blip — including a routine Postgres restart while the server is idle —
-takes every API instance down at once, and with them every open stream. The transaction-retry and `503`
-logic for connection loss never ran, because the process was already gone.
-
-**Reproduce.** `apps/server/test/repro/f28-connection-loss.integration.spec.ts` runs `src/main.ts` in its own
-Node process (inside Jest an uncaught exception is only reported, not fatal) and finds its connections by
-`application_name`: (1) its idle connections are terminated → the process must stay alive and keep answering;
-(2) a push is paused inside its transaction (the test holds the `sync_state` row), its connection is
-terminated → the push must be retried on a new connection and applied exactly once.
-
-**Fix.** `Db` listens for `'error'` on the pool (idle connections; the pool already discards the dead client)
-and on each client for as long as `tx()` has it checked out. Both only log a warning: the failed query
-rejects on its own, `tx()` sees a transient error, releases the connection as broken and retries; after the
-retries the request ends with `503 UNAVAILABLE`. `pool.query()` attaches its own listener, so it was not
-affected.
-
-**Alternatives considered.** A global `process.on('uncaughtException')` would keep the process alive but also
-swallow genuine bugs and leave it in an unknown state; restarting via a supervisor still drops every in-flight
-request and stream on each blip.
-
-### F29 — a page kept in the back/forward cache keeps the tab leadership
-
-Found while writing the manual acceptance script (P8.8); not in the original list.
-
-**What.** The syncing tab is chosen with a Web Lock that its page holds until it closes. When the page is left
-with a full navigation, the browser can keep it frozen in the back/forward cache instead of closing it. A frozen
-page still holds its locks.
-
-Such navigations are common:
-- Next itself falls back to a full navigation when a client-side one cannot load its data, for example offline;
-- the user types an address;
-- the user goes back.
-
-**Why it is dangerous.** Nothing syncs. The new page in the same tab and every other tab wait for the lock, but
-the frozen page never pushes or pulls. Queued changes stay on the device until the browser evicts the frozen
-page, which can take minutes. Meanwhile the followers' badges show a status that no leader updates.
-
-**Reproduce.**
-- `packages/sync-core/test/repro/f29-bfcache-leader.spec.ts` uses a minimal `navigator.locks` (one exclusive
-  queue) and page events. Page A leads and is hidden into the cache (`pagehide`, `persisted`). A new page B
-  must then lead. When A is shown again and B closes, A must lead again.
-- In Chrome: go offline in two tabs and navigate within the first one. Neither tab can lead, and after going
-  online nothing syncs. With `--disable-features=BackForwardCache` it works, which pins the cause.
-
-**Fix.** `WebLocksCoordinator` steps down on `pagehide`:
-- it cancels a waiting lock request;
-- it releases a held lock;
-- it tells the client it no longer leads.
-
-On `pageshow` with `persisted` (the page came back from the cache), it queues for the lock again. Each request
-has its own `AbortController`, because an aborted one cannot be reused. The P8.8 script now passes in a stock
-Chrome, with both tabs offline and the second tab leading after the first one navigates.
-
-**Alternatives considered.** Disposing the whole client on `pagehide` would also free the lock, but a page
-restored from the cache would come back without a client. An `unload` handler makes the page ineligible for the
-cache, which slows down every back navigation, and Chrome is phasing `unload` out.
+Each is reproduced by a test committed as `it.failing` before the fix, then switched to `it`. Server tests are
+in `apps/server/test/repro/`, client tests in `packages/sync-core/test/repro/`.
+
+**F1 · ordering: versions visible out of commit order.** *What:* `bigserial` versions are taken at insert,
+visible at commit; a pull between two commits moves the cursor past the later-committing one. *Risk:* silent
+permanent divergence. *Reproduce:* `f01-commit-order` pauses push A in its transaction, B commits, a pull runs.
+*Fix:* versions from the `sync_state` row (see record 1); migration `003`. *Alternatives:* `xmin` watermark,
+logical-replication outbox.
+
+**F2 · ordering: pull acknowledges before delivering.** *What:* changes and `lastMutationId` read in two
+snapshots, the id sent on every page. *Risk:* the client drops a pending edit whose effect has not arrived; it
+flickers or is lost. *Reproduce:* `f02-pull-snapshot`, 600 changes then a mutation, page 1 must not ack it.
+*Fix:* one `REPEATABLE READ READ ONLY` transaction; ack only on the last page; a page never splits a mutation.
+*Alternatives:* per-page "fully delivered" bookkeeping.
+
+**F3 · ordering: a poke during a sync is lost.** *What:* `sync()` returned the running promise and forgot the
+request. *Risk:* stale until an unrelated event. *Reproduce:* `f03-lost-poke`. *Fix:* single flight with a
+`rerun` flag, one extra run. *Alternatives:* a run per poke, cancelling the running sync.
+
+**F4 · duplicate push applied twice.** *What:* the dedup check ran outside the transaction without a lock.
+*Risk:* retried `part.adjust` doubles stock. *Reproduce:* `f04-parallel-duplicate`, 10 identical pushes queued
+on a lock: one `applied`, nine `duplicate`. *Fix:* lock the client row in the mutation's transaction.
+*Alternatives:* unique constraint (500), serializable (retries).
+
+**F5 · a rejection blocks the queue.** *What:* `MutationRejected` became a 500 and the counter stayed. *Risk:* one
+stale edit freezes the device. *Reproduce:* `f05-poison`: applied, conflict, applied → `lastMutationId = 3`.
+*Fix:* `SAVEPOINT`, store the reason, advance the counter; other errors as `INTERNAL`; transient ones retried
+then `503`. *Alternatives:* reject the batch and let the client drop the head; reason only in the response.
+
+**F6 · prototype names reach the registry.** *What:* `MUTATORS['constructor']` is truthy → `TypeError` → 500.
+*Risk:* a client-controlled permanent block. *Reproduce:* `f06-proto-name`. *Fix:* `z.enum` names on the wire
+and a `ReadonlyMap` registry. *Alternatives:* `Object.create(null)`, a `switch`.
+
+**F7 · out-of-order id gets a retryable 400.** *What:* a generic 400 the client resends forever. *Risk:* an
+unrecoverable loop after ids diverge. *Reproduce:* `f07-out-of-order`: id 5 on a fresh client →
+`409 OUT_OF_ORDER, expected 1`. *Fix:* that 409; the client resends from `expected` or restarts under a new id.
+*Alternatives:* skipping ahead (gaps, reordering).
+
+**F8 · writes authorized by the client's `siteId`.** *What:* authorization trusted the argument, before rows were
+loaded; deleted ids could be revived. *Risk:* anyone edits any site by knowing an id. *Reproduce:*
+`f08-write-access`. *Fix:* authorize on the stored site of every loaded row (deleted ones too) and of every
+written row; `NO_ACCESS` for unknown and forbidden alike. *Alternatives:* checks inside each mutator.
+
+**F9 · incremental pulls return every site.** *What:* the site filter only applied at cursor 0. *Risk:* full
+cross-tenant leak. *Reproduce:* `f09-read-access`. *Fix:* one delta query, always per accessible site.
+*Alternatives:* row-level security.
+
+**F10 · another user's `clientId` accepted.** *What:* `clients.user_id` never compared. *Risk:* burnt ids lose the
+owner's mutations. *Reproduce:* `f10-client-ownership`. *Fix:* `403 CLIENT_MISMATCH` on push; pull hides the
+foreign ack and rejections. *Alternatives:* server-derived client ids (no offline creation).
+
+**F11 · token in the stream URL, tokens in plaintext.** *What:* the stream took `?token=`; `users.token` was
+plain text. *Risk:* tokens in logs, history, dumps. *Reproduce:*
+`f11-token-in-url`. *Fix:* header-only auth, stream over `fetch`; `sha256` token hashes (migration `004`); logs
+redact. *Alternatives:* URL ticket, cookie (CSRF), bcrypt (pointless for random tokens).
+
+**F12 · revoked access and moves never leave the client.** *What:* pull sent only log changes, and a revoke,
+grant or move writes none for the affected client. *Risk:* revoked users keep data; new sites look empty.
+*Reproduce:* `f12-revocation-move`, `access/admin.integration.spec.ts`. *Fix:* fingerprint snapshot, `del` +
+`put` on a move, admin endpoints poke the user's streams (record 4). *Alternatives:* per-row `del` on revoke.
+
+**F13 · GC leaves new and stale clients incomplete.** *What:* age-based GC with no floor; new clients replayed
+the log. *Risk:* devices silently miss data. *Reproduce:* `f13-gc`: 2 000 entities, empty log → a new client
+must get all 2 000; stale and new clients equal the server after GC. *Fix:* paged snapshot + retained floor
+(record 6); rejections and clients kept 90 days. *Alternatives:* tombstones forever, held transactions.
+
+**F14 · reload loses offline work and reuses ids.** *What:* queue only in memory, counter saved after pull.
+*Risk:* lost work; new work answered `duplicate`. *Reproduce:* `f14-reload`. *Fix:* transactional storage that
+allocates the id and stores the mutation in one step. *Alternatives:* save-after-change (same race),
+timestamp ids (break dedup).
+
+**F15 · tabs hand out the same ids.** *What:* one `clientId`, one blob, a counter per tab. *Risk:* second tab's
+work dropped as duplicate. *Reproduce:* `f15-two-tabs`. *Fix:* ids from the storage transaction; one leader tab.
+*Alternatives:* `SharedWorker`, per-tab client ids.
+
+**F16 · acknowledged change disappears until pulled.** *What:* the queue dropped a mutation on push ack. *Risk:*
+flicker; lost on a crash in between. *Reproduce:* `f16-ack-flicker`. *Fix:* drop only in the pull commit that
+carries the effect; failures classified by `TransportError`. *Alternatives:* an "applied, not pulled" list.
+
+**F17 · non-deterministic `ticket.create`.** *What:* `randomUUID()` and `new Date()` inside the mutator.
+*Risk:* a new id per render; follow-ups rejected. *Reproduce:* `f17-determinism`. *Fix:* id in args, time from
+`ctx.now`; ESLint bans clocks and randomness in mutators. *Alternatives:* server ids with temp-id remapping.
+
+**F18 · different-field edits overwrite each other.** *What:* `ticket.update` wrote title and description from a
+form filled once. *Risk:* the later sync silently restores the other field. *Reproduce:* `f18-field-merge`.
+*Fix:* patch semantics, the form sends only changed fields (record 5). *Alternatives:* optimistic versions, CRDT.
+
+**F19 · deleting a ticket leaves parts.** *What:* only the ticket row was deleted. *Risk:* orphan parts
+replicated forever. *Reproduce:* `f19-orphan-parts`. *Fix:* mutators declare `scans()`;
+delete and move cover the parts. *Alternatives:* `ON DELETE CASCADE` (never reaches the log or the client).
+
+**F20 · stream subscribers never released.** *What:* no removal on close, no backpressure, no heartbeat. *Risk:*
+unbounded memory, writes to dead sockets. *Reproduce:* `f20-stream-leak` (500 cycles → gauge 0; 200 000 pokes to
+a non-reader). *Fix:* remove on `close`, coalesce while `writableNeedDrain`, shared heartbeat, per-user cap
+(429), close on shutdown. *Alternatives:* `once('drain')` per write, dropping slow clients.
+
+**F21 · dispose leaves requests and timers.** *What:* `dispose()` cleared only the retry timer, requests had no
+timeout, the web effect no cleanup. *Risk:* leaked clients; a hung request blocks syncing forever.
+*Reproduce:* `f21-dispose`. *Fix:* one `AbortController`, 20 s timeout per request, cleanup on dispose and in
+the web effect. *Alternatives:* `AbortSignal.timeout` (timer outlives the request).
+
+**F22 · fixed 5 s retry, re-push loop.** *What:* every failure retried after exactly 5 s, and a new sync started
+at once while anything was queued. *Risk:* thundering herd; hot loop on an empty 200. *Reproduce:*
+`f22-backoff`. *Fix:* full-jitter backoff capped at 60 s; a push without results is a failure.
+*Alternatives:* equal or decorrelated jitter.
+
+**F23 · malformed cursor means full history.** *What:* `Number(cursor) || 0`. *Risk:* a corrupted cursor
+silently re-downloads everything and hides client bugs. *Reproduce:* `f23-bad-cursor`.
+*Fix:* opaque validated cursor, `400` otherwise. *Alternatives:* numeric validation only; HMAC (nothing to protect).
+
+**F24 · vacuous test: assertion inside `catch`.** *What:* `mutators.spec.ts` passed when nothing threw. *Risk:*
+a broken state machine stays green. *Reproduce:* allowing `done → in_progress` left it green. *Fix:*
+`expect(…).toThrow` plus code and unchanged status. *Alternatives:* `expect.assertions(n)`.
+
+**F25 · vacuous test: mocked pull.** *What:* `pull.spec.ts` mocked the pool to return `[]` for any SQL. *Risk:* it
+passed with F9 leaking every site. *Reproduce:* green on the starter. *Fix:* replaced by `f09-read-access` on
+real Postgres. *Alternatives:* asserting SQL text in the mock (brittle, still not behaviour).
+
+**F26 · vacuous test: fake access DB.** *What:* `access.spec.ts` ignored the query and sent `siteId` in the args.
+*Risk:* it encoded F8 as correct. *Reproduce:* green on the starter. *Fix:* replaced by `f08-write-access`.
+*Alternatives:* a better fake (still not the real query).
+
+**F27 · vacuous suite and CI.** *What:* a `SELECT 1` "integration" test, two `it.todo`, integration tests skipped
+silently without `DATABASE_URL`, the web app never type-checked. *Risk:* CI green while nothing is checked.
+*Reproduce:* CI without `DATABASE_URL` passed. *Fix:* real integration suites, `requireDatabaseUrl()` fails in
+CI, `typecheck` covers the web app, the todos became `f14-reload` and `f15-two-tabs`. *Alternatives:* a skip
+warning (still green).
+
+**F28 · a dropped DB connection crashes the server** (found in P2.7). *What:* no `'error'` listener on the pool
+or checked-out clients. *Risk:* any Postgres restart kills every instance. *Reproduce:* `f28-connection-loss`
+runs the server as a process and terminates its connections. *Fix:* listeners log; the transaction is retried,
+then `503`. *Alternatives:* `uncaughtException` handler (hides bugs).
+
+**F29 · a page in the back/forward cache keeps tab leadership** (found in P8.8). *What:* a frozen page holds its
+Web Lock. *Risk:* nothing syncs for minutes. *Reproduce:* `f29-bfcache-leader`; in Chrome, navigate in an
+offline leader tab. *Fix:* step down on `pagehide`, ask again on `pageshow` with `persisted`.
+*Alternatives:* dispose on `pagehide`, `unload` (disables the cache).
 
 ## Changes to existing tests
 
-Every starter test that was changed or removed, and why. None of these changes weakens a real assertion: each
-removed test could not fail, and each is replaced by one that can.
+None weakens a real assertion: each removed test could not fail and has a replacement that can.
 
-**`packages/sync-core/test/mutators.spec.ts` — "rejects an invalid status transition" (F24).** The old test
-called `ticket.setStatus` inside `try { … } catch (err) { expect(err)… }`. If the mutator did not throw, the
-`catch` block never ran, no assertion executed, and Jest reported a pass. Verified: with `done → in_progress`
-added to the transition table the old test still passed. It now asserts with `expect(act).toThrow(MutationRejected)`,
-checks `code === 'INVALID_TRANSITION'`, and checks the ticket keeps its status; with the same sabotage it fails.
+- `sync-core/test/mutators.spec.ts` (F24): the assertion sat in `catch`, so it passed when nothing threw (checked
+  by allowing `done → in_progress`). Now `expect(…).toThrow` plus code and unchanged status. All its calls were
+  updated to the v2 mutator arguments with assertions unchanged.
+- `server/test/pull.spec.ts` (F25): a mock returning `[]` for any SQL; passed with F9. Removed for
+  `f09-read-access` on real Postgres.
+- `server/test/access.spec.ts` (F26): the fake DB ignored the query and the test encoded F8. Removed for
+  `f08-write-access`.
+- `server/test/sync.integration.spec.ts` (F27): only `SELECT 1`. Removed; integration suites now fail in CI
+  without `DATABASE_URL`, and `npm run typecheck` covers the web app.
+- `sync-core/test/client.spec.ts` (F27): two `it.todo` replaced by `f14-reload` and `f15-two-tabs`; `ticket.create`
+  calls pass an `id` (F17).
 
-**`packages/sync-core/test/mutators.spec.ts` — every test (protocol v2).** The mutator API changed: the
-registry is a `Map` (`getMutator(name)`), `apply` takes a `ctx`, `ticket.create` takes its `id`, `ticket.update`
-takes a `patch`, and no mutator except `ticket.create`/`ticket.move` takes a `siteId`. The calls were updated
-to the new shape; every assertion is unchanged. The new suites in `packages/sync-core/test/mutators/`
-additionally pin the exact rejection code of every case, so a `BAD_ARGS` cannot stand in for the expected
-rejection.
+## Indexes
 
-**`apps/server/test/pull.spec.ts` — "only returns changes for sites the user can access" (F25).** The mocked
-pool returned `{ rows: [] }` for every query and the test asserted `changes` was empty, so it passed for any SQL
-and any parameters — including the starter's, which drops the site filter whenever `cursor > 0` (F9). Removed.
-Replaced by `apps/server/test/repro/f09-read-access.integration.spec.ts` (Phase 1), which pulls through HTTP
-against real Postgres and checks that no other site's change is returned on either the initial or the
-incremental path.
+Migration `005_indexes.sql`; `entities_site_idx` is dropped as superseded.
 
-**`apps/server/test/access.spec.ts` — `authorize` allows/rejects by site (F26).** The fake DB ignored the query
-and the test passed `siteId` in the mutation args, so it encoded the defect itself: authorization trusting a
-client-supplied `siteId` (F8). Removed. Replaced by
-`apps/server/test/repro/f08-write-access.integration.spec.ts` (Phase 1), which has a technician target another
-site's ticket while sending their own `siteId` and asserts the write is rejected and the row is unchanged.
+| Index | Serves |
+|---|---|
+| `change_log (site_id, version)` | delta pull: one index range per accessible site (`CROSS JOIN LATERAL`), merged by version |
+| `entities (site_id, entity, id) WHERE NOT deleted` | snapshot page: keyset per site, merged by `(entity, id)` |
+| `entities ((data->>'ticketId')) WHERE entity = 'part' AND NOT deleted` | part scan of `ticket.delete` / `ticket.move` |
+| `entities (version) WHERE deleted` | GC of tombstones |
+| `user_sites` primary key `(user_id, site_id)` | access check |
 
-**`apps/server/test/sync.integration.spec.ts` — "connects to the database" (F27).** The only "integration" test
-was `SELECT 1`; it exercised no application code. Removed; the server's integration coverage is the
-`*.integration.spec.ts` suites built on `test/support/pg.ts` (a full Nest app per private schema). The rest of
-F27 is fixed in the tooling: integration suites now fail instead of silently skipping when `DATABASE_URL` is
-missing in CI (`requireDatabaseUrl()`), and `npm run typecheck` now type-checks `apps/web`. The server's
-`test:unit` script carries `--passWithNoTests` because the server has no unit tests yet.
-
-**`packages/sync-core/test/client.spec.ts` — two `it.todo` (F27).** "keeps unsynced mutations across a
-reload" and "does not lose mutations when two tabs share one clientId" were placeholders that always report
-as todo. Removed; replaced by `packages/sync-core/test/repro/f14-reload.spec.ts` and
-`packages/sync-core/test/repro/f15-two-tabs.spec.ts`, which assert exactly those behaviours. The two remaining
-tests now pass an `id` to `ticket.create` (required since F17); their assertions are unchanged.
+Evidence: `apps/server/test/explain.integration.spec.ts` seeds 200k log rows over 50 sites, 40k entities and
+1 000 users, runs real pulls, a push and GC through a client that runs `EXPLAIN (FORMAT JSON)` before each
+statement, and asserts the named index with no `Seq Scan` on `change_log` or `entities`. Before `005` four of
+five failed; the snapshot query walked the primary key across all sites until it was rewritten per site.
 
 ## Simulation
 
-A deterministic simulation drives real `SyncClient`s against `ModelServer`. That is the push and pull protocol
-in memory, with the same mutators and the same decision order as the server. Everything runs in virtual time
-and draws from one seeded generator, so a seed replays exactly. Code: `packages/sync-core/src/testing/`.
+`packages/sync-core/src/testing/`: real `SyncClient`s against `ModelServer` (same mutators and decision order as
+the server) in virtual time with one seeded generator, so a seed replays exactly. Steps: mutations, time,
+partitions, crash and restart on the same storage, a second tab, grant/revoke, ticket moves, GC and long
+offline. The network loses, duplicates, cuts and delays (≤ 400 ms) requests and responses; pages are 3 rows.
 
-Each step is one random action:
-- a mutation from a fixed mix (create, update, status change, delete, add a part, adjust a quantity);
-- the passage of time;
-- a network partition;
-- a device crash and restart on the same storage;
-- opening or closing a second tab;
-- granting or revoking a technician's site, or an admin moving a ticket to another site;
-- change-log GC, and a device offline for long enough to fall behind it.
+Invariants. After every step: (1) no client holds a row outside its user's sites; (2) no mutation applied
+twice; (3) a cursor never goes back except through a snapshot. At the end, after healing: (4) every tab's
+base equals the server's rows for its user; (5) nothing pending, view = base; (6) every mutation applied
+xor rejected with a reason the client knows; (7) part quantity = initial + applied deltas.
 
-The network loses requests and responses, delivers duplicates, cuts a batch midway and delays every hop by up to
-400 ms, so answers overtake each other. Clients pull 3 rows per page, so snapshots and deltas span several pulls
-and writes land between the pages. After the last step the network heals and every client settles.
+    npm run sim                              # regression seeds, then seeds 1–500 × 400 steps (~45 s)
+    SIM_SEED=1234 SIM_STEPS=57 npm run sim   # one seed, optionally shortened; SIM_SEEDS=50 for seeds 1–50
 
-Checked after every step:
-1. after a pull, no client holds a row outside the sites its user had when the server computed that pull;
-2. no mutation is applied twice;
-3. a client's cursor never goes backwards, except through a snapshot.
+A failure is bisected to the shortest failing step count and printed as a command with the last 30 steps. The
+same runs go against real Postgres (`apps/server/test/sim/`, 50 seeds × 200 steps) plus a differential test that
+requires identical steps and final state against the model.
 
-Checked at the end:
+Regression seeds (`packages/sync-core/test/sim/regression-seeds.ts`), each the shortest failure with one fix reverted:
 
-4. every tab holds exactly the server's rows for its user;
-5. nothing is left pending;
-6. every issued mutation is either applied or rejected with a reason the client knows;
-7. every part quantity equals what it was added with plus each applied adjustment.
-
-```sh
-npm run sim                                  # regression seeds, then seeds 1–500 × 400 steps (about 45 s)
-SIM_SEED=1234 npm run sim                    # one seed
-SIM_SEED=1234 SIM_STEPS=57 npm run sim       # one seed, a shorter run
-SIM_SEEDS=50 npm run sim                     # seeds 1–50 (0: regression seeds only)
-```
-
-On a failure the runner binary-searches the step count down. It prints the smallest failing run as a command,
-followed by the violated invariant and the last 30 steps. `npm test` includes the simulation; CI runs it as
-its own step (`test:sim`).
-
-The same simulation also runs against the real `PushService` and `PullService` on Postgres
-(`apps/server/test/sim/`): 50 seeds × 200 steps, plus a differential test. The differential test runs one seed
-against the model and against Postgres. It requires the same steps, which depend on every answer the server
-gives, and the same final state: rows with their sites and versions, each client's last mutation id, and the
-rejection codes. Timestamps are left out of the comparison, because the model uses virtual time and Postgres
-uses the transaction time. A server call is awaited in full before anything else happens, so a seed replays
-exactly on Postgres too.
-
-Change-log garbage collection runs too: a GC step at a random recent version, and a "long offline" step that
-partitions a device for a minute, collects the whole log and heals it. On Postgres the GC step backdates the log
-up to the cut and calls the real `GcService`. Granting, revoking and GC first let every pending client step
-finish: a call into Postgres does that anyway while it waits for I/O, the model does not, and without it the
-two would draw different random numbers.
-
-**Regression seeds** (`packages/sync-core/test/sim/regression-seeds.ts`). They run first. Each entry is the
-smallest failing run found when that one fix was reverted on its own, which is evidence that the simulation
-catches it. Each entry also keeps the flags it was found with. The "Seeds 1–100 failing" column shows how
-many of seeds 1–100 failed with that fix reverted.
-
-| Seed | Steps | Flags | Seeds 1–100 failing | Found |
+| Seed | Steps | Flags | Failing of 1–100 | Fix reverted |
 |---|---|---|---|---|
-| 30 | 1 | crash, tabs | 100 | F4: a server that does not deduplicate applies a retried mutation twice |
-| 47 | 3 | crash, tabs | 100 | F5: a rejection that does not advance the client blocks its queue |
-| 91 | 2 | crash, tabs | 69 | F15: a follower tab that ignores `state-changed` keeps a stale base |
-| 91 | 45 | crash, tabs | 56 | F15: a leader that ignores `queue-changed` never pushes another tab's mutation |
-| 69 | 6 | + access | 97 | F12: without a snapshot on an access change, a client keeps revoked rows and misses granted ones (server or client side reverted) |
-| 10 | 11 | + access, gc | 71 | F13: GC without a retained floor lets a client whose cursor it passed miss the collected changes |
-
-Paging by 3 rows (F13, part 1) changed every run, so the F5, F15 (leader) and F12 entries were searched again
-with their fixes reverted; the old seeds no longer failed.
+| 30 | 1 | crash, tabs | 100 | F4 dedup: a retry applies twice |
+| 47 | 3 | crash, tabs | 100 | F5: a rejection blocks the queue |
+| 91 | 2 | crash, tabs | 69 | F15: a follower ignores `state-changed` |
+| 91 | 45 | crash, tabs | 56 | F15: the leader ignores `queue-changed` |
+| 69 | 6 | + access | 97 | F12: no snapshot on an access change |
+| 10 | 11 | + access, gc | 71 | F13: GC without a retained floor |
 
 ## Load results
 
+`apps/server/test/load/`: 200 real `SyncClient`s in one Node process against a running server (real HTTP
+transport and stream, `MemoryStorage`), one technician each, over 10 new sites. Each issues a random mutation
+every 1–5 s; each has its own network that drops for 5–60 s windows about 20% of the time, cutting requests in
+flight. After 10 minutes all go online and invariants 4–5 are checked against Postgres. Seeded per client
+(`LOAD_SEED`); real time decides the interleaving.
+
+    docker compose up -d --build server && LOAD_SEED=1 npm run load   # LOAD_CLIENTS, LOAD_SITES, LOAD_DURATION_S
+
+Run of 2026-11-19 on an Apple M1 (8 cores, 16 GiB, macOS 26.5), against the final images built from a fresh clone;
+server and Postgres 16 in Docker Desktop on the same machine.
+
+| | |
+|---|---|
+| Offline time (measured) | 18.6% |
+| Mutations | 36 707 (~61/s): applied 35 754, rejected 953, duplicate retries 80 |
+| Rejections by code | `STATUS_CONFLICT` 633, `NO_ACCESS` 297, `NEGATIVE_QUANTITY` 23; clients hold the same 953 |
+| Delivery lag, push → another client, p50 / p95 / p99 | 0.38 / 0.95 / 1.37 s |
+| Delivery lag, `mutate()` → another client (includes author offline) | 0.55 / 28.2 / 46.1 s |
+| Snapshots | 200 `initial` |
+| `change_log` rows written | 36 944 |
+| Convergence after healing | 4.0 s, every base and view equals the server |
+
+The load process itself was busy (event-loop delay p99 633 ms), so the lags are an upper bound; push p95 stayed
+≤ 0.25 s, so the `sync_state` lock was not the limit.
+
 ## Not done / would do differently
 
-## Your task
-
-See `ЗАВДАННЯ.md`.
+- An access change costs a full snapshot; targeted "drop site / add site" deltas would be cheaper.
+- Pokes are in-process, so one server instance; `LISTEN/NOTIFY` is the drop-in for several.
+- The token sits in `localStorage` (readable by XSS) and there is no CSP; no SSO (out of scope).
+- Snapshot pages are staged in client memory, and a snapshot page reads up to a page per site, which grows with
+  the number of sites (admins).
+- Deduplication ends with the 90-day `clients` row: a mutation applied just before expiry with a lost ack could
+  apply twice.
+- Same-field edits are last-writer-wins without telling the loser.
+- The ticket table is not virtualised (needed above ~1 000 tickets per site).
+- The load run used one machine and one generator process; a distributed run would measure the server alone.

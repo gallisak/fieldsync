@@ -12,10 +12,14 @@ export class EntityRepository {
   ): Promise<Change[]> {
     if (sites.length === 0) return [];
     const { rows } = await c.query<{ entity: EntityName; id: string; site_id: string; data: Row; version: string }>(
-      `SELECT entity, id, site_id, data, version FROM entities
-        WHERE site_id = ANY($1::uuid[]) AND NOT deleted
-          AND ($2::text IS NULL OR (entity, id) > ($2::text, $3::uuid))
-        ORDER BY entity, id
+      `SELECT l.* FROM unnest($1::uuid[]) AS s(site_id)
+        CROSS JOIN LATERAL (
+              SELECT entity, id, site_id, data, version FROM entities e
+               WHERE e.site_id = s.site_id AND NOT e.deleted
+                 AND ($2::text IS NULL OR (e.entity, e.id) > ($2::text, $3::uuid))
+               ORDER BY e.entity, e.id
+               LIMIT $4) l
+        ORDER BY l.entity, l.id
         LIMIT $4`,
       [sites, after?.[0] ?? null, after?.[1] ?? null, n],
     );

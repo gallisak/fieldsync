@@ -9,7 +9,8 @@
     "test": "jest",
     "test:unit": "jest --passWithNoTests --testPathIgnorePatterns integration sim",
     "test:integration": "jest integration",
-    "test:sim": "jest sim --passWithNoTests"
+    "test:sim": "jest sim --passWithNoTests",
+    "load": "node -r ./test/support/register-ts.js test/load/load.ts"
   },
   "dependencies": {
     "@fieldsync/sync-core": "*",

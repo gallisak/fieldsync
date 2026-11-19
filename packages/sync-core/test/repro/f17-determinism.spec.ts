@@ -7,22 +7,27 @@ const TICKET = '11111111-1111-4111-8111-111111111111';
 describe('F17 deterministic mutators', () => {
   afterEach(() => jest.useRealTimers());
 
-  it('produces the same ticket on every replay of the queue', () => {
-    jest.useFakeTimers({ now: new Date('2026-01-01T10:00:00Z') });
-    const client = new SyncClient({ clientId: 'c1', transport: new ScriptedTransport(), storage: new MemoryStorage() });
+  // A second client on the same storage replays the stored queue from scratch, five minutes later.
+  it('produces the same ticket on every replay of the queue', async () => {
+    jest.useFakeTimers({ now: new Date('2026-01-01T10:00:00Z'), doNotFake: ['queueMicrotask', 'nextTick'] });
+    const storage = new MemoryStorage();
+    const open = () => new SyncClient({ transport: new ScriptedTransport(), storage, env: {} });
+    const writer = open();
     try {
-      client.mutate('ticket.create', { id: TICKET, siteId: SITE, title: 'Leaking valve', description: '' });
-      const first = [...client.view().values()];
-      jest.setSystemTime(new Date('2026-01-01T10:05:00Z'));
-      const second = [...client.view().values()];
+      await writer.ready;
+      await writer.mutate('ticket.create', { id: TICKET, siteId: SITE, title: 'Leaking valve', description: '' });
+      const first = [...writer.view().values()];
 
-      expect(first).toHaveLength(1);
-      expect(second).toHaveLength(1);
-      expect(first[0].id).toBe(TICKET);
-      expect(second[0].id).toBe(TICKET);
-      expect(second[0].createdAt).toBe(first[0].createdAt);
+      jest.setSystemTime(new Date('2026-01-01T10:05:00Z'));
+      const replayer = open();
+      await replayer.ready;
+      const second = [...replayer.view().values()];
+      replayer.dispose();
+
+      expect(first).toEqual([expect.objectContaining({ id: TICKET, createdAt: '2026-01-01T10:00:00.000Z' })]);
+      expect(second).toEqual(first);
     } finally {
-      client.dispose();
+      writer.dispose();
     }
   });
 });

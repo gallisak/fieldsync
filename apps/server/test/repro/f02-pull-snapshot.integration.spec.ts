@@ -1,4 +1,5 @@
-import { DEMO, TOKENS, pull, push, seed } from '../support/api';
+import { randomUUID } from 'crypto';
+import { DEMO, TOKENS, createTicket, pull, push, seed } from '../support/api';
 import { createTestApp, describeDb, type TestApp } from '../support/pg';
 
 describeDb('F2 lastMutationId vs paged changes', () => {
@@ -47,5 +48,29 @@ describeDb('F2 lastMutationId vs paged changes', () => {
       false,
     );
     expect(page1.body.lastMutationId ?? 0).toBeLessThan(1);
+  });
+
+  it('does not split a mutation across delta pages', async () => {
+    const ticket = await createTicket(t.http, { token: TOKENS.admin, clientId: 'mover', mutationId: 1, siteId: DEMO.siteA, title: 'm' });
+    const parts = [randomUUID(), randomUUID(), randomUUID()];
+    await push(
+      t.http,
+      TOKENS.admin,
+      'mover',
+      parts.map((id, i) => ({ id: i + 2, name: 'part.add' as const, args: { id, ticketId: ticket, name: 'p', quantity: 1 } })),
+    );
+    let cursor: string | undefined;
+    for (let more = true; more; ) {
+      const res = await pull(t.http, TOKENS.admin, { cursor, limit: 500 });
+      cursor = res.body.cursor;
+      more = res.body.hasMore || res.body.mode === 'snapshot';
+    }
+
+    await push(t.http, TOKENS.admin, 'mover', [{ id: 5, name: 'ticket.move', args: { id: ticket, toSiteId: DEMO.siteB } }]);
+    const page = await pull(t.http, TOKENS.admin, { cursor, limit: 3 });
+
+    expect(page.body.mode).toBe('delta');
+    expect(page.body.changes).toHaveLength(8);
+    expect(new Set(page.body.changes.map((c: { id: string }) => c.id))).toEqual(new Set([ticket, ...parts]));
   });
 });

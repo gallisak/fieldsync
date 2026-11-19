@@ -40,6 +40,8 @@ describeDb('structured logs', () => {
     await settle();
 
     const lines = ofRequest('trace-p71');
+    expect(lines.length).toBeGreaterThan(2);
+    for (const line of lines) expect(line).toMatchObject({ userId: DEMO.techA, clientId: 'log-device' });
     const mutations = lines.filter((l) => l.msg === 'mutation');
     expect(mutations.map((l) => [l.mutationId, l.status, l.code])).toEqual([
       [1, 'applied', undefined],

@@ -49,7 +49,10 @@ describe('ticket mutators', () => {
 
   it('rejects an update for a ticket that does not exist', () => {
     const tx = new FakeTx();
-    expect(() => run('ticket.update', tx, { id: TICKET, patch: { title: 'x' } })).toThrow(MutationRejected);
+    expect(() => run('ticket.update', tx, { id: TICKET, patch: { title: 'x' } })).toThrow(
+      expect.objectContaining({ name: 'MutationRejected', code: 'NO_ACCESS' }),
+    );
+    expect(tx.rows.size).toBe(0);
   });
 
   it('moves a ticket along an allowed transition', () => {
@@ -70,7 +73,10 @@ describe('ticket mutators', () => {
 describe('part mutators', () => {
   it('does not let a quantity go below zero', () => {
     const tx = new FakeTx([['part', PART, { id: PART, quantity: 1 }]]);
-    expect(() => run('part.adjust', tx, { id: PART, delta: -2 })).toThrow(MutationRejected);
+    expect(() => run('part.adjust', tx, { id: PART, delta: -2 })).toThrow(
+      expect.objectContaining({ name: 'MutationRejected', code: 'NEGATIVE_QUANTITY' }),
+    );
+    expect(tx.get('part', PART)?.quantity).toBe(1);
   });
 
   it('adds to the quantity', () => {

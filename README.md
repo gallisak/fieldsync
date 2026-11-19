@@ -355,21 +355,21 @@ flight. After 10 minutes all go online and invariants 4–5 are checked against 
 
     docker compose up -d --build server && LOAD_SEED=1 npm run load   # LOAD_CLIENTS, LOAD_SITES, LOAD_DURATION_S
 
-Run of 2026-11-19 on an Apple M1 (8 cores, 16 GiB, macOS 26.5); server and Postgres 16 in Docker Desktop on the
-same machine.
+Run of 2026-11-19 on an Apple M1 (8 cores, 16 GiB, macOS 26.5), against the final images built from a fresh clone;
+server and Postgres 16 in Docker Desktop on the same machine.
 
 | | |
 |---|---|
-| Offline time (measured) | 18.8% |
-| Mutations | 37 291 (~62/s): applied 36 374, rejected 917, duplicate retries 53 |
-| Rejections by code | `STATUS_CONFLICT` 591, `NO_ACCESS` 307, `NEGATIVE_QUANTITY` 19; clients hold the same 917 |
-| Delivery lag, push → another client, p50 / p95 / p99 | 0.30 / 0.68 / 1.04 s |
-| Delivery lag, `mutate()` → another client (includes author offline) | 0.44 / 28.1 / 46.4 s |
+| Offline time (measured) | 18.6% |
+| Mutations | 36 707 (~61/s): applied 35 754, rejected 953, duplicate retries 80 |
+| Rejections by code | `STATUS_CONFLICT` 633, `NO_ACCESS` 297, `NEGATIVE_QUANTITY` 23; clients hold the same 953 |
+| Delivery lag, push → another client, p50 / p95 / p99 | 0.38 / 0.95 / 1.37 s |
+| Delivery lag, `mutate()` → another client (includes author offline) | 0.55 / 28.2 / 46.1 s |
 | Snapshots | 200 `initial` |
-| `change_log` rows written | 37 545 |
-| Convergence after healing | 2.8 s, every base and view equals the server |
+| `change_log` rows written | 36 944 |
+| Convergence after healing | 4.0 s, every base and view equals the server |
 
-The load process itself was busy (event-loop delay p99 462 ms), so the lags are an upper bound; push p95 stayed
+The load process itself was busy (event-loop delay p99 633 ms), so the lags are an upper bound; push p95 stayed
 ≤ 0.25 s, so the `sync_state` lock was not the limit.
 
 ## Not done / would do differently

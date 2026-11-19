@@ -33,7 +33,6 @@ export class GcService implements OnModuleInit, OnModuleDestroy {
     if (this.timer) clearInterval(this.timer);
   }
 
-  /** `null` when another run holds the lock. */
   async collect(
     cutoff: Date = new Date(Date.now() - this.config.CHANGELOG_RETENTION_SECONDS * 1000),
   ): Promise<GcResult | null> {
@@ -57,8 +56,7 @@ export class GcService implements OnModuleInit, OnModuleDestroy {
         log = (await c.query(`DELETE FROM change_log WHERE version <= $1`, [cut])).rowCount ?? 0;
         tombstones = (await c.query(`DELETE FROM entities WHERE deleted AND version <= $1`, [cut])).rowCount ?? 0;
       }
-      // Kept as long as the client row, not the log: a client offline past the log's retention must still learn
-      // why its mutation was refused, or it would drop the mutation as applied.
+      // Kept as long as the client row, not the log: an offline client must still learn why it was refused.
       const rejections = await c.query(
         `DELETE FROM mutation_rejections WHERE created_at < now() - make_interval(days => $1)`,
         [days],

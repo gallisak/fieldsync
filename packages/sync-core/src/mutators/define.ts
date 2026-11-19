@@ -24,14 +24,11 @@ export interface ScanSpec {
 }
 
 export interface MutatorCtx {
-  /** ISO timestamp. Client: when the mutation was enqueued. Server: the transaction time. */
   now: string;
 }
 
-/** State access given to a mutator. Reads are served only from rows loaded up front via reads()/scans(). */
 export interface MutatorTx {
   get(entity: EntityName, id: string): Row | undefined;
-  /** Whether the id was ever written, even if the row has since been deleted (a client knows only live rows). */
   exists(entity: EntityName, id: string): boolean;
   scan(entity: 'part', by: { ticketId: string }): Row[];
   put(entity: EntityName, id: string, row: Row): void;

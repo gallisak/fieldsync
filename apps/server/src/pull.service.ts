@@ -97,7 +97,6 @@ export class PullService {
       const last = rows[rows.length - 1];
       rows.push(...(await this.log.restOfTx(c, sites, last.txSeq, last.version)));
     }
-    // On the last page the cursor jumps to lastVersion: this snapshot holds every change up to it.
     return done(hasMore ? rows[rows.length - 1].version : state.lastVersion, rows, hasMore);
   }
 }

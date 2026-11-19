@@ -14,7 +14,6 @@ import { ChangeLogRepository, type LogRow } from '../repositories/change-log.rep
 
 const LOCK_ORDER: Record<EntityName, number> = { ticket: 0, part: 1 };
 
-/** The same answer as for a row that does not exist, so ids of other sites cannot be probed. */
 const noAccess = () => new MutationRejected('NO_ACCESS', 'Ticket is unavailable: deleted, moved, or access revoked');
 
 interface Loaded {
@@ -118,7 +117,6 @@ export class MutationExecutor {
 
     // Read in this transaction, after the row locks: a revocation committed before it is always seen.
     const sites = await this.access.accessibleSites(c, user);
-    // Sites come from the rows as stored, never from the arguments; a deleted row still belongs to its site.
     if ([...loaded.values()].some((l) => l.siteId !== undefined && !sites.has(l.siteId))) throw noAccess();
 
     const { rows: clock } = await c.query<{ now: Date }>(`SELECT transaction_timestamp() AS now`);
@@ -149,7 +147,6 @@ export class MutationExecutor {
     }
     if (entries.length === 0) return [];
 
-    // Taken after every entity row lock above, and held to COMMIT.
     const first = await this.changeLog.allocateVersions(c, entries.length);
     const logRows: LogRow[] = entries.map((e, i) => ({ ...e, version: first + i, txSeq: first }));
     await this.changeLog.insert(c, logRows);

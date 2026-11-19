@@ -8,7 +8,6 @@ export interface ClientRow {
 
 @Injectable()
 export class ClientRepository {
-  /** Creates the client row on first use and locks it: every push of one client queues on this lock (F4). */
   async lockOrCreate(c: PoolClient, clientId: string, userId: string): Promise<ClientRow> {
     await c.query(`INSERT INTO clients (client_id, user_id) VALUES ($1, $2) ON CONFLICT (client_id) DO NOTHING`, [
       clientId,

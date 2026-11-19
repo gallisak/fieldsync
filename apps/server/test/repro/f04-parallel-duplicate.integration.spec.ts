@@ -25,7 +25,6 @@ describeDb('F4 parallel duplicate push', () => {
     ]);
     expect(added.status).toBeLessThan(300);
 
-    // Holding the part row makes the race deterministic: every request is inside its transaction before any commits.
     const blocker = await t.pool.connect();
     let responses: request.Response[];
     try {

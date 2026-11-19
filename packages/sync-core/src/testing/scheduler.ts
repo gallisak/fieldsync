@@ -32,9 +32,8 @@ export class Scheduler {
       this.queue.shift();
       this.now = next.at;
       const result = next.fn();
-      // A call into a real server is waited for: nothing else happens meanwhile, so runs stay repeatable.
       if (result instanceof Promise) await result;
-      await settle(); // let every promise chain started by the event finish before the next one
+      await settle();
     }
     this.now = end;
     await settle();

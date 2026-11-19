@@ -89,7 +89,6 @@ const reason = (r: PulledRejection): Omit<PulledRejection, 'mutationId'> => ({
   ...(r.details === undefined ? {} : { details: r.details }),
 });
 
-/** Requests run one at a time, as the server's row locks serialise them. */
 export class ModelServer implements SimServer {
   lastVersion = 0;
   minRetained = 0;
@@ -219,7 +218,7 @@ export class ModelServer implements SimServer {
       this.rejections.set(key, rejection);
       result = { id: m.id, status: 'rejected', ...reason(rejection) };
     }
-    c.last = m.id; // advanced for a rejection too, so it does not block the queue
+    c.last = m.id;
     return result;
   }
 
@@ -321,7 +320,6 @@ export class ModelServer implements SimServer {
   ): Page {
     const v = 'reason' in start ? this.lastVersion : start.v;
     const after = 'reason' in start ? undefined : `${start.after[0]}/${start.after[1]}`;
-    // `entity/id` keys sort as (entity, id) does: `/` sorts below every letter of an entity name.
     const rows = [...this.entities]
       .filter(([key, e]) => e.row && sites.has(e.siteId) && (after === undefined || key > after))
       .sort(([a], [b]) => (a < b ? -1 : 1))

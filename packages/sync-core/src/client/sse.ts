@@ -1,7 +1,6 @@
 import { PROTOCOL, PROTOCOL_HEADER } from '../protocol/version';
 import { TransportError } from '../transport/errors';
 
-/** The server sends a heartbeat comment every 25 s; a stream silent for 2.5 of those is presumed dead. */
 export const STREAM_WATCHDOG_MS = 62_500;
 
 export interface PokeStreamOptions {

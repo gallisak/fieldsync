@@ -15,7 +15,6 @@ export const addPart = defineMutator({
   },
 });
 
-/** A delta rather than an absolute value, so concurrent adjustments commute. */
 export const adjustPart = defineMutator({
   args: adjustPartArgs,
   reads: (a) => [{ entity: 'part', id: a.id }],

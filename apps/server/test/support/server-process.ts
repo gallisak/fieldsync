@@ -21,7 +21,6 @@ function freePort(): Promise<number> {
   });
 }
 
-/** A real process, because inside Jest an uncaught exception is not fatal. */
 export async function startServerProcess(env: Record<string, string>): Promise<ServerProcess> {
   const port = await freePort();
   const child: ChildProcess = spawn(

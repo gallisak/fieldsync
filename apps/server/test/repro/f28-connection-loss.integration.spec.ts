@@ -57,7 +57,6 @@ describeDb('F28 lost database connection', () => {
   });
 
   it('retries a push whose connection is dropped mid-transaction and applies it once', async () => {
-    // Hold the version counter so the push stops inside its transaction, after its writes.
     const blocker = await db.connect();
     try {
       await blocker.query('BEGIN');
@@ -72,7 +71,7 @@ describeDb('F28 lost database connection', () => {
           mutations: [{ id: 1, name: 'ticket.create', args: { id: ticketId, siteId: DEMO.siteA, title: 'F28', description: '' } }],
         }),
       });
-      pushing.catch(() => undefined); // awaited below; a dead server must not also count as an unhandled rejection
+      pushing.catch(() => undefined);
       const waiting = () => serverBackends(`wait_event_type = 'Lock'`);
       await until(async () => (await waiting()).length === 1, 'the push to wait inside its transaction');
       const [first] = await waiting();

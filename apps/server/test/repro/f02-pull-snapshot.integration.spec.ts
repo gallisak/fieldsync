@@ -26,7 +26,6 @@ describeDb('F2 lastMutationId vs paged changes', () => {
   afterAll(() => t?.close());
 
   it('does not acknowledge a mutation on a page that lacks its changes', async () => {
-    // The highest id, so the row is on the last page by key (snapshot) as well as by version (delta).
     const created = await push(t.http, TOKENS.admin, 'c1', [
       {
         id: 1,

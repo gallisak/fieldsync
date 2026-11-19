@@ -18,7 +18,6 @@ interface ServerDump {
   rejections: Record<string, string>;
 }
 
-/** Timestamps differ by construction: the model's are virtual time, Postgres uses the transaction time. */
 const untimed = (row: Row | null | undefined): Row | null =>
   row ? Object.fromEntries(Object.entries(row).filter(([k]) => k !== 'createdAt' && k !== 'updatedAt')) : null;
 

@@ -10,7 +10,6 @@ interface LegacyBlob {
 export class LocalStorageSyncStorage extends WholeStateStorage {
   constructor(
     private readonly key: string,
-    /** Where the starter web app kept its client id; adopted so the server keeps recognising this client. */
     private readonly legacyClientIdKey = 'fs_client_id',
   ) {
     super();

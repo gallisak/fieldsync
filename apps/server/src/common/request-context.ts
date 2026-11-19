@@ -11,7 +11,6 @@ export interface RequestContext {
 
 export const requestContext = new AsyncLocalStorage<RequestContext>();
 
-// The id goes into every log line, so a caller's value is taken only when it is a plain token.
 const CALLER_ID = /^[\w.:-]{1,64}$/;
 
 export function requestIdOf(req: IncomingMessage & { id?: unknown }): string {

@@ -163,7 +163,6 @@ describeDb('access matrix', () => {
         if (foreign) await newTicket(foreign);
         await newTicket(caller.sites[0]);
         await until(async () => pokes() >= 1, 'a poke for its own site');
-        // Both pokes would have been written before the second push returned; give them time to arrive.
         await new Promise((resolve) => setTimeout(resolve, 100));
         expect(pokes()).toBe(1);
       } finally {

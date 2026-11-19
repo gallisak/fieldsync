@@ -90,7 +90,6 @@ export const emptyPull = (lastMutationId: number | null = 0): PullResponse => ({
   rejections: [],
 });
 
-/** Lets pending promise chains run. Microtask-only, so it also works under fake timers. */
 export async function flush(rounds = 20): Promise<void> {
   for (let i = 0; i < rounds; i++) await Promise.resolve();
 }

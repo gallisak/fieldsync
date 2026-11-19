@@ -81,7 +81,6 @@ export class ChangeLogRepository {
     return rows.map(fromDb);
   }
 
-  /** Bounded by the next row of another transaction, so the scan stays on the primary key (no index on tx_seq). */
   async restOfTx(c: PoolClient, sites: string[], txSeq: number, version: number): Promise<StoredLogRow[]> {
     const { rows } = await c.query<DbLogRow>(
       `SELECT ${COLUMNS} FROM change_log

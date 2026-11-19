@@ -78,7 +78,6 @@ export class PushService {
         await this.rejections.insert(c, clientId, m.id, rejection);
         result = { id: m.id, status: 'rejected', ...rejection };
       }
-      // Advanced for rejected mutations too: a rejection must not block the mutations queued behind it (F5).
       await this.clients.setLastMutationId(c, clientId, m.id);
       return { result, sites };
     });

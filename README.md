@@ -42,8 +42,8 @@ setup is for development, not for exposure.
   coordination, simulation kit. Knows nothing of React, Nest or Postgres.
 - `apps/server`: NestJS + raw `pg`. Controller → service → repository. Push, pull, SSE pokes, admin access, GC,
   logs and `/metrics`.
-- `apps/web`: Next.js 14, Feature-Sliced Design, shadcn/ui. Reads only the local view, writes only through
-  `client.mutate`.
+- `apps/web`: Next.js 14, Feature-Sliced Design, shadcn/ui. Reads tickets and parts only from the local view and
+  writes only through `client.mutate`; the user's sites come from `/me`.
 
 The client shows `view = base + queued mutations replayed`. Push sends the queue; pull brings changes into
 `base`; a mutation leaves the queue only when the pull that carries its effect is committed.
@@ -73,9 +73,10 @@ sequenceDiagram
 ```
 
 Protocol v2: header `x-fieldsync-protocol: 2` on every sync, stream and admin request; an older or missing one is
-`426 UPGRADE_REQUIRED`, a newer one `503` (the app shipped before the server: wait, do not ask to update). Cursor is opaque
-`base64url(JSON)` with a site fingerprint; a malformed one is `400`. Pull answers `delta` or a paged `snapshot`
-with `reason` (`initial`, `access_changed`, `cursor_expired`, `cursor_ahead`). Errors are `{ code, message, details? }`.
+`426 UPGRADE_REQUIRED`, a newer one `503` (the app shipped before the server: wait, do not ask to update). Cursor
+is opaque `base64url(JSON)` with a fingerprint of the user's sites and the database epoch; a malformed one is
+`400`. Pull answers `delta` or a paged `snapshot` with `reason` (`initial`, `access_changed`, `cursor_expired`,
+`cursor_ahead`). Errors are `{ code, message, details? }`.
 
 ## Guarantee model
 
@@ -94,8 +95,9 @@ with `reason` (`initial`, `access_changed`, `cursor_expired`, `cursor_ahead`). E
 
 ## Observability
 
-- Logs: JSON (pino); every line carries `requestId`, `userId`, `clientId`, `mutationId`; one `mutation` line per
-  mutation with status, code and duration. `Authorization`, cookies and URL tokens are redacted.
+- Logs: JSON (pino). Every line of a request carries `requestId`, and once authenticated `userId` and the
+  `clientId` it names; one `mutation` line per mutation adds `mutationId`, status, code and duration.
+  `Authorization`, cookies and URL tokens are redacted; health checks and scrapes are not logged.
 - `/metrics` (Prometheus, optional `METRICS_TOKEN`): `fieldsync_mutations_total{status}`,
   `fieldsync_mutations_rejected_total{code}`, `fieldsync_delivery_lag_seconds`, `fieldsync_active_streams`,
   `fieldsync_change_log_rows`, `fieldsync_full_resyncs_total{reason}`, push/pull durations, GC deletions.
@@ -108,7 +110,7 @@ watermark; an advisory lock; one counter row. *Chosen:* `UPDATE sync_state … R
 every write. *Why:* commit order without tying cursors to transaction ids. Idempotency: client row `FOR UPDATE`
 + per-mutation transaction + `SAVEPOINT` + stored rejections (a unique constraint alone gives a 500, not
 `duplicate`; serializable relies on retries). *Limits:* the tail of every write is serialised: fine at the
-measured 62 mutations/s; batching or the watermark is the escape hatch.
+measured 61 mutations/s; batching or the watermark is the escape hatch.
 
 **2. Deterministic simulation.** *Options:* property tests with fast-check; an own harness. *Chosen:* own
 harness: virtual clock, seeded network model (loss, duplicates, reorder, delay, cut batches), crashes, tabs,
@@ -119,10 +121,11 @@ Postgres runs are serialised, so real races are covered by the concurrency integ
 **3. Offline-first client.** *Chosen:* transactional storage (IndexedDB via `idb`) that owns the queue and the
 id counter; one leader tab by Web Lock with `BroadcastChannel` (a leader blocked by `426`/`401` hands it on);
 full-jitter backoff; status as facts mapped to one badge: offline, server unavailable, syncing, waiting, then
-rejected (it also has its own inbox button). Notifications: SSE over `fetch` with the `Authorization` header. *Options:* `SharedWorker` (missing on
-Chrome for Android), per-tab client ids (more server clients, still racing storage); `EventSource` + URL ticket
-(an extra endpoint and state), WebSocket (two-way protocol for one-way, payload-free pokes). *Limits:* without
-IndexedDB the client falls back to memory with a visible warning.
+rejected (it also has its own inbox button). Notifications: SSE over `fetch` with the `Authorization` header.
+*Options:* `SharedWorker` (missing on Chrome for Android), per-tab client ids (more server clients, still racing
+storage); `EventSource` + URL ticket (an extra endpoint and state), WebSocket (two-way protocol for one-way,
+payload-free pokes). *Limits:* without IndexedDB the client falls back to memory with a visible warning; a local
+database written by a newer app blocks with "update" instead.
 
 **4. Partial replication and access.** *Chosen:* authorize every write on the sites stored with the loaded rows,
 read inside the transaction; the cursor carries a fingerprint of the user's sites, and a different
@@ -145,16 +148,17 @@ pages (holds back vacuum). *Limits:* the client stages snapshot pages in memory 
 **7. Schema evolution.** *Chosen:* protocol version on every request, `426` with `{ min, current }`; the client
 blocks with its queue intact. IndexedDB migrations run in order inside the upgrade transaction, keep data (add,
 or copy into a new store: v3 re-keys rejections by their own id), may drop base only together with the cursor,
-and never touch the queue. *Options:* a start-up handshake (an app
-open across a deploy keeps the old protocol). *Limits:* none beyond a header per request.
+and never touch the queue. *Options:* a start-up handshake (an app open across a deploy keeps the old
+protocol). *Limits:* none beyond a header per request.
 
 **Persistence.** Raw `pg`, not an ORM: correctness lives in explicit `FOR UPDATE`, savepoints, isolation levels
 and lock order (client → ticket → parts → `sync_state`), which an ORM would hide.
 
 ## Found issues
 
-Each is reproduced by a test committed as `it.failing` before the fix, then switched to `it`. Server tests are
-in `apps/server/test/repro/`, client tests in `packages/sync-core/test/repro/`.
+F1–F23, F28 and F29 are each reproduced by a test committed as `it.failing` before the fix, then switched to
+`it`; server tests are in `apps/server/test/repro/`, client tests in `packages/sync-core/test/repro/`. F24–F27
+are tests that could not fail: each entry names the bug they let through on the starter.
 
 **F1 · ordering: versions visible out of commit order.** *What:* `bigserial` versions are taken at insert,
 visible at commit; a pull between two commits moves the cursor past the later-committing one. *Risk:* silent
@@ -243,8 +247,9 @@ form filled once. *Risk:* the later sync silently restores the other field. *Rep
 *Fix:* patch semantics, the form sends only changed fields (record 5). *Alternatives:* optimistic versions, CRDT.
 
 **F19 · deleting a ticket leaves parts.** *What:* only the ticket row was deleted. *Risk:* orphan parts
-replicated forever. *Reproduce:* `f19-orphan-parts`. *Fix:* mutators declare `scans()`;
-delete and move cover the parts. *Alternatives:* `ON DELETE CASCADE` (never reaches the log or the client).
+replicated forever. *Reproduce:* `f19-orphan-parts`. *Fix:* mutators declare `scans()`; delete and move cover
+the parts; migration `006` deletes, through the log, the orphans the starter left. *Alternatives:*
+`ON DELETE CASCADE` (never reaches the log or the client).
 
 **F20 · stream subscribers never released.** *What:* no removal on close, no backpressure, no heartbeat. *Risk:*
 unbounded memory, writes to dead sockets. *Reproduce:* `f20-stream-leak` (500 cycles → gauge 0; 200 000 pokes to
@@ -337,9 +342,9 @@ offline. The network loses, duplicates, cuts and delays (≤ 400 ms) requests an
 
 Invariants. After every step, for every tab: (1) it holds no row outside the sites its user had when the server
 issued the tab's cursor; (2) no mutation applied twice; (3) a cursor never goes back except through a snapshot,
-and every cursor was issued by the server. At the end, after healing: (4) every tab's
-base equals the server's rows for its user; (5) nothing pending, view = base; (6) every mutation applied
-xor rejected with a reason the client knows; (7) part quantity = initial + applied deltas.
+and every cursor was issued by the server. At the end, after healing: (4) every tab's base equals the server's
+rows for its user; (5) nothing pending, view = base; (6) every mutation applied xor rejected with a reason the
+client knows; (7) part quantity = initial + applied deltas.
 
     npm run sim                              # regression seeds, seeds 1–500 × 400 steps, then the two runs below (~75 s)
     SIM_SEED=1234 SIM_STEPS=57 npm run sim   # one seed, optionally shortened; SIM_SEEDS=50 for seeds 1–50
@@ -373,8 +378,8 @@ flight. After 10 minutes all go online and invariants 4–5 are checked against 
 
     docker compose up -d --build server && LOAD_SEED=1 npm run load   # LOAD_CLIENTS, LOAD_SITES, LOAD_DURATION_S
 
-Run of 2026-11-19 on an Apple M1 (8 cores, 16 GiB, macOS 26.5), against the final images built from a fresh clone;
-server and Postgres 16 in Docker Desktop on the same machine.
+Run of 2026-11-19 on an Apple M1 (8 cores, 16 GiB, macOS 26.5), against images built from a fresh clone of
+`f3a4a0e`; server and Postgres 16 in Docker Desktop on the same machine.
 
 | | |
 |---|---|

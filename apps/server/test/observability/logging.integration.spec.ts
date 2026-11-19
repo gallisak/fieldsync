@@ -1,6 +1,6 @@
 import { HttpTransport } from '@fieldsync/sync-core';
 import { randomUUID } from 'crypto';
-import { DEMO, TOKENS, listen, push, seed } from '../support/api';
+import { DEMO, TOKENS, listen, pull, push, seed } from '../support/api';
 import { createTestApp, describeDb, type TestApp } from '../support/pg';
 
 type Line = Record<string, unknown> & { req?: { id?: string; headers?: Record<string, string> } };
@@ -55,12 +55,22 @@ describeDb('structured logs', () => {
     }
     expect(lines.find((l) => l.msg === 'request completed')).toMatchObject({
       userId: DEMO.techA,
+      clientId: 'log-device',
       req: { id: 'trace-p71', headers: { authorization: '[Redacted]' } },
       res: { statusCode: 201 },
     });
     for (const token of Object.values(TOKENS)) {
       expect(logs.filter((l) => JSON.stringify(l).includes(token))).toEqual([]);
     }
+  });
+
+  it('tags a pull with its user and client', async () => {
+    await pull(t.http, TOKENS.techA, { clientId: 'log-device' }).set('x-request-id', 'trace-pull');
+    await settle();
+    expect(ofRequest('trace-pull').find((l) => l.msg === 'request completed')).toMatchObject({
+      userId: DEMO.techA,
+      clientId: 'log-device',
+    });
   });
 
   it('takes the request id from the client transport, a new one per request', async () => {

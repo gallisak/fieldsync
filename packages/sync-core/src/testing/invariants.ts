@@ -26,7 +26,9 @@ export class SimulationFailure extends Error {
   }
 }
 
-export const baseRows = (client: SyncClient): Row[] => [...client[CLIENT_INTERNALS]().base.values()];
+export const baseOf = (client: SyncClient): ReadonlyMap<string, Row> => client[CLIENT_INTERNALS]().base;
+
+export const baseRows = (client: SyncClient): Row[] => [...baseOf(client).values()];
 
 export const cursorOf = (client: SyncClient): Cursor | null => client[CLIENT_INTERNALS]().cursor;
 

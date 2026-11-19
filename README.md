@@ -976,6 +976,59 @@ with their fixes reverted; the old seeds no longer failed.
 
 ## Load results
 
+`apps/server/test/load/load.ts` runs 200 real `SyncClient`s in one Node process against a running server: real
+`HttpTransport` and poke stream, `MemoryStorage`, one technician per client, spread over 10 new sites created
+for the run. Each client issues a random mutation every 1–5 s, picked from its own view (create, title edit,
+status change, part add, part adjust, delete). Each client has its own network that goes down for random
+5–60 s windows, about 20% of the time; going down fails every request, including the ones in flight and the
+stream. After 10 minutes every client comes back online. The run then waits until nothing is pending and
+checks simulator invariant 4: every client's base, and its view, equals the server's live rows of its site.
+The PRNG is seeded per client (`LOAD_SEED`), so each client makes the same choices. Real time and the network
+decide the interleaving, so two runs never match exactly.
+
+    docker compose up -d --build server     # or a local server; the script reads DATABASE_URL and PORT from .env
+    LOAD_SEED=1 npm run load                # LOAD_CLIENTS, LOAD_SITES, LOAD_DURATION_S override the defaults
+
+Two delivery lags are measured in the load process. Both run until the first other client of the same site has
+the change in its base. Only creates, title edits and part adds count, because their result can be recognised
+in another client's base:
+
+- **from `mutate()`**: includes the time the author's device spent offline before it could push;
+- **from the push that carried it**: what the server and the other clients add.
+
+The server's `fieldsync_delivery_lag_seconds` is different: it measures from commit until each other client
+pulls the change, so clients catching up after an offline window dominate its tail.
+
+Run of 2026-11-19, seed 1. The server (`docker compose`, one Nest process, pool of 20) and Postgres 16 ran in
+Docker Desktop on the same machine as the load process: macOS 26.5, Apple M1, 8 cores, 16 GiB,
+Node 24.15.
+
+| | |
+|---|---|
+| Clients / sites / duration | 200 / 10 / 600 s |
+| Time offline (measured) | 18.8% |
+| Mutations issued (queued) | 37 291, about 62 per second |
+| Refused on the device before queueing | `NEGATIVE_QUANTITY` 737 |
+| Server results | applied 36 374, rejected 917, duplicate 53 (retries after a lost response) |
+| Rejections by code | `STATUS_CONFLICT` 591, `NO_ACCESS` 307 (target deleted by someone else), `NEGATIVE_QUANTITY` 19 |
+| Rejections held by the clients after healing | 917, the same as the server |
+| Snapshots | 200, all `initial` |
+| Delivery lag from `mutate()`, p50 / p95 / p99 | 0.44 s / 28.1 s / 46.4 s |
+| Delivery lag from the push, p50 / p95 / p99 | 0.30 s / 0.68 s / 1.04 s |
+| Server `fieldsync_delivery_lag_seconds` p50 / p95 / p99 (bucket bounds) | ≤ 0.25 s / ≤ 60 s / ≤ 60 s |
+| Push duration p95 (server, bucket bound) | ≤ 0.25 s |
+| `change_log` rows written by the run | 37 545 (38 662 in the table, equal to `fieldsync_change_log_rows`) |
+| Convergence after healing | 2.8 s, every base and view equals the server |
+
+Every queued mutation was answered: applied plus rejected equals issued. 187 measured changes were overwritten
+or deleted before another client pulled them, so they have no lag. The run counts its own snapshots; the
+server's counter also showed one `access_changed` from other traffic during the run.
+
+Limits of the measurement. The load process was busy itself: its event-loop delay was p99 462 ms (max 920 ms),
+so part of the push lag is the clients' own scheduling, and the numbers are an upper bound for the server.
+The `sync_state` row lock did not become the limit at about 62 mutations per second (push p95 ≤ 0.25 s). One
+machine runs everything, so this says nothing about network latency or a server under its own CPU.
+
 ## Not done / would do differently
 
 ## Your task

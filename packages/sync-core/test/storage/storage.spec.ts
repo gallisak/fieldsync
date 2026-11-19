@@ -415,6 +415,33 @@ describe('IdbStorage specifics', () => {
     second.close();
   });
 
+  it('blocks with "upgrade" instead of using memory quietly when the database is newer than this app', async () => {
+    jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const db = name();
+    (await openRaw(db, LOCAL_SCHEMA + 1)).close();
+    const client = new SyncClient({ transport: new ScriptedTransport(), storage: new IdbStorage(db, indexedDB, { legacy: null }), env: {} });
+    await client.ready;
+    expect(client.facts).toMatchObject({ storage: 'memory', blocked: 'upgrade' });
+    client.dispose();
+    jest.restoreAllMocks();
+  });
+
+  it('does not open again once closed', async () => {
+    const s = new IdbStorage(name(), indexedDB, { legacy: null });
+    await s.load();
+    s.close();
+    await expect(s.load()).rejects.toThrow(/closed/);
+  });
+
+  it('stamps a rejection with the time the pull was received', async () => {
+    const s = new IdbStorage(name(), indexedDB, { legacy: null });
+    await s.enqueue(mutation('a'));
+    const receivedAt = '2030-05-05T05:05:05.000Z';
+    await s.commitPull({ ...page(null, 'c1'), receivedAt, lastMutationId: 1, rejections: [{ mutationId: 1, code: 'NO_ACCESS', message: 'gone' }] });
+    expect((await s.load()).rejections[0].at).toBe(receivedAt);
+    s.close();
+  });
+
   it('closes when a newer app version upgrades the database, and the client blocks with "upgrade"', async () => {
     const db = name();
     const storage = new IdbStorage(db, indexedDB, { legacy: null });

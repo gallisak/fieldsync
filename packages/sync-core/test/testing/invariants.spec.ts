@@ -77,12 +77,13 @@ describe('simulation invariants', () => {
     const d: Device = {
       index: 0,
       user: TECH,
-      storage,
+      storage: () => storage,
       hub: new MemoryTabHub(),
       tabs: [client],
       issued: ['c1/1', 'c1/2', 'c1/3'],
-      sitesAtLastPull: new Set([A]),
-      lastCursorVersion: 0,
+      rejected: new Set(rejected.map((id) => `c1/${id}`)),
+      sitesOf: () => new Set([A]),
+      cursorVersions: new WeakMap(),
       snapshotSinceLastCheck: false,
     };
     return d;
@@ -98,14 +99,14 @@ describe('simulation invariants', () => {
   it('name the seed, the step and the invariant, with the last 30 steps', async () => {
     const server = model();
     const d = await device(server.liveRows());
-    d.sitesAtLastPull = new Set();
+    d.sitesOf = () => new Set();
     let message = '';
     try {
       checkSafety(server, [d], AT);
     } catch (err) {
       message = (err as Error).message;
     }
-    expect(message).toMatch(/^seed 7, step 3: invariant 1 violated: device 0 holds /);
+    expect(message).toMatch(/^seed 7, step 3: invariant 1 violated: device 0 tab 0 holds /);
     expect(message).toMatch(/^line 39$/m);
     expect(message).toMatch(/^line 10$/m);
     expect(message).not.toMatch(/^line 9$/m);
@@ -114,7 +115,7 @@ describe('simulation invariants', () => {
   it('1: a row of a site the user did not have at the last pull', async () => {
     const server = model();
     const d = await device(server.liveRows());
-    d.sitesAtLastPull = new Set([B]);
+    d.sitesOf = () => new Set([B]);
     expect(violated(() => checkSafety(server, [d], AT))).toBe(1);
   });
 
@@ -128,11 +129,29 @@ describe('simulation invariants', () => {
   it('3: a cursor going backwards, unless a snapshot came in between', async () => {
     const server = model();
     const d = await device(server.liveRows());
-    d.lastCursorVersion = 9;
+    d.cursorVersions.set(d.tabs[0], 9);
     expect(violated(() => checkSafety(server, [d], AT))).toBe(3);
     d.snapshotSinceLastCheck = true;
     expect(violated(() => checkSafety(server, [d], AT))).toBe('none');
-    expect(d.lastCursorVersion).toBe(5);
+    expect(d.cursorVersions.get(d.tabs[0])).toBe(5);
+  });
+
+  it('3: a pull answered with a cursor the server never issued', async () => {
+    const server = model();
+    const d = await device(server.liveRows());
+    d.violation = 'a pull answered with a cursor the server never issued: x';
+    expect(violated(() => checkSafety(server, [d], AT))).toBe(3);
+  });
+
+  it('1 and 3 look at every tab, not only the first', async () => {
+    const server = model();
+    const d = await device(server.liveRows());
+    const second = new SyncClient({ transport: new ScriptedTransport(), storage: d.storage(), env: {} });
+    clients.push(second);
+    await second.ready;
+    d.tabs.push(second);
+    d.cursorVersions.set(second, 9);
+    expect(violated(() => checkSafety(server, [d], AT))).toBe(3);
   });
 
   it('4: a base that differs from the server', async () => {

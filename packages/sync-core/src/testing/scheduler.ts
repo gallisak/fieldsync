@@ -6,6 +6,10 @@ export const settle = async (): Promise<void> => {
 
 export class Scheduler {
   now = 0;
+
+  /** `flush` lets work outside the virtual clock finish between steps, such as IndexedDB requests. */
+  constructor(readonly flush: () => Promise<void> = settle) {}
+
   private seq = 0;
   private queue: { at: number; id: number; fn: () => unknown }[] = [];
 
@@ -33,9 +37,9 @@ export class Scheduler {
       this.now = next.at;
       const result = next.fn();
       if (result instanceof Promise) await result;
-      await settle();
+      await this.flush();
     }
     this.now = end;
-    await settle();
+    await this.flush();
   }
 }

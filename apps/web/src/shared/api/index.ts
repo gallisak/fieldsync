@@ -1,4 +1,4 @@
-export { fetchMe, type Me } from './http/me';
+export { fetchMe } from './http/me';
 export {
   createSyncClient,
   localDatabaseName,

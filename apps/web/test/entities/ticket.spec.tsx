@@ -74,20 +74,18 @@ describe('ticket UI', () => {
             ticket={ticket(T1, new Date().toISOString(), { title: 'Broken pump', status: 'in_progress' })}
             siteName="North yard"
             unsynced={unsynced}
-            actions={<button>Act</button>}
           />
         </tbody>
       </table>,
     );
 
-  it('renders a row linking to the ticket, with its status, site, age and actions', () => {
+  it('renders a row linking to the ticket, with its status, site and age', () => {
     const html = row(false);
     expect(html).toContain(`href="/tickets/${T1}"`);
     expect(html).toContain('Broken pump');
     expect(html).toContain('In progress');
     expect(html).toContain('North yard');
     expect(html).toContain('just now');
-    expect(html).toContain('<button>Act</button>');
     expect(html).not.toContain('Not synced');
   });
 

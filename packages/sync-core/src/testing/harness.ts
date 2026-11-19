@@ -1,8 +1,8 @@
 import { SyncClient } from '../client/sync-client';
 import { ALLOWED_TRANSITIONS, MutationRejected } from '../mutators';
-import type { MutatorName, PullResponse, Row, TicketStatus } from '../protocol/types';
+import type { Cursor, MutatorName, PullResponse, Row, TicketStatus } from '../protocol/types';
 import { MemoryStorage } from '../storage/memory';
-import type { StoredMutation } from '../storage/types';
+import type { PersistedState, PullCommit, StoredMutation, SyncStorage } from '../storage/types';
 import { MemoryTabHub } from '../tabs/memory';
 import type { Transport } from '../transport/http';
 import { checkConvergence, checkSafety } from './invariants';
@@ -17,8 +17,19 @@ export interface SimConfig {
   steps: number;
   clients: number;
   faults: Faults;
-  flags: { crash: boolean; tabs: boolean; access: boolean; gc: boolean };
+  /** `forget`: the server drops a quiet client's row, so the client must start over under a new id. */
+  flags: { crash: boolean; tabs: boolean; access: boolean; gc: boolean; forget?: boolean };
 }
+
+export interface SimOptions {
+  /**
+   * Defaults to memory. Called once per tab, like a browser tab opening its own connection: the same `name` for
+   * every tab of a device, a new one for every device and run. Such a storage never sees `forget`.
+   */
+  storage?: (name: string, idGen: () => string) => SyncStorage;
+}
+
+let runs = 0;
 
 export interface SimReport {
   applied: number;
@@ -35,13 +46,17 @@ export interface World {
 export interface Device {
   index: number;
   user: AuthUser;
-  storage: MemoryStorage;
+  storage: () => SyncStorage;
   hub: MemoryTabHub;
   tabs: SyncClient[];
+  /** `clientId/mutationId` of every stored mutation, under the id it is sent with. */
   issued: string[];
-  sitesAtLastPull: Set<string>;
-  lastCursorVersion: number;
+  rejected: Set<string>;
+  /** The user's sites when the server issued this cursor: what a tab holding it may hold. */
+  sitesOf(cursor: Cursor): Set<string> | undefined;
+  cursorVersions: WeakMap<SyncClient, number>;
   snapshotSinceLastCheck: boolean;
+  violation?: string;
 }
 
 export type Action =
@@ -53,7 +68,8 @@ export type Action =
   | { kind: 'close-tab'; device: number; tab: number }
   | { kind: 'grant' | 'revoke'; userId: string; siteId: string }
   | { kind: 'gc'; cut: number }
-  | { kind: 'long-offline'; device: number };
+  | { kind: 'long-offline'; device: number }
+  | { kind: 'forget'; device: number };
 
 interface Sim {
   rng: () => number;
@@ -67,18 +83,99 @@ interface Sim {
 
 const STATUSES: TicketStatus[] = ['open', 'in_progress', 'done', 'cancelled'];
 
+interface Ledger {
+  issued: string[];
+  rejected: Set<string>;
+}
+
+const keyOf = (clientId: string | undefined, id: number) => `${clientId}/${id}`;
+
+// Reads its state synchronously around each call, so it adds no step to the interleaving it observes.
 class DeviceStorage extends MemoryStorage {
   constructor(
     idGen: () => string,
-    private readonly onStored: (key: string) => void,
+    private readonly ledger: Ledger,
   ) {
     super({ idGen });
   }
 
   override async enqueue(m: Omit<StoredMutation, 'id'>): Promise<StoredMutation> {
     const stored = await super.enqueue(m);
-    this.onStored(`${this.read()?.clientId}/${stored.id}`);
+    this.ledger.issued.push(keyOf(this.read()?.clientId, stored.id));
     return stored;
+  }
+
+  override commitPull(c: PullCommit): Promise<boolean> {
+    const before = this.read();
+    const result = super.commitPull(c);
+    const known = new Set(before?.rejections.map((r) => r.id));
+    for (const r of this.read()?.rejections ?? []) {
+      if (!known.has(r.id)) this.ledger.rejected.add(keyOf(before?.clientId, r.mutation.id));
+    }
+    return result;
+  }
+
+  override resetClient(): Promise<PersistedState> {
+    const before = this.read();
+    const result = super.resetClient();
+    const after = this.read();
+    before?.pending.forEach((m, i) => {
+      const at = this.ledger.issued.indexOf(keyOf(before.clientId, m.id));
+      if (at >= 0) this.ledger.issued[at] = keyOf(after?.clientId, after?.pending[i].id ?? 0);
+    });
+    return result;
+  }
+}
+
+class LedgerStorage implements SyncStorage {
+  private clientId?: string;
+
+  constructor(
+    private readonly inner: SyncStorage,
+    private readonly ledger: Ledger,
+  ) {}
+
+  async load(): Promise<PersistedState> {
+    const state = await this.inner.load();
+    this.clientId = state.clientId;
+    return state;
+  }
+
+  async enqueue(m: Omit<StoredMutation, 'id'>): Promise<StoredMutation> {
+    const stored = await this.inner.enqueue(m);
+    this.clientId ??= (await this.inner.load()).clientId;
+    this.ledger.issued.push(keyOf(this.clientId, stored.id));
+    return stored;
+  }
+
+  async commitPull(c: PullCommit): Promise<boolean> {
+    const before = await this.inner.load();
+    const ok = await this.inner.commitPull(c);
+    if (ok && c.lastMutationId !== null) {
+      const pending = new Set(before.pending.map((m) => m.id));
+      for (const r of c.rejections) {
+        if (r.mutationId <= c.lastMutationId && pending.has(r.mutationId)) {
+          this.ledger.rejected.add(keyOf(before.clientId, r.mutationId));
+        }
+      }
+    }
+    return ok;
+  }
+
+  dismissRejection(id: number): Promise<void> {
+    return this.inner.dismissRejection(id);
+  }
+
+  resetClient(): Promise<PersistedState> {
+    throw new Error('the simulation resets clients only on memory storage');
+  }
+
+  onVersionChange(listener: () => void): () => void {
+    return this.inner.onVersionChange?.(listener) ?? (() => undefined);
+  }
+
+  close(): void {
+    this.inner.close();
   }
 }
 
@@ -207,7 +304,16 @@ const ACTIONS: { weight: number; flag?: keyof SimConfig['flags']; draw(sim: Sim)
   { weight: 3, flag: 'access', draw: drawMove },
   { weight: 3, flag: 'gc', draw: (sim) => ({ kind: 'gc', cut: sim.server.lastVersion - int(sim.rng, 20) }) },
   { weight: 3, flag: 'gc', draw: (sim) => ({ kind: 'long-offline', device: int(sim.rng, sim.devices.length) }) },
+  { weight: 3, flag: 'forget', draw: drawForget },
 ];
+
+// Only a client with nothing in flight: forgetting one with an unacknowledged push applies it twice, the
+// documented end of deduplication when the client row expires.
+function drawForget(sim: Sim): Action | undefined {
+  if (!sim.server.forgetClient) return undefined;
+  const quiet = sim.devices.filter((d) => d.tabs.length > 0 && d.tabs.every((t) => t.pendingCount === 0));
+  return quiet.length ? { kind: 'forget', device: pick(sim.rng, quiet).index } : undefined;
+}
 
 function pickAction(sim: Sim, flags: SimConfig['flags']): Action {
   const enabled = ACTIONS.filter((a) => !a.flag || flags[a.flag]);
@@ -244,14 +350,18 @@ async function perform(a: Action, sim: Sim): Promise<void> {
     case 'close-tab':
       return devices[a.device].tabs.splice(a.tab, 1)[0].dispose();
     case 'grant':
-      await settle();
+      await s.flush();
       return server.grant(a.userId, a.siteId);
     case 'revoke':
-      await settle();
+      await s.flush();
       return server.revoke(a.userId, a.siteId);
     case 'gc':
-      await settle();
+      await s.flush();
       return server.gc(a.cut);
+    case 'forget':
+      await s.flush();
+      if (devices[a.device].tabs.some((t) => t.pendingCount > 0)) return;
+      return server.forgetClient?.(devices[a.device].tabs[0].clientId);
     case 'long-offline':
       net.setOffline(a.device, true);
       await s.advance(60_000);
@@ -263,12 +373,21 @@ async function perform(a: Action, sim: Sim): Promise<void> {
 
 const PAGE_LIMIT = 3;
 
+const flushTasks = async (): Promise<void> => {
+  for (let i = 0; i < 20; i++) {
+    await settle();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+};
+
 export async function runSimulation(
   cfg: SimConfig,
   makeServer: (clock: () => number) => SimServer = (clock) => new ModelServer(clock),
+  opts: SimOptions = {},
 ): Promise<SimReport> {
   const rng = mulberry32(cfg.seed);
-  const s = new Scheduler();
+  // IndexedDB requests finish on macrotasks, which a microtask-only settle would never wait for.
+  const s = new Scheduler(opts.storage ? flushTasks : settle);
   const server = makeServer(() => s.now);
   const world = await seedWorld(rng, server);
   const served = new Map<string, Set<string>>();
@@ -292,15 +411,16 @@ export async function runSimulation(
       pull: async (q, signal) => {
         const res = await network.pull({ ...q, limit: PAGE_LIMIT }, signal);
         const sites = served.get(res.cursor);
-        if (!sites) throw new Error(`a pull answered with a cursor the server never issued: ${res.cursor}`);
-        if (res.mode === 'delta' || !res.hasMore) d.sitesAtLastPull = sites;
+        // Recorded, not thrown: the client would treat a throw as a network error and retry quietly.
+        if (!sites) d.violation ??= `a pull answered with a cursor the server never issued: ${res.cursor}`;
+        if (!sites) return res;
         if (res.mode === 'snapshot') d.snapshotSinceLastCheck = true;
         return res;
       },
     };
     const client = new SyncClient({
       transport,
-      storage: d.storage,
+      storage: d.storage(),
       tabs: d.hub.join(),
       clock: s.clock,
       random: rng,
@@ -309,20 +429,23 @@ export async function runSimulation(
     client.start();
     d.tabs.push(client);
   };
+  const run = ++runs;
   const devices = Array.from({ length: cfg.clients }, (_, index) => {
-    const issued: string[] = [];
+    const ledger: Ledger = { issued: [], rejected: new Set() };
+    const idGen = () => uuidFrom(rng);
+    const make = opts.storage;
+    const memory = new DeviceStorage(idGen, ledger);
+    const name = `sim-${cfg.seed}-${run}-${index}`;
     const d: Device = {
       index,
       user: pick(rng, world.users),
-      storage: new DeviceStorage(
-        () => uuidFrom(rng),
-        (key) => issued.push(key),
-      ),
+      storage: make ? () => new LedgerStorage(make(name, idGen), ledger) : () => memory,
       hub: new MemoryTabHub(),
       tabs: [],
-      issued,
-      sitesAtLastPull: new Set(),
-      lastCursorVersion: 0,
+      issued: ledger.issued,
+      rejected: ledger.rejected,
+      sitesOf: (cursor) => served.get(cursor),
+      cursorVersions: new WeakMap(),
       snapshotSinceLastCheck: false,
     };
     openTab(d);

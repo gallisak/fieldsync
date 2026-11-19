@@ -74,18 +74,20 @@ export function checkSafety(server: SimServer, devices: Device[], at: At): void 
     seen.add(key);
   }
   for (const d of devices) {
-    const client = d.tabs[0];
-    if (!client) continue;
-    for (const row of baseRows(client)) {
-      if (!d.sitesAtLastPull.has(row.siteId as string)) {
-        fail(at, 1, `device ${d.index} holds ${String(row.id)} of site ${String(row.siteId)}`);
+    if (d.violation) fail(at, 3, `device ${d.index}: ${d.violation}`);
+    for (const [tab, client] of d.tabs.entries()) {
+      const cursor = cursorOf(client);
+      const sites = cursor ? (d.sitesOf(cursor) ?? new Set<string>()) : new Set<string>();
+      for (const row of baseRows(client)) {
+        if (!sites.has(row.siteId as string)) {
+          fail(at, 1, `device ${d.index} tab ${tab} holds ${String(row.id)} of site ${String(row.siteId)}`);
+        }
       }
+      const v = cursorVersion(cursorOf(client));
+      const last = d.cursorVersions.get(client) ?? 0;
+      if (v < last && !d.snapshotSinceLastCheck) fail(at, 3, `device ${d.index} tab ${tab} cursor ${last} → ${v}`);
+      d.cursorVersions.set(client, v);
     }
-    const v = cursorVersion(cursorOf(client));
-    if (v < d.lastCursorVersion && !d.snapshotSinceLastCheck) {
-      fail(at, 3, `device ${d.index} cursor ${d.lastCursorVersion} → ${v}`);
-    }
-    d.lastCursorVersion = v;
     d.snapshotSinceLastCheck = false;
   }
 }
@@ -103,10 +105,8 @@ export function checkConvergence(server: SimServer, devices: Device[], at: At): 
       const view = difference(canonical([...client.view().values()]), expected);
       if (view) fail(at, 5, `${where}: view ≠ base: ${view}`);
     }
-    const client = d.tabs[0];
-    const rejected = new Set(client.rejections.map((r) => `${client.clientId}/${r.mutation.id}`));
     for (const key of d.issued) {
-      if (applied.has(key) === rejected.has(key)) {
+      if (applied.has(key) === d.rejected.has(key)) {
         fail(
           at,
           6,

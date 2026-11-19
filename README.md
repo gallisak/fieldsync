@@ -327,13 +327,18 @@ the server) in virtual time with one seeded generator, so a seed replays exactly
 partitions, crash and restart on the same storage, a second tab, grant/revoke, ticket moves, GC and long
 offline. The network loses, duplicates, cuts and delays (≤ 400 ms) requests and responses; pages are 3 rows.
 
-Invariants. After every step: (1) no client holds a row outside its user's sites; (2) no mutation applied
-twice; (3) a cursor never goes back except through a snapshot. At the end, after healing: (4) every tab's
+Invariants. After every step, for every tab: (1) it holds no row outside the sites its user had when the server
+issued the tab's cursor; (2) no mutation applied twice; (3) a cursor never goes back except through a snapshot,
+and every cursor was issued by the server. At the end, after healing: (4) every tab's
 base equals the server's rows for its user; (5) nothing pending, view = base; (6) every mutation applied
 xor rejected with a reason the client knows; (7) part quantity = initial + applied deltas.
 
-    npm run sim                              # regression seeds, then seeds 1–500 × 400 steps (~45 s)
+    npm run sim                              # regression seeds, seeds 1–500 × 400 steps, then the two runs below (~75 s)
     SIM_SEED=1234 SIM_STEPS=57 npm run sim   # one seed, optionally shortened; SIM_SEEDS=50 for seeds 1–50
+
+Two more runs: seeds 1–100 where the server also forgets quiet clients (retention GC of the `clients` row), so
+clients reset to a new id and renumber; and seeds 1–20 × 200 steps on IndexedDB (`fake-indexeddb`, one connection
+per tab) instead of synchronous memory, so storage transactions interleave with the network.
 
 A failure is bisected to the shortest failing step count and printed as a command with the last 30 steps. The
 same runs go against real Postgres (`apps/server/test/sim/`, 50 seeds × 200 steps) plus a differential test that

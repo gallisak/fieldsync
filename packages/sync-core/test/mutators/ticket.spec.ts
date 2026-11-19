@@ -42,6 +42,12 @@ describe('ticket.create', () => {
     expect(tx.get('ticket', TICKET)).toEqual(ticket());
   });
 
+  it('accepts text with emoji, which are surrogate pairs', () => {
+    const tx = new MapTx();
+    run(tx, 'ticket.create', { ...args, title: 'Pump 🔧', description: 'Leaks 💧' });
+    expect(tx.get('ticket', TICKET)).toMatchObject({ title: 'Pump 🔧', description: 'Leaks 💧' });
+  });
+
   it('rejects the id of a deleted ticket with ALREADY_EXISTS instead of reviving it', () => {
     const tx = new MapTx();
     tx.exists = (entity, id) => entity === 'ticket' && id === TICKET;
@@ -55,6 +61,10 @@ describe('ticket.create', () => {
     ['a 201-char title', { ...args, title: 'x'.repeat(201) }],
     ['a 5001-char description', { ...args, description: 'x'.repeat(5001) }],
     ['a missing siteId', { id: TICKET, title: 'Pump', description: '' }],
+    ['an uppercase id', { ...args, id: TICKET.toUpperCase().replace(/1/g, 'A') }],
+    ['the nil uuid', { ...args, id: '00000000-0000-0000-0000-000000000000' }],
+    ['a NUL in the title', { ...args, title: 'Pu\u0000mp' }],
+    ['an unpaired surrogate in the description', { ...args, description: 'broken \uD83D text' }],
   ])('rejects %s with BAD_ARGS', (_label, bad) => {
     const tx = new MapTx();
     expectRejected(tx, 'ticket.create', bad, 'BAD_ARGS');

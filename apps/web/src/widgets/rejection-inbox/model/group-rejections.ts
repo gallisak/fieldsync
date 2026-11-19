@@ -5,6 +5,8 @@ type View = ReadonlyMap<string, Row>;
 export interface RejectionGroup {
   ticketId: string | null;
   title: string | null;
+  /** Title of a rejected `ticket.create`: that ticket never existed, rather than being deleted. */
+  notCreated: string | null;
   rejections: StoredRejection[];
 }
 
@@ -26,9 +28,11 @@ export function groupRejections(rejections: readonly StoredRejection[], view: Vi
     let group = groups.get(ticketId);
     if (!group) {
       const title = ticketId === null ? undefined : view.get(`ticket/${ticketId}`)?.title;
-      group = { ticketId, title: typeof title === 'string' ? title : null, rejections: [] };
+      group = { ticketId, title: typeof title === 'string' ? title : null, notCreated: null, rejections: [] };
       groups.set(ticketId, group);
     }
+    const created = r.mutation.name === 'ticket.create' ? r.mutation.args.title : undefined;
+    if (typeof created === 'string') group.notCreated = created;
     group.rejections.push(r);
   }
   return [...groups.values()];

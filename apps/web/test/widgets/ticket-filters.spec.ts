@@ -16,9 +16,18 @@ const tickets = [ticket('1', 'a', 'open'), ticket('2', 'a', 'done'), ticket('3',
 
 describe('ticket filters', () => {
   it('reads site and status from the URL, ignoring an unknown status', () => {
-    expect(readFilters(new URLSearchParams('site=a&status=done'))).toEqual({ site: 'a', status: 'done' });
-    expect(readFilters(new URLSearchParams('status=lost&site='))).toEqual({ site: null, status: null });
-    expect(readFilters(null)).toEqual({ site: null, status: null });
+    const sites = ['a', 'b'];
+    expect(readFilters(new URLSearchParams('site=a&status=done'), sites)).toEqual({ site: 'a', status: 'done' });
+    expect(readFilters(new URLSearchParams('status=lost&site='), sites)).toEqual({ site: null, status: null });
+    expect(readFilters(null, sites)).toEqual({ site: null, status: null });
+  });
+
+  it.each(['toString', 'constructor', '__proto__', 'hasOwnProperty'])('does not take "%s" for a status', (s) => {
+    expect(readFilters(new URLSearchParams(`status=${s}`), []).status).toBeNull();
+  });
+
+  it('ignores a site the viewer cannot see', () => {
+    expect(readFilters(new URLSearchParams('site=c'), ['a', 'b']).site).toBeNull();
   });
 
   it('filters by site, by status, by both, or not at all', () => {

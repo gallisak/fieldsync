@@ -1,4 +1,5 @@
 import { MutationRejected, getMutator, type MutatorTx } from '../mutators';
+import { StorageVersionError } from '../storage/errors';
 import { MemoryStorage } from '../storage/memory';
 import type { PersistedState, StoredMutation, StoredRejection, SyncStorage } from '../storage/types';
 import type { TabCoordinator, TabMessage } from '../tabs/coordinator';
@@ -153,7 +154,6 @@ export class SyncClient {
     storage: 'durable',
   };
   private rejected: readonly Rejection[] = [];
-  private changeCount = 0;
   private running?: Promise<void>;
   private rerun = false;
   private attempt = 0;
@@ -211,9 +211,13 @@ export class SyncClient {
     return this.rejected;
   }
 
-  async dismissRejection(rejectionId: number): Promise<void> {
+  dismissRejection(rejectionId: number): Promise<void> {
+    return this.dismissRejections([rejectionId]);
+  }
+
+  async dismissRejections(rejectionIds: readonly number[]): Promise<void> {
     await this.serial(async () => {
-      await this.storage.dismissRejection(rejectionId);
+      for (const id of rejectionIds) await this.storage.dismissRejection(id);
       this.adopt(await this.storage.load());
       this.emit();
     });
@@ -224,8 +228,9 @@ export class SyncClient {
     return { base: this.base, cursor: this.cursor };
   }
 
+  /** Changes with the view, the queue or the rejections; status-only changes leave it alone. */
   get snapshotVersion(): number {
-    return this.changeCount;
+    return this.dataVersion;
   }
 
   subscribe(listener: () => void): () => void {
@@ -343,6 +348,8 @@ export class SyncClient {
       state = await this.storage.load();
       this.setFacts({ storage: 'memory' });
       this.leaveTabs();
+      // Data written by a newer app: its queue is not ours to send, and the update is the way out.
+      if (err instanceof StorageVersionError) this.block('upgrade');
     }
     this.adopt(state);
     this.emit();
@@ -530,6 +537,7 @@ export class SyncClient {
       staged = undefined;
       const committed = await this.serial(async () => {
         const ok = await this.storage.commitPull({
+          receivedAt: new Date(this.clock.now()).toISOString(),
           expectedCursor: this.cursor,
           cursor: resp.cursor,
           ...(snapshot ? { snapshot } : { changes: resp.changes }),
@@ -676,7 +684,6 @@ export class SyncClient {
       this.currentFacts = { ...f, pendingCount, unresolvedRejections };
     }
     if (pendingCount < this.warnAt) this.queueWarned = false;
-    this.changeCount += 1;
     for (const listener of this.listeners) listener();
   }
 }

@@ -31,6 +31,8 @@ export interface PullCommit {
   snapshot?: Change[];
   lastMutationId: number | null;
   rejections: { mutationId: number; code: RejectionCode; message: string; details?: unknown }[];
+  /** When the pull was received, stamped on new rejections; the client passes its own clock. */
+  receivedAt?: string;
 }
 
 /** Every method is atomic, also when several tabs share the storage. */

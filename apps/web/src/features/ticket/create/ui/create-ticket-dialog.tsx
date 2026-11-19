@@ -7,7 +7,15 @@ import { useForm } from 'react-hook-form';
 import { SiteSelect, type Site } from '@/entities/site';
 import { formErrors } from '@/shared/lib/form-errors';
 import { Button } from '@/shared/ui/button';
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/shared/ui/dialog';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/shared/ui/dialog';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/shared/ui/form';
 import { Input } from '@/shared/ui/input';
 import { Textarea } from '@/shared/ui/textarea';
@@ -23,12 +31,12 @@ export function CreateTicketDialog({ sites, defaultSiteId }: { sites: readonly S
     defaultValues: { title: '', description: '', siteId: initialSite },
   });
 
-  const onSubmit = form.handleSubmit((fields) => {
-    const id = create(fields);
-    if (!id) return;
+  const onSubmit = form.handleSubmit(async (fields) => {
+    const created = create(fields);
+    if (!created) return;
     setOpen(false);
     form.reset({ title: '', description: '', siteId: initialSite });
-    router.push(`/tickets/${id}`);
+    if (await created.stored) router.push(`/tickets/${created.id}`);
   });
 
   if (sites.length === 0) return null;
@@ -40,6 +48,7 @@ export function CreateTicketDialog({ sites, defaultSiteId }: { sites: readonly S
       <DialogContent>
         <DialogHeader>
           <DialogTitle>New ticket</DialogTitle>
+          <DialogDescription>Saved on this device at once, and sent to the server when online.</DialogDescription>
         </DialogHeader>
         <Form {...form}>
           <form onSubmit={onSubmit} className="space-y-4">
@@ -76,7 +85,9 @@ export function CreateTicketDialog({ sites, defaultSiteId }: { sites: readonly S
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Site</FormLabel>
-                    <SiteSelect sites={sites} value={field.value || undefined} onChange={field.onChange} />
+                    <FormControl>
+                      <SiteSelect sites={sites} value={field.value || undefined} onChange={field.onChange} />
+                    </FormControl>
                     <FormMessage />
                   </FormItem>
                 )}

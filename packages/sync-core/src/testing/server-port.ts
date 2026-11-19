@@ -24,4 +24,6 @@ export interface SimServer extends SyncServerPort {
   expectedQuantities(): Map<string, number>;
   quantityOf(partId: string): number | undefined;
   refresh?(): Promise<void>;
+  /** Drops the client row, as retention GC does for a client idle too long. */
+  forgetClient?(clientId: string): void | Promise<void>;
 }

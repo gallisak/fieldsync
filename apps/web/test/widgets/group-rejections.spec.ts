@@ -24,9 +24,16 @@ describe('groupRejections', () => {
     const orphan = rejected('part.adjust', { id: 'p9', delta: 1 });
 
     expect(groupRejections([status, gone, add, orphan, adjust], view)).toEqual([
-      { ticketId: 't1', title: 'Broken pump', rejections: [status, add, adjust] },
-      { ticketId: 't9', title: null, rejections: [gone] },
-      { ticketId: null, title: null, rejections: [orphan] },
+      { ticketId: 't1', title: 'Broken pump', notCreated: null, rejections: [status, add, adjust] },
+      { ticketId: 't9', title: null, notCreated: null, rejections: [gone] },
+      { ticketId: null, title: null, notCreated: null, rejections: [orphan] },
+    ]);
+  });
+
+  it('keeps the title of a ticket whose creation was rejected', () => {
+    const create = rejected('ticket.create', { id: 't5', siteId: 's', title: 'Leaking valve', description: '' });
+    expect(groupRejections([create], view)).toEqual([
+      { ticketId: 't5', title: null, notCreated: 'Leaking valve', rejections: [create] },
     ]);
   });
 

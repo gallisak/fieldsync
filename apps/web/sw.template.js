@@ -10,7 +10,8 @@ async function precache() {
   const assets = new Set();
   for (const page of PAGES) {
     const res = await fetch(page, { cache: 'reload' });
-    if (!res.ok) continue;
+    // Fails the install, so the previous worker and its cache stay instead of a shell with holes.
+    if (!res.ok) throw new Error(`precache ${page}: HTTP ${res.status}`);
     await cache.put(page, res.clone());
     for (const [path] of (await res.text()).matchAll(STATIC_ASSET)) {
       assets.add(`/_next/${path.replace(/^\/_next\//, '')}`);
@@ -43,18 +44,23 @@ async function cacheFirst(request) {
   return res;
 }
 
+// Every ticket URL is answered by the one '/tickets/_' document, so it is stored once.
+const cacheKey = (pathname) => (pathname.startsWith('/tickets/') ? '/tickets/_' : pathname);
+
 async function networkFirst(request, url) {
   const cache = await caches.open(SHELL);
+  const key = cacheKey(url.pathname);
   try {
     const res = await Promise.race([
       fetch(request),
       new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), NAVIGATION_TIMEOUT_MS)),
     ]);
-    if (res.ok && !res.redirected) await cache.put(url.pathname, res.clone());
+    // A gateway error while the web server is down is as good as no network: the cached shell still works.
+    if (res.status >= 500) throw new Error(`HTTP ${res.status}`);
+    if (res.ok && !res.redirected) await cache.put(key, res.clone());
     return res;
   } catch {
-    const fallback = url.pathname.startsWith('/tickets/') ? '/tickets/_' : '/';
-    return (await cache.match(url.pathname)) ?? (await cache.match(fallback)) ?? Response.error();
+    return (await cache.match(key)) ?? (await cache.match('/')) ?? Response.error();
   }
 }
 

@@ -41,6 +41,8 @@ export function RejectionInbox({ trigger }: { trigger: ReactElement }) {
                       <Link href={`/tickets/${g.ticketId}`} className="hover:underline">
                         {g.title}
                       </Link>
+                    ) : g.notCreated !== null ? (
+                      `Not created: ${g.notCreated}`
                     ) : (
                       'Deleted ticket'
                     )}

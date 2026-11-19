@@ -182,6 +182,10 @@ export class ModelServer implements SimServer {
     return expected;
   }
 
+  forgetClient(clientId: string): void {
+    this.clients.delete(clientId);
+  }
+
   quantityOf(partId: string): number | undefined {
     return this.entities.get(`part/${partId}`)?.row?.quantity as number | undefined;
   }

@@ -1,5 +1,4 @@
 import Link from 'next/link';
-import type { ReactNode } from 'react';
 import { formatRelative } from '@/shared/lib/relative-time';
 import { Badge } from '@/shared/ui/badge';
 import { TableCell, TableRow } from '@/shared/ui/table';
@@ -10,10 +9,9 @@ interface TicketRowProps {
   ticket: Ticket;
   siteName: string;
   unsynced: boolean;
-  actions?: ReactNode;
 }
 
-export function TicketRow({ ticket, siteName, unsynced, actions }: TicketRowProps) {
+export function TicketRow({ ticket, siteName, unsynced }: TicketRowProps) {
   return (
     <TableRow>
       <TableCell className="font-medium">
@@ -35,7 +33,6 @@ export function TicketRow({ ticket, siteName, unsynced, actions }: TicketRowProp
           </Badge>
         )}
       </TableCell>
-      <TableCell className="text-right">{actions}</TableCell>
     </TableRow>
   );
 }

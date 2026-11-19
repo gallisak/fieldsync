@@ -70,7 +70,7 @@ export abstract class WholeStateStorage implements SyncStorage {
     if (c.lastMutationId !== null) {
       const acked = c.lastMutationId;
       const reasons = new Map(c.rejections.map((r) => [r.mutationId, r]));
-      const at = new Date().toISOString();
+      const at = c.receivedAt ?? new Date().toISOString();
       for (const m of s.pending) {
         const r = m.id <= acked ? reasons.get(m.id) : undefined;
         if (!r) continue;

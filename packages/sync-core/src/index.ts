@@ -7,6 +7,7 @@ export * from './mutators';
 export * from './storage/types';
 export * from './storage/memory';
 export * from './storage/local-storage';
+export * from './storage/errors';
 export * from './storage/idb';
 export * from './storage/idb-migrations';
 export * from './storage/legacy-localstorage';

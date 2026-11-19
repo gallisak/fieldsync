@@ -33,6 +33,8 @@ export interface MutatorTx {
   scan(entity: 'part', by: { ticketId: string }): Row[];
   put(entity: EntityName, id: string, row: Row): void;
   del(entity: EntityName, id: string): void;
+  /** Whether a user may see a site. Only the server knows; a client applies optimistically without it. */
+  canSee?(userId: string, siteId: string): boolean;
 }
 
 export interface MutatorDef {

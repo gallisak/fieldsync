@@ -1,4 +1,4 @@
-FROM node:20-alpine AS deps
+FROM node:22-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json tsconfig.base.json ./
 COPY packages/sync-core/package.json packages/sync-core/
@@ -11,7 +11,7 @@ COPY packages/sync-core packages/sync-core
 COPY apps/server apps/server
 RUN npm run build:core && npm run build -w @fieldsync/server
 
-FROM node:20-alpine AS runtime
+FROM node:22-alpine AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 COPY package.json package-lock.json ./

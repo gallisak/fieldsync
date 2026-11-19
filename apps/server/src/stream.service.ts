@@ -18,6 +18,7 @@ interface Subscriber {
 @Injectable()
 export class StreamService implements OnModuleInit, OnModuleDestroy {
   private readonly subscribers = new Set<Subscriber>();
+  private readonly refreshing = new Map<string, Promise<void>>();
   private timer?: NodeJS.Timeout;
 
   constructor(
@@ -61,6 +62,8 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     const sub: Subscriber = { userId, sites: new Set(sites), res, dirty: false };
     this.subscribers.add(sub);
     res.on('close', () => this.subscribers.delete(sub));
+    // The sites were read before the subscriber existed, so a grant or revoke in between would not reach it.
+    void this.refreshUser(userId, false);
     res.on('drain', () => {
       if (!sub.dirty) return;
       sub.dirty = false;
@@ -74,14 +77,25 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async refreshUser(userId: string): Promise<void> {
-    const subs = [...this.subscribers].filter((s) => s.userId === userId);
-    if (subs.length === 0) return;
+  /** One at a time per user, so an older read never overwrites a newer one. */
+  refreshUser(userId: string, poke = true): Promise<void> {
+    const next = (this.refreshing.get(userId) ?? Promise.resolve())
+      .then(() => this.reloadSites(userId, poke))
+      .catch(() => undefined);
+    this.refreshing.set(userId, next);
+    void next.then(() => {
+      if (this.refreshing.get(userId) === next) this.refreshing.delete(userId);
+    });
+    return next;
+  }
+
+  private async reloadSites(userId: string, poke: boolean): Promise<void> {
+    if (![...this.subscribers].some((s) => s.userId === userId)) return;
     const { rows } = await this.db.pool.query<AuthUser>(`SELECT id, role FROM users WHERE id = $1`, [userId]);
     const sites = rows[0] ? await this.access.accessibleSites(this.db.pool, rows[0]) : new Set<string>();
-    for (const sub of subs) {
+    for (const sub of [...this.subscribers].filter((s) => s.userId === userId)) {
       sub.sites = new Set(sites);
-      this.poke(sub);
+      if (poke) this.poke(sub);
     }
   }
 

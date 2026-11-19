@@ -45,6 +45,7 @@ class BufferedTx implements MutatorTx {
   constructor(
     private readonly loaded: Map<string, Loaded>,
     private readonly scanned: Map<string, string[]>,
+    readonly canSee: (userId: string, siteId: string) => boolean,
   ) {}
 
   get(entity: EntityName, id: string): Row | undefined {
@@ -98,6 +99,7 @@ export class ModelServer implements SimServer {
   readonly rejections = new Map<string, PulledRejection>();
   readonly sites = new Set<string>();
   readonly userSites = new Map<string, Set<string>>();
+  readonly roles = new Map<string, AuthUser['role']>();
   readonly applied: string[] = [];
   private readonly parts = new Map<string, { initial: number; deltas: Map<string, number> }>();
 
@@ -140,6 +142,10 @@ export class ModelServer implements SimServer {
 
   addSite(siteId: string): void {
     this.sites.add(siteId);
+  }
+
+  addUser(user: AuthUser): void {
+    this.roles.set(user.id, user.role);
   }
 
   grant(userId: string, siteId: string): void {
@@ -256,7 +262,10 @@ export class ModelServer implements SimServer {
       user,
       [...loaded.values()].filter((l) => l.siteId !== undefined).map((l) => l.siteId as string),
     );
-    const tx = new BufferedTx(loaded, scanned);
+    const tx = new BufferedTx(loaded, scanned, (userId, siteId) => {
+      const role = this.roles.get(userId);
+      return role === 'admin' || (role !== undefined && (this.userSites.get(userId)?.has(siteId) ?? false));
+    });
     def.apply(tx, m.args, { now: new Date(this.clock()).toISOString() });
     this.authorize(
       user,

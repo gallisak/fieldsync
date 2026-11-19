@@ -8,16 +8,24 @@ export interface ClientRow {
 
 @Injectable()
 export class ClientRepository {
+  // One statement that locks the row: with a separate insert and select, GC could delete the row in between.
   async lockOrCreate(c: PoolClient, clientId: string, userId: string): Promise<ClientRow> {
-    await c.query(`INSERT INTO clients (client_id, user_id) VALUES ($1, $2) ON CONFLICT (client_id) DO NOTHING`, [
-      clientId,
-      userId,
-    ]);
     const { rows } = await c.query<{ user_id: string; last_mutation_id: string }>(
-      `SELECT user_id, last_mutation_id FROM clients WHERE client_id = $1 FOR UPDATE`,
-      [clientId],
+      `INSERT INTO clients (client_id, user_id) VALUES ($1, $2)
+       ON CONFLICT (client_id) DO UPDATE SET last_seen_at = clients.last_seen_at
+       RETURNING user_id, last_mutation_id`,
+      [clientId, userId],
     );
     return { userId: rows[0].user_id, lastMutationId: Number(rows[0].last_mutation_id) };
+  }
+
+  /** A client that only pulls is still in use: retention GC must not forget its acknowledgements. */
+  async touch(q: Pool | PoolClient, clientId: string, userId: string): Promise<void> {
+    await q.query(
+      `UPDATE clients SET last_seen_at = now()
+        WHERE client_id = $1 AND user_id = $2 AND last_seen_at < now() - interval '1 hour'`,
+      [clientId, userId],
+    );
   }
 
   async find(q: Pool | PoolClient, clientId: string): Promise<ClientRow | undefined> {

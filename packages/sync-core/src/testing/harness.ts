@@ -183,8 +183,10 @@ async function seedWorld(rng: () => number, server: SimServer): Promise<World> {
   const sites = [uuidFrom(rng), uuidFrom(rng), uuidFrom(rng)];
   for (const site of sites) await server.addSite(site);
   const users: AuthUser[] = [{ id: uuidFrom(rng), role: 'admin' }];
+  await server.addUser(users[0]);
   for (let i = 0; i < 4; i++) {
     const user: AuthUser = { id: uuidFrom(rng), role: 'technician' };
+    await server.addUser(user);
     const own = sites.filter(() => chance(rng, 0.5));
     for (const site of own.length ? own : [pick(rng, sites)]) await server.grant(user.id, site);
     users.push(user);

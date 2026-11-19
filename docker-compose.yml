@@ -5,7 +5,10 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-fieldsync}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fieldsync}
       POSTGRES_DB: ${POSTGRES_DB:-fieldsync}
-    ports: ["5432:5432"]
+    # POSTGRES_PORT moves it off a local Postgres already on 5432.
+    ports: ["${POSTGRES_PORT:-5432}:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
     healthcheck:
       # Over TCP: the socket also answers the temporary server the image runs during initdb.
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
@@ -37,3 +40,5 @@ services:
       server:
         condition: service_healthy
     ports: ["3000:3000"]
+volumes:
+  pgdata:

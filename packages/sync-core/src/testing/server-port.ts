@@ -16,6 +16,7 @@ export interface SimServer extends SyncServerPort {
   readonly rejectedCount: number;
   readonly lastVersion: number;
   addSite(siteId: string): void | Promise<void>;
+  addUser(user: AuthUser): void | Promise<void>;
   grant(userId: string, siteId: string): void | Promise<void>;
   revoke(userId: string, siteId: string): void | Promise<void>;
   gc(cut: number): void | Promise<void>;

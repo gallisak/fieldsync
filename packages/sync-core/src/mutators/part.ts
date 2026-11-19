@@ -10,7 +10,12 @@ export const addPart = defineMutator({
   apply(tx, a) {
     const ticket = tx.get('ticket', a.ticketId);
     if (!ticket) throw new MutationRejected('NO_ACCESS', 'Ticket is unavailable: deleted, moved, or access revoked');
-    if (tx.get('part', a.id)) return;
+    const existing = tx.get('part', a.id);
+    // The same id on the same ticket is a retry of this add; anything else is another part, live or deleted.
+    if (existing?.ticketId === a.ticketId) return;
+    if (existing || tx.exists('part', a.id)) {
+      throw new MutationRejected('ALREADY_EXISTS', 'A part with this id already exists');
+    }
     tx.put('part', a.id, { id: a.id, ticketId: a.ticketId, siteId: ticket.siteId, name: a.name, quantity: a.quantity });
   },
 });

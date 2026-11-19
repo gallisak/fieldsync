@@ -29,6 +29,7 @@ export interface StoredLogRow {
 export interface LogState {
   lastVersion: number;
   minRetained: number;
+  epoch: string;
 }
 
 interface DbLogRow {
@@ -60,10 +61,14 @@ const fromDb = (r: DbLogRow): StoredLogRow => ({
 @Injectable()
 export class ChangeLogRepository {
   async state(c: PoolClient): Promise<LogState> {
-    const { rows } = await c.query<{ last_version: string; min_retained_version: string }>(
-      `SELECT last_version, min_retained_version FROM sync_state`,
+    const { rows } = await c.query<{ last_version: string; min_retained_version: string; epoch: string }>(
+      `SELECT last_version, min_retained_version, epoch FROM sync_state`,
     );
-    return { lastVersion: Number(rows[0].last_version), minRetained: Number(rows[0].min_retained_version) };
+    return {
+      lastVersion: Number(rows[0].last_version),
+      minRetained: Number(rows[0].min_retained_version),
+      epoch: rows[0].epoch,
+    };
   }
 
   async after(c: PoolClient, sites: string[], version: number, n: number): Promise<StoredLogRow[]> {
@@ -109,9 +114,10 @@ export class ChangeLogRepository {
   async insert(c: PoolClient, rows: LogRow[]): Promise<void> {
     if (rows.length === 0) return;
     await c.query(
-      `INSERT INTO change_log (version, tx_seq, site_id, entity, entity_id, op, data, client_id, mutation_id)
-       SELECT * FROM unnest($1::bigint[], $2::bigint[], $3::uuid[], $4::text[], $5::uuid[], $6::text[],
-                            $7::jsonb[], $8::text[], $9::bigint[])`,
+      // statement_timestamp: after the lock waits, and still one value for every row of the change.
+      `INSERT INTO change_log (version, tx_seq, site_id, entity, entity_id, op, data, client_id, mutation_id, created_at)
+       SELECT *, statement_timestamp() FROM unnest($1::bigint[], $2::bigint[], $3::uuid[], $4::text[], $5::uuid[],
+                            $6::text[], $7::jsonb[], $8::text[], $9::bigint[])`,
       [
         rows.map((r) => r.version),
         rows.map((r) => r.txSeq),

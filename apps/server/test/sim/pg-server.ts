@@ -66,6 +66,13 @@ export class PgServer implements SimServer {
     await this.t.pool.query(`INSERT INTO sites (id, name) VALUES ($1::uuid, $1::text)`, [siteId]);
   }
 
+  async addUser(user: AuthUser): Promise<void> {
+    await this.t.pool.query(
+      `INSERT INTO users (id, name, role, token_hash) VALUES ($1::uuid, $1::text, $2, $3) ON CONFLICT DO NOTHING`,
+      [user.id, user.role, tokenHash(user.id)],
+    );
+  }
+
   async grant(userId: string, siteId: string): Promise<void> {
     const sites = this.userSites.get(userId) ?? new Set<string>();
     sites.add(siteId);

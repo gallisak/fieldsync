@@ -101,6 +101,20 @@ describe('ticket.update', () => {
     expectRejected(tx, 'ticket.update', bad, 'BAD_ARGS');
     expect(tx.get('ticket', TICKET)).toEqual(ticket());
   });
+
+  it('checks the assignee where the caller can tell who sees the site, and trusts it where it cannot', () => {
+    const args = { id: TICKET, patch: { assigneeId: USER } };
+    const server = new MapTx([['ticket', ticket()]]);
+    server.canSee = (userId, siteId) => userId === USER && siteId === SITE_B;
+    expectRejected(server, 'ticket.update', args, 'BAD_ARGS');
+    server.canSee = (userId, siteId) => userId === USER && siteId === SITE_A;
+    run(server, 'ticket.update', args, LATER);
+    expect(server.get('ticket', TICKET)).toMatchObject({ assigneeId: USER });
+
+    const client = new MapTx([['ticket', ticket()]]);
+    run(client, 'ticket.update', args, LATER);
+    expect(client.get('ticket', TICKET)).toMatchObject({ assigneeId: USER });
+  });
 });
 
 describe('ticket.setStatus', () => {

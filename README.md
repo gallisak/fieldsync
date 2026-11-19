@@ -6,11 +6,15 @@ authoritative Postgres-backed server. Task: `ЗАВДАННЯ.md`.
 ## Run
 
     cp .env.example .env                 # one config for server, tests, web and compose; real env vars win
-    docker compose up --build            # web :3000, api :3001, postgres :5432
+    docker compose up --build            # web :3000, api :3001, postgres :5432 (POSTGRES_PORT); Compose ≥ 2.24
+
+Node 22 (`.nvmrc`). The database lives in the `pgdata` volume; `docker compose down -v` starts it over.
 
 Locally: `docker compose up -d postgres`, `npm install`, `npm run build:core`, then
 `npm run build -w @fieldsync/server && npm start -w @fieldsync/server` and `npm run dev -w @fieldsync/web`.
-Demo tokens: `admin-token` (all sites), `tech-a-token` (North Plant), `tech-b-token` (South Plant).
+Demo tokens: `admin-token` (all sites), `tech-a-token` (North Plant), `tech-b-token` (South Plant). `SEED_DEMO`
+inserts them into an empty database only; with them and an empty `METRICS_TOKEN` (open `/metrics`), the compose
+setup is for development, not for exposure.
 
     npm run lint && npm run typecheck && npm test   # integration tests need DATABASE_URL (from .env); CI fails without it
     npm run sim                                     # simulation, see below
@@ -68,7 +72,8 @@ sequenceDiagram
   C-->>UI: subscribe() → re-render
 ```
 
-Protocol v2: header `x-fieldsync-protocol: 2` on every request (else `426 UPGRADE_REQUIRED`). Cursor is opaque
+Protocol v2: header `x-fieldsync-protocol: 2` on every sync, stream and admin request; an older or missing one is
+`426 UPGRADE_REQUIRED`, a newer one `503` (the app shipped before the server: wait, do not ask to update). Cursor is opaque
 `base64url(JSON)` with a site fingerprint; a malformed one is `400`. Pull answers `delta` or a paged `snapshot`
 with `reason` (`initial`, `access_changed`, `cursor_expired`, `cursor_ahead`). Errors are `{ code, message, details? }`.
 
@@ -80,9 +85,11 @@ with `reason` (`initial`, `access_changed`, `cursor_expired`, `cursor_ahead`). E
   a 30 s jittered poll bounds staleness.
 - **Mutation application**: effectively-once. The client resends until acknowledged; the server deduplicates on
   `(clientId, mutationId)` under the client row lock, in the same transaction as the effect. Holds while the
-  `clients` row exists (`CLIENT_RETENTION_DAYS`, 90, longer than log retention).
+  `clients` row exists (`CLIENT_RETENTION_DAYS`, 90, checked at start to outlast log retention; every push and
+  pull keeps it alive).
 - **Rejection**: consumes its id, is stored in `mutation_rejections`, returned in the push response and in every
-  pull until acknowledged; a lost response cannot hide it.
+  pull until acknowledged; a lost response cannot hide it. The client takes it from the pull that acknowledges the
+  mutation (F16), so the push results only advance what it has sent.
 - **Atomicity**: one mutation = one transaction (effect, log, counter, ack). A crash leaves all or nothing.
 
 ## Observability
@@ -188,7 +195,8 @@ unrecoverable loop after ids diverge. *Reproduce:* `f07-out-of-order`: id 5 on a
 **F8 · writes authorized by the client's `siteId`.** *What:* authorization trusted the argument, before rows were
 loaded; deleted ids could be revived. *Risk:* anyone edits any site by knowing an id. *Reproduce:*
 `f08-write-access`. *Fix:* authorize on the stored site of every loaded row (deleted ones too) and of every
-written row; `NO_ACCESS` for unknown and forbidden alike. *Alternatives:* checks inside each mutator.
+written row; `NO_ACCESS` for unknown and forbidden alike. A deleted id stays taken while its tombstone is kept
+(log retention, 7 days). *Alternatives:* checks inside each mutator.
 
 **F9 · incremental pulls return every site.** *What:* the site filter only applied at cursor 0. *Risk:* full
 cross-tenant leak. *Reproduce:* `f09-read-access`. *Fix:* one delta query, always per accessible site.
@@ -391,8 +399,11 @@ The load process itself was busy (event-loop delay p99 633 ms), so the lags are 
   the number of sites (admins).
 - Deduplication ends with the 90-day `clients` row: a mutation applied just before expiry with a lost ack could
   apply twice.
+- Restoring a database backup reuses versions clients may already have seen; after a restore run
+  `UPDATE sync_state SET epoch = gen_random_uuid()` so every client takes a snapshot.
 - Same-field edits are last-writer-wins without telling the loser.
 - The ticket table is not virtualised (needed above ~1 000 tickets per site).
 - The load run used one machine and one generator process; a distributed run would measure the server alone.
-- Next.js stays on 14.2 (latest patch) and NestJS on 10.4: the remaining `npm audit` advisories are fixed only in
-  Next 16 and Nest 11, majors that need React 19 and an Express 5 migration.
+- Next.js stays on 14.2 (latest patch) and NestJS on 10.4: the remaining `npm audit` advisories (Next, and
+  Express 4's `body-parser`, `qs`, `multer`) are fixed only in Next 16 and Nest 11, majors that need React 19 and
+  an Express 5 migration.

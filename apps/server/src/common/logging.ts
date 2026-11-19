@@ -16,6 +16,8 @@ export const loggerModule = LoggerModule.forRootAsync({
         level: config.LOG_LEVEL,
         genReqId: (req) => requestIdOf(req),
         quietReqLogger: true,
+        // Health checks every few seconds would bury everything else.
+        autoLogging: { ignore: (req) => /^\/(health|ready|metrics)(\?|$)/.test(req.url ?? '') },
         mixin: () => ({ ...requestContext.getStore() }),
         redact: ['req.headers.authorization', 'req.headers.cookie', 'req.query.token'],
         serializers: {

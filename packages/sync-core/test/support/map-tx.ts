@@ -1,6 +1,8 @@
 import type { EntityName, MutatorTx, Row } from '../../src';
 
 export class MapTx implements MutatorTx {
+  canSee?: MutatorTx['canSee'];
+
   readonly rows = new Map<string, Row>();
 
   constructor(initial: Array<[EntityName, Row]> = []) {

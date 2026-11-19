@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'fs';
 import { resolve } from 'path';
 import { parseEnv } from 'util';
+import { STREAM_WATCHDOG_MS } from '@fieldsync/sync-core';
 import { z } from 'zod';
 
 export const ENV_FILE = resolve(__dirname, '../../../../.env');
@@ -12,7 +13,13 @@ export function readEnvFile(path: string = ENV_FILE): Record<string, string> {
 
 const unset = (v: unknown) => (v === '' ? undefined : v);
 
-const int = (def: number, min = 0) => z.preprocess(unset, z.coerce.number().int().min(min).default(def));
+const int = (def: number, min = 0, max = Number.MAX_SAFE_INTEGER) =>
+  z.preprocess(unset, z.coerce.number().int().min(min).max(max).default(def));
+
+// setInterval treats a longer delay as 1 ms.
+const MAX_TIMER_MS = 2 ** 31 - 1;
+// The client drops a stream silent for longer than its watchdog; half of it survives one lost heartbeat.
+const MAX_HEARTBEAT_MS = Math.floor(STREAM_WATCHDOG_MS / 2);
 
 const bool = (def: boolean) =>
   z.preprocess(
@@ -24,7 +31,7 @@ const bool = (def: boolean) =>
   );
 
 const envSchema = z.object({
-  PORT: int(3001, 1),
+  PORT: int(3001, 1, 65_535),
   DATABASE_URL: z
     .string({ error: 'is required' })
     .regex(/^postgres(ql)?:\/\//, 'must be a postgres:// connection string'),
@@ -34,7 +41,7 @@ const envSchema = z.object({
     unset,
     z
       .string()
-      .default('http://localhost:3000')
+      .default('http://localhost:3000,http://127.0.0.1:3000')
       .transform((v) =>
         v
           .split(',')
@@ -44,14 +51,19 @@ const envSchema = z.object({
   ),
   CHANGELOG_RETENTION_SECONDS: int(604_800, 1),
   CLIENT_RETENTION_DAYS: int(90, 1),
-  GC_INTERVAL_MS: int(3_600_000, 1),
-  STREAM_HEARTBEAT_MS: int(25_000, 1),
+  GC_INTERVAL_MS: int(3_600_000, 1, MAX_TIMER_MS),
+  STREAM_HEARTBEAT_MS: int(25_000, 1, MAX_HEARTBEAT_MS),
   STREAM_MAX_PER_USER: int(10, 1),
   LOG_LEVEL: z.preprocess(
     unset,
     z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   ),
   METRICS_TOKEN: z.preprocess(unset, z.string().default('')),
+}).superRefine((env, ctx) => {
+  // A client still within the log must keep its row, or its next push is deduplicated against nothing.
+  if (env.CLIENT_RETENTION_DAYS * 86_400 <= env.CHANGELOG_RETENTION_SECONDS) {
+    ctx.addIssue({ code: 'custom', path: ['CLIENT_RETENTION_DAYS'], message: 'must outlast CHANGELOG_RETENTION_SECONDS' });
+  }
 });
 
 export type AppConfig = z.infer<typeof envSchema>;

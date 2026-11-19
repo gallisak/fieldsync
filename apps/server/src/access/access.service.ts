@@ -18,9 +18,10 @@ export class AccessService {
     return new Set(rows.map((r) => r.site_id));
   }
 
-  fingerprint(user: AuthUser, sites: Iterable<string>): string {
+  /** Changes with the user's sites and with the database epoch; either way the client needs a snapshot. */
+  fingerprint(user: AuthUser, sites: Iterable<string>, epoch = ''): string {
     return createHash('sha256')
-      .update(`${user.role}:${[...sites].sort().join(',')}`)
+      .update(`${epoch}:${user.role}:${[...sites].sort().join(',')}`)
       .digest('hex')
       .slice(0, 16);
   }

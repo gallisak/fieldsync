@@ -30,7 +30,6 @@ describeDb('protocol version', () => {
     it.each([
       ['an old version', '1'],
       ['no header', undefined],
-      ['a version newer than the server', String(PROTOCOL + 1)],
       ['a header that is not a number', 'two'],
     ])('answers 426 with the supported range to %s, before authentication', async (_case, version) => {
       for (const token of [TOKENS.admin, undefined, 'not-a-token']) {
@@ -42,6 +41,12 @@ describeDb('protocol version', () => {
           details: { min: MIN_PROTOCOL, current: PROTOCOL },
         });
       }
+    });
+
+    it('answers a version newer than the server with a retryable 503: the app shipped first', async () => {
+      const res = await call(method, path, String(PROTOCOL + 1), TOKENS.admin);
+      expect(res.status).toBe(503);
+      expect(res.body).toMatchObject({ code: 'UNAVAILABLE', details: { current: PROTOCOL } });
     });
   });
 

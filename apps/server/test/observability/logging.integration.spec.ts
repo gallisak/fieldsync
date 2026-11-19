@@ -25,6 +25,12 @@ describeDb('structured logs', () => {
   const ofRequest = (id: string) => logs.filter((l) => l.requestId === id);
   const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
 
+  it('does not log health checks and scrapes', async () => {
+    for (const path of ['/health', '/ready', '/metrics']) await t.http.get(path).set('x-request-id', `probe-${path.slice(1)}`);
+    await settle();
+    expect(logs.filter((l) => String(l.requestId ?? '').startsWith('probe-'))).toEqual([]);
+  });
+
   it('tags every line of a push with its request, user, client and mutation, and logs no token', async () => {
     const res = await push(t.http, TOKENS.techA, 'log-device', [create(1, DEMO.siteA), create(2, DEMO.siteB)]).set(
       'x-request-id',

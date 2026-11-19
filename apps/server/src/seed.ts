@@ -9,7 +9,10 @@ export const DEMO = {
   techB: '00000000-0000-4000-8000-000000000003',
 };
 
+// Only into an empty database: run on every boot, it would hand back access an admin has revoked since.
 export async function seedDemo(pool: Pool): Promise<void> {
+  const { rows } = await pool.query(`SELECT 1 FROM users LIMIT 1`);
+  if (rows.length > 0) return;
   await pool.query(
     `INSERT INTO sites (id, name) VALUES ($1, 'North Plant'), ($2, 'South Plant') ON CONFLICT DO NOTHING`,
     [DEMO.siteA, DEMO.siteB],

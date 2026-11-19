@@ -18,6 +18,9 @@ function writeServiceWorker(buildId) {
 /** @type {import('next').NextConfig} */
 module.exports = {
   reactStrictMode: true,
+  output: 'standalone',
+  // The workspace root, so that the standalone output traces dependencies hoisted there.
+  experimental: { outputFileTracingRoot: resolve(__dirname, '../..') },
   transpilePackages: ['@fieldsync/sync-core'],
   generateBuildId: () => {
     const buildId = randomUUID();

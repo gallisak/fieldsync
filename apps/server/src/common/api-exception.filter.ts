@@ -1,9 +1,10 @@
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException, Logger } from '@nestjs/common';
 import type { Response } from 'express';
+import type { ApiErrorCode } from '@fieldsync/sync-core';
 import { isOperational } from '../database/db.service';
 import { ApiError } from './errors';
 
-const CODE_BY_STATUS: Record<number, string> = {
+const CODE_BY_STATUS: Record<number, ApiErrorCode> = {
   400: 'BAD_REQUEST',
   401: 'UNAUTHENTICATED',
   403: 'FORBIDDEN',

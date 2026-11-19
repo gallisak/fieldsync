@@ -32,6 +32,10 @@ export const updateTicket = defineMutator({
   reads: (a) => [{ entity: 'ticket', id: a.id }],
   apply(tx, a, ctx) {
     const next: Row = { ...requireTicket(tx, a.id) };
+    const assignee = a.patch.assigneeId;
+    if (assignee && tx.canSee && !tx.canSee(assignee, next.siteId as string)) {
+      throw new MutationRejected('BAD_ARGS', 'The assignee cannot see this ticket');
+    }
     for (const [field, value] of Object.entries(a.patch)) {
       if (value !== undefined) next[field] = value;
     }

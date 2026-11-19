@@ -27,6 +27,13 @@ interface Write {
   id: string;
   row?: Row;
   prevSite?: string;
+  fresh?: boolean;
+}
+
+// FOR UPDATE on a missing row locks nothing, so a concurrent insert of the same id can win; SQLSTATE 40001 makes
+// Db.tx run the mutation again, and the retry finds the row and locks it.
+class ConcurrentInsert extends Error {
+  readonly code = '40001';
 }
 
 class BufferedTx implements MutatorTx {
@@ -53,7 +60,14 @@ class BufferedTx implements MutatorTx {
   put(entity: EntityName, id: string, row: Row): void {
     const prev = this.loaded.get(`${entity}/${id}`);
     this.loaded.set(`${entity}/${id}`, { row, siteId: row.siteId as string });
-    this.writes.push({ op: 'put', entity, id, row, prevSite: prev?.row ? prev.siteId : undefined });
+    this.writes.push({
+      op: 'put',
+      entity,
+      id,
+      row,
+      prevSite: prev?.row ? prev.siteId : undefined,
+      fresh: prev?.siteId === undefined,
+    });
   }
 
   del(entity: EntityName, id: string): void {
@@ -154,7 +168,14 @@ export class MutationExecutor {
 
     for (const [i, w] of writes.entries()) {
       const version = logRows[versionIndex[i]].version;
-      if (w.op === 'put') {
+      if (w.op === 'put' && w.fresh) {
+        const { rowCount } = await c.query(
+          `INSERT INTO entities (entity, id, site_id, data, deleted, version) VALUES ($1, $2, $3, $4, false, $5)
+           ON CONFLICT (entity, id) DO NOTHING`,
+          [w.entity, w.id, w.row?.siteId, JSON.stringify(w.row), version],
+        );
+        if (rowCount === 0) throw new ConcurrentInsert(`${w.entity} ${w.id} was inserted concurrently`);
+      } else if (w.op === 'put') {
         await c.query(
           `INSERT INTO entities (entity, id, site_id, data, deleted, version) VALUES ($1, $2, $3, $4, false, $5)
            ON CONFLICT (entity, id) DO UPDATE

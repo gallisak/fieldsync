@@ -1,9 +1,10 @@
 import 'reflect-metadata';
-import { PROTOCOL_HEADER } from '@fieldsync/sync-core';
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
 import { ConfigError, loadConfig } from './config/env';
+import { configureHttp } from './http';
 
 async function bootstrap() {
   let config;
@@ -15,13 +16,10 @@ async function bootstrap() {
     console.error(err.message);
     process.exit(1);
   }
-  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { bufferLogs: true });
   const logger = app.get(Logger);
   app.useLogger(logger);
-  app.enableCors({
-    origin: config.CORS_ORIGINS,
-    allowedHeaders: ['authorization', 'content-type', PROTOCOL_HEADER, 'x-request-id'],
-  });
+  configureHttp(app, config);
   app.enableShutdownHooks();
   await app.listen(config.PORT);
   logger.log(`fieldsync server listening on ${config.PORT}`);

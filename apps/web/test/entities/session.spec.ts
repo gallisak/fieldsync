@@ -1,4 +1,4 @@
-import { readSession, signIn, signOut, type Session } from '@/entities/session/model/session-store';
+import { readSession, signIn, signOut, updateAccess, type Session } from '@/entities/session/model/session-store';
 
 const store = new Map<string, string>();
 Object.assign(globalThis, {
@@ -37,6 +37,36 @@ describe('session store', () => {
     expect(readSession()).toBeNull();
     store.set('fs_session', JSON.stringify({ token: 'x' }));
     expect(readSession()).toBeNull();
+  });
+
+  describe('updateAccess', () => {
+    const south = { id: '00000000-0000-4000-8000-0000000000b1', name: 'South plant' };
+    const me = { id: session.userId, role: session.role, sites: session.sites };
+
+    it('takes a site granted or revoked since sign-in', () => {
+      signIn(session);
+      updateAccess(session.token, { ...me, sites: [...session.sites, south] });
+      expect(readSession()?.sites).toEqual([...session.sites, south]);
+      updateAccess(session.token, { ...me, sites: [south] });
+      expect(readSession()).toEqual({ ...session, sites: [south] });
+    });
+
+    it('keeps the same session object when nothing changed', () => {
+      signIn(session);
+      const before = readSession();
+      updateAccess(session.token, me);
+      expect(readSession()).toBe(before);
+    });
+
+    it('ignores an answer for another token or user, or after sign-out', () => {
+      signIn(session);
+      updateAccess('other-token', { ...me, sites: [] });
+      updateAccess(session.token, { ...me, id: 'someone-else', sites: [] });
+      expect(readSession()?.sites).toEqual(session.sites);
+      signOut();
+      updateAccess(session.token, me);
+      expect(readSession()).toBeNull();
+    });
   });
 
   it('signs out', () => {

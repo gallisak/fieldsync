@@ -8,8 +8,15 @@ const CODE_BY_STATUS: Record<number, string> = {
   401: 'UNAUTHENTICATED',
   403: 'FORBIDDEN',
   404: 'NOT_FOUND',
+  413: 'PAYLOAD_TOO_LARGE',
   429: 'TOO_MANY_REQUESTS',
 };
+
+// body-parser rejects a body with an http-errors error, which is not an HttpException.
+function clientErrorStatus(err: unknown): number | undefined {
+  const e = err as { status?: unknown; expose?: unknown } | null;
+  return typeof e?.status === 'number' && e.status >= 400 && e.status < 500 && e.expose === true ? e.status : undefined;
+}
 
 @Catch()
 export class ApiExceptionFilter implements ExceptionFilter {
@@ -32,6 +39,11 @@ export class ApiExceptionFilter implements ExceptionFilter {
         res.status(status).json({ code: CODE_BY_STATUS[status] ?? `HTTP_${status}`, message: err.message });
         return;
       }
+    }
+    const status = clientErrorStatus(err);
+    if (status !== undefined) {
+      res.status(status).json({ code: CODE_BY_STATUS[status] ?? `HTTP_${status}`, message: (err as Error).message });
+      return;
     }
 
     if (isTransient(err)) {

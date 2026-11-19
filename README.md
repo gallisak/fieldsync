@@ -54,7 +54,7 @@ sequenceDiagram
   participant O as Other clients
   UI->>C: mutate(name, args): validated, applied in memory
   C->>IDB: [IDB tx] next id + append to queue
-  Note over C,IDB: crash before commit: the change is lost and was never shown as saved
+  Note over C,IDB: write fails: the change is taken back off the screen and the user is told; tab dies first: it is lost
   C->>API: POST /sync/push (≤100)
   Note over C,API: request or response lost: retried, deduplicated
   API->>PG: [tx per mutation] lock client row → dedup → SAVEPOINT → rows FOR UPDATE → authorize on stored site → mutator → lock sync_state, versions → change_log + entities (or rollback to savepoint + mutation_rejections) → last_mutation_id → COMMIT
@@ -296,7 +296,8 @@ None weakens a real assertion: each removed test could not fail and has a replac
 - `server/test/sync.integration.spec.ts` (F27): only `SELECT 1`. Removed; integration suites now fail in CI
   without `DATABASE_URL`, and `npm run typecheck` covers the web app.
 - `sync-core/test/client.spec.ts` (F27): two `it.todo` replaced by `f14-reload` and `f15-two-tabs`; `ticket.create`
-  calls pass an `id` (F17).
+  calls pass an `id` (F17). `numbers local mutations sequentially` asserted only the row count, before any id
+  existed; it now awaits both mutations and checks the ids are 1 and 2.
 
 ## Indexes
 

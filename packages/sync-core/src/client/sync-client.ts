@@ -2,6 +2,7 @@ import { MutationRejected, getMutator, type MutatorTx } from '../mutators';
 import { MemoryStorage } from '../storage/memory';
 import type { PersistedState, StoredMutation, StoredRejection, SyncStorage } from '../storage/types';
 import type { TabCoordinator, TabMessage } from '../tabs/coordinator';
+import { decodeCursor } from '../protocol/cursor';
 import { TransportError } from '../transport/errors';
 import { nextDelay } from './backoff';
 import { CLIENT_INTERNALS, type ClientInternals } from './internals';
@@ -118,7 +119,7 @@ export class SyncClient {
   private readonly random: () => number;
   private readonly env: SyncEnvironment;
   private readonly streamConfig?: PokeStreamConfig;
-  private readonly tabs?: TabCoordinator;
+  private tabs?: TabCoordinator;
   private isLeader: boolean;
   private readonly abort = new AbortController();
   private streamAbort = new AbortController();
@@ -195,6 +196,11 @@ export class SyncClient {
     return this.derive().pending;
   }
 
+  /** Changes whenever the set of sites the server replicates to this user changes. */
+  get siteFingerprint(): string | null {
+    return this.cursor ? (decodeCursor(this.cursor)?.fp ?? null) : null;
+  }
+
   get rejections(): readonly Rejection[] {
     return this.rejected;
   }
@@ -239,11 +245,13 @@ export class SyncClient {
       console.warn(`fieldsync: ${this.pendingCount} changes are waiting to sync`);
     }
     const durable = this.serial(async () => {
-      const stored = await this.storage.enqueue(entry);
-      this.unsaved = this.unsaved.filter((u) => u !== entry);
-      this.queue.push(stored);
-      this.dataVersion += 1;
-      this.emit();
+      try {
+        this.queue.push(await this.storage.enqueue(entry));
+      } finally {
+        this.unsaved = this.unsaved.filter((u) => u !== entry);
+        this.dataVersion += 1;
+        this.emit();
+      }
     });
     durable.then(
       () => {
@@ -323,9 +331,22 @@ export class SyncClient {
       this.storage = new MemoryStorage();
       state = await this.storage.load();
       this.setFacts({ storage: 'memory' });
+      this.leaveTabs();
     }
     this.adopt(state);
     this.emit();
+  }
+
+  // The other tabs cannot see a queue kept in this tab's memory, so this tab syncs it itself.
+  private leaveTabs(): void {
+    if (!this.tabs) return;
+    this.tabs.close();
+    this.tabs = undefined;
+    if (this.isLeader) return;
+    this.isLeader = true;
+    if (!this.started) return;
+    this.lead();
+    void this.sync();
   }
 
   private adopt(s: PersistedState): void {
@@ -497,12 +518,14 @@ export class SyncClient {
   }
 
   private lead(): void {
+    this.closeStream();
+    if (this.pollTimer !== undefined) this.clock.clearTimeout(this.pollTimer);
     this.schedulePoll();
     if (this.streamConfig) void this.keepStreamOpen(this.streamConfig);
   }
 
   private onLeaderChange(leader: boolean): void {
-    if (this.disposed || leader === this.isLeader) return;
+    if (this.disposed || !this.tabs || leader === this.isLeader) return;
     this.isLeader = leader;
     if (!leader) {
       this.closeStream();
@@ -511,6 +534,7 @@ export class SyncClient {
       return;
     }
     void this.reload().then(() => {
+      if (this.disposed || !this.isLeader) return;
       this.lead();
       void this.sync();
     });

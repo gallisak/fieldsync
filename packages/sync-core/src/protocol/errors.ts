@@ -4,6 +4,7 @@ export type ApiErrorCode =
   | 'CLIENT_MISMATCH'
   | 'OUT_OF_ORDER'
   | 'BAD_REQUEST'
+  | 'PAYLOAD_TOO_LARGE'
   | 'UNAVAILABLE';
 
 export type RejectionCode =

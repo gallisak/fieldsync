@@ -3,6 +3,7 @@
 import type { SyncClient } from '@fieldsync/sync-core';
 import { useEffect, useState, type ReactNode } from 'react';
 import { useSession } from '@/entities/session';
+import { useRefreshSession } from '@/features/auth/refresh-session';
 import { createSyncClient, SyncClientProvider } from '@/shared/api';
 import { API_URL } from '@/shared/config';
 import { Alert, AlertDescription, AlertTitle } from '@/shared/ui/alert';
@@ -10,6 +11,11 @@ import { Button } from '@/shared/ui/button';
 import { UpgradeGate } from '@/widgets/upgrade-gate';
 import { FullPageSkeleton } from './full-page-skeleton';
 import { UpdateShellOnUpgrade } from './service-worker';
+
+function RefreshSession() {
+  useRefreshSession();
+  return null;
+}
 
 export function SyncProvider({ children }: { children: ReactNode }) {
   const session = useSession();
@@ -64,6 +70,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
   return (
     <SyncClientProvider client={client}>
       <UpdateShellOnUpgrade />
+      <RefreshSession />
       <UpgradeGate>{children}</UpgradeGate>
     </SyncClientProvider>
   );

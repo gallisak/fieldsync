@@ -97,6 +97,37 @@ describe('several tabs on one storage', () => {
     expect(followerTransport.calls).toBeGreaterThan(0);
   });
 
+  describe('a tab whose durable storage cannot be opened', () => {
+    class BrokenStorage extends MemoryStorage {
+      load(): never {
+        throw new Error('IndexedDB unavailable');
+      }
+    }
+    beforeEach(() => jest.spyOn(console, 'error').mockImplementation(() => undefined));
+    afterEach(() => jest.restoreAllMocks());
+
+    it.each([
+      ['follower', false],
+      ['first in line for leadership', true],
+    ])('syncs its own changes when it would be the %s', async (_role, brokenFirst) => {
+      const server = new FakeServer();
+      const hub = new MemoryTabHub();
+      const openBroken = () => open(new BrokenStorage(), server.transport(), hub.join());
+      const openGood = () => open(new MemoryStorage(), server.transport(), hub.join());
+      const first = brokenFirst ? openBroken() : openGood();
+      const second = brokenFirst ? openGood() : openBroken();
+      const [broken, good] = brokenFirst ? [first, second] : [second, first];
+      await Promise.all([broken.ready, good.ready]);
+      expect(broken.facts.storage).toBe('memory');
+
+      await broken.mutate('ticket.create', create('kept in memory'));
+      await good.mutate('ticket.create', create('kept on disk'));
+
+      await eventually(() => server.applied.length === 2, 'both changes to reach the server');
+      await eventually(() => broken.pendingCount === 0 && good.pendingCount === 0, 'both tabs to see them acknowledged');
+    });
+  });
+
   it('stays correct with two leaders at once (no coordination at all)', async () => {
     const server = new FakeServer();
     const storage = new MemoryStorage();

@@ -76,6 +76,13 @@ export function signIn(session: Session): void {
   emit();
 }
 
+export function updateAccess(token: string, access: { id: string; role: Session['role']; sites: Session['sites'] }): void {
+  const current = readSession();
+  if (!current || current.token !== token || current.userId !== access.id) return;
+  if (current.role === access.role && JSON.stringify(current.sites) === JSON.stringify(access.sites)) return;
+  signIn({ ...current, role: access.role, sites: access.sites });
+}
+
 export function signOut(): void {
   localStorage.removeItem(KEY);
   emit();

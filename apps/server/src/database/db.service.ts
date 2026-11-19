@@ -14,6 +14,7 @@ const TRANSIENT_SQLSTATES = new Set(['40001', '40P01', '55P03', '57P01', '57P02'
 const OPERATIONAL_CLASSES = new Set(['08', '40', '53', '55', '57', '58', 'XX']);
 const NETWORK_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE']);
 const MAX_RETRIES = 3;
+const RETRY_BASE_MS = 20;
 const CONNECT_TIMEOUT_MS = 10_000;
 const IDLE_IN_TRANSACTION_TIMEOUT_MS = 60_000;
 
@@ -22,6 +23,8 @@ export function isTransient(err: unknown): boolean {
   if (typeof code === 'string') return TRANSIENT_SQLSTATES.has(code) || code.startsWith('08') || NETWORK_CODES.has(code);
   return err instanceof Error && /Connection terminated|timeout exceeded when trying to connect/i.test(err.message);
 }
+
+const isPoolTimeout = (err: unknown) => err instanceof Error && /timeout exceeded when trying to connect/i.test(err.message);
 
 export function isOperational(err: unknown): boolean {
   if (isTransient(err)) return true;
@@ -62,11 +65,14 @@ export class Db implements OnModuleInit, OnApplicationShutdown {
     if (opts.readOnly) begin += ' READ ONLY';
 
     for (let attempt = 0; ; attempt++) {
+      // Jittered: transactions that just collided, or a database short of connections, should not meet again at once.
+      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, Math.random() * RETRY_BASE_MS * 2 ** attempt));
       let client: PoolClient;
       try {
         client = await this.pool.connect();
       } catch (err) {
-        if (isTransient(err) && attempt < MAX_RETRIES) continue;
+        // A full pool already made this request wait the whole timeout; waiting again would outlast the client's.
+        if (isTransient(err) && !isPoolTimeout(err) && attempt < MAX_RETRIES) continue;
         throw err;
       }
       const onLost = (err: Error) => this.logger.warn(`database connection lost during a transaction: ${err.message}`);

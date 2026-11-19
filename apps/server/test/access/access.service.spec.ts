@@ -1,3 +1,5 @@
+import { ForbiddenException, type ExecutionContext } from '@nestjs/common';
+import { AdminGuard } from '../../src/access/access.admin.controller';
 import { AccessService } from '../../src/access/access.service';
 import type { AuthUser } from '../../src/auth/auth.guard';
 
@@ -18,5 +20,31 @@ describe('AccessService.fingerprint', () => {
     expect(access.fingerprint(TECH, [A], 'epoch-1')).not.toBe(fp);
     expect(access.fingerprint(ADMIN, [A, B], 'epoch-1')).not.toBe(fp);
     expect(access.fingerprint(TECH, [A, B], 'epoch-2')).not.toBe(fp);
+  });
+});
+
+describe('AccessService.accessibleSites', () => {
+  const access = new AccessService();
+  const db = {
+    async query<R>(text: string, values?: unknown[]): Promise<{ rows: R[] }> {
+      if (text.includes('FROM sites')) return { rows: [{ id: A }, { id: B }, { id: C }] as R[] };
+      return { rows: (values?.[0] === TECH.id ? [{ site_id: A }] : []) as R[] };
+    },
+  };
+
+  it('gives an admin every site and a technician only the granted ones', async () => {
+    expect(await access.accessibleSites(db, ADMIN)).toEqual(new Set([A, B, C]));
+    expect(await access.accessibleSites(db, TECH)).toEqual(new Set([A]));
+    expect(await access.accessibleSites(db, { id: 'nobody', role: 'technician' })).toEqual(new Set());
+  });
+});
+
+describe('AdminGuard', () => {
+  const as = (user: AuthUser) =>
+    ({ switchToHttp: () => ({ getRequest: () => ({ user }) }) }) as unknown as ExecutionContext;
+
+  it('lets only an admin change access', () => {
+    expect(new AdminGuard().canActivate(as(ADMIN))).toBe(true);
+    expect(() => new AdminGuard().canActivate(as(TECH))).toThrow(ForbiddenException);
   });
 });

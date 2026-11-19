@@ -13,13 +13,30 @@ export function readEnvFile(path: string = ENV_FILE): Record<string, string> {
 
 const unset = (v: unknown) => (v === '' ? undefined : v);
 
+// Digits only: Number() would also read 1e3, 0x10 and ' 7 '.
 const int = (def: number, min = 0, max = Number.MAX_SAFE_INTEGER) =>
-  z.preprocess(unset, z.coerce.number().int().min(min).max(max).default(def));
+  z.preprocess(
+    unset,
+    z
+      .string()
+      .regex(/^\d+$/, 'must be a whole number')
+      .transform(Number)
+      .pipe(z.number().int().min(min).max(max))
+      .default(def),
+  );
 
 // setInterval treats a longer delay as 1 ms.
 const MAX_TIMER_MS = 2 ** 31 - 1;
 // The client drops a stream silent for longer than its watchdog; half of it survives one lost heartbeat.
 const MAX_HEARTBEAT_MS = Math.floor(STREAM_WATCHDOG_MS / 2);
+
+const isOrigin = (s: string) => {
+  try {
+    return new URL(s).origin === s;
+  } catch {
+    return false;
+  }
+};
 
 const bool = (def: boolean) =>
   z.preprocess(
@@ -47,7 +64,9 @@ const envSchema = z.object({
           .split(',')
           .map((s) => s.trim())
           .filter(Boolean),
-      ),
+      )
+      // The browser sends the bare origin; '*', a path or a trailing slash would match no request.
+      .pipe(z.array(z.string().refine(isOrigin, 'each entry must be an origin such as https://app.example.com')).min(1)),
   ),
   CHANGELOG_RETENTION_SECONDS: int(604_800, 1),
   CLIENT_RETENTION_DAYS: int(90, 1),

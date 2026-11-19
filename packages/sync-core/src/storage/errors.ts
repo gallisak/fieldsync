@@ -4,3 +4,10 @@ export class StorageVersionError extends Error {
     this.name = 'StorageVersionError';
   }
 }
+
+export class LocalWriteError extends Error {
+  constructor(options?: { cause?: unknown }) {
+    super('Could not save to this device', options);
+    this.name = 'LocalWriteError';
+  }
+}

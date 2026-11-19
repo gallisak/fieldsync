@@ -1,5 +1,5 @@
 import { MutationRejected, getMutator, type MutatorTx } from '../mutators';
-import { StorageVersionError } from '../storage/errors';
+import { LocalWriteError, StorageVersionError } from '../storage/errors';
 import { MemoryStorage } from '../storage/memory';
 import type { PersistedState, StoredMutation, StoredRejection, SyncStorage } from '../storage/types';
 import type { TabCoordinator, TabMessage } from '../tabs/coordinator';
@@ -37,8 +37,6 @@ export interface PokeStreamConfig {
 }
 
 export interface SyncClientOptions {
-  /** @deprecated Ignored: the storage owns the client id. Kept so existing callers still compile. */
-  clientId?: string;
   transport: Transport;
   storage: SyncStorage;
   stream?: PokeStreamConfig;
@@ -73,6 +71,8 @@ function browserEnvironment(): SyncEnvironment {
 }
 
 const POLL_MS = 30_000;
+// A stream that ends sooner (evicted by a newer one, a proxy that closes it) keeps backing off.
+const STABLE_STREAM_MS = 60_000;
 
 class MapTx implements MutatorTx {
   constructor(private readonly state: Map<string, Row>) {}
@@ -125,6 +125,7 @@ export class SyncClient {
   private readonly abort = new AbortController();
   private streamAbort = new AbortController();
   private streamTimer?: unknown;
+  private streamWake?: () => void;
   private id = '';
   private base = new Map<string, Row>();
   private cursor: Cursor | null = null;
@@ -175,7 +176,8 @@ export class SyncClient {
     this.isLeader = !opts.tabs;
     this.warnAt = opts.queueLimits?.warnAt ?? 1_000;
     this.maxQueue = opts.queueLimits?.max ?? 10_000;
-    const offVersionChange = this.storage.onVersionChange?.(() => this.block('upgrade'));
+    // Deleted: signed out in another tab, and this tab is about to follow; it is not asked to update.
+    const offVersionChange = this.storage.onVersionChange?.((reason) => this.block(reason === 'deleted' ? 'auth' : 'upgrade'));
     if (offVersionChange) this.unsubscribe.push(offVersionChange);
     this.ready = this.boot();
     this.writeChain = this.ready;
@@ -286,7 +288,11 @@ export class SyncClient {
     if (this.started || this.disposed) return;
     this.started = true;
     const request = () => void this.sync();
-    if (this.env.onOnline) this.unsubscribe.push(this.env.onOnline(request));
+    const online = () => {
+      this.streamWake?.();
+      request();
+    };
+    if (this.env.onOnline) this.unsubscribe.push(this.env.onOnline(online));
     if (this.env.onVisible) this.unsubscribe.push(this.env.onVisible(request));
     if (this.tabs) {
       this.tabs.start(
@@ -312,10 +318,10 @@ export class SyncClient {
     this.clearRetry();
     this.running = this.run().finally(() => {
       this.running = undefined;
-      if (this.rerun && !this.disposed) {
-        this.rerun = false;
-        void this.sync();
-      }
+      const rerun = this.rerun;
+      this.rerun = false;
+      // After a failure the backoff timer runs the next attempt.
+      if (rerun && !this.disposed && this.retryTimer === undefined) void this.sync();
     });
     return this.running;
   }
@@ -343,9 +349,15 @@ export class SyncClient {
     try {
       state = await this.storage.load();
     } catch (err) {
+      if (this.disposed) return;
       console.error('fieldsync: durable storage unavailable, keeping changes in memory only:', err);
       this.storage = new MemoryStorage();
-      state = await this.storage.load();
+      try {
+        state = await this.storage.load();
+      } catch (inner) {
+        console.error('fieldsync: could not start:', inner);
+        return this.block('error');
+      }
       this.setFacts({ storage: 'memory' });
       // Data written by a newer app: its queue is not ours to send, and the update is the way out.
       if (err instanceof StorageVersionError) this.block('upgrade');
@@ -434,11 +446,14 @@ export class SyncClient {
       if (batch.length === 0) return;
       this.setFacts({ phase: 'pushing' });
       const from = Math.max(this.lastMutationId, this.pushedUpTo);
+      const clientId = this.id;
       const resp = await this.transport.push(
-        { clientId: this.id, mutations: batch.map(({ id, name, args }) => ({ id, name, args })) },
+        { clientId, mutations: batch.map(({ id, name, args }) => ({ id, name, args })) },
         this.abort.signal,
       );
       this.setFacts({ connection: 'online' });
+      // Another tab reset the client meanwhile: these ids belong to the old one.
+      if (this.id !== clientId) return;
       const top = Math.max(from, ...resp.results.map((r) => r.id));
       if (top === from) throw new TransportError('http', 502, undefined, undefined, 'Push answered without results');
       this.pushedUpTo = top;
@@ -446,7 +461,12 @@ export class SyncClient {
   }
 
   private async onSyncError(err: unknown): Promise<void> {
-    if (this.disposed) return;
+    if (this.disposed || this.currentFacts.blocked) return;
+    // Retrying would download the same pull again and fail the same way: the device is out of space or broken.
+    if (err instanceof LocalWriteError) {
+      console.error('sync stopped:', err.cause ?? err);
+      return this.block('error');
+    }
     const e = err instanceof TransportError ? err : undefined;
     if (e?.status === 401) return this.block('auth');
     if (e?.status === 426) return this.block('upgrade');
@@ -537,16 +557,23 @@ export class SyncClient {
       }
       staged = undefined;
       const committed = await this.serial(async () => {
-        const ok = await this.storage.commitPull({
-          receivedAt: new Date(this.clock.now()).toISOString(),
-          expectedCursor: this.cursor,
-          cursor: resp.cursor,
-          ...(snapshot ? { snapshot } : { changes: resp.changes }),
-          lastMutationId: resp.lastMutationId,
-          rejections: resp.rejections,
-        });
-        // Also when the commit was refused: another client sharing the storage moved on; continue from there.
-        this.adopt(await this.storage.load());
+        let ok: boolean;
+        let state: PersistedState;
+        try {
+          ok = await this.storage.commitPull({
+            receivedAt: new Date(this.clock.now()).toISOString(),
+            expectedCursor: this.cursor,
+            cursor: resp.cursor,
+            ...(snapshot ? { snapshot } : { changes: resp.changes }),
+            lastMutationId: resp.lastMutationId,
+            rejections: resp.rejections,
+          });
+          // Also when the commit was refused: another client sharing the storage moved on; continue from there.
+          state = await this.storage.load();
+        } catch (err) {
+          throw new LocalWriteError({ cause: err });
+        }
+        this.adopt(state);
         this.emit();
         return ok;
       });
@@ -630,16 +657,15 @@ export class SyncClient {
     let attempt = 0;
     const abort = (this.streamAbort = new AbortController());
     while (!this.disposed && !this.currentFacts.blocked && !abort.signal.aborted) {
-      let receiving = false;
+      let openedAt: number | undefined;
       try {
         await openPokeStream({
           ...config,
           signal: abort.signal,
           timers: this.clock,
-          onOpen: () => this.trigger(),
-          onData: () => {
-            if (!receiving) attempt = 0;
-            receiving = true;
+          onOpen: () => {
+            openedAt = this.clock.now();
+            this.trigger();
           },
           onPoke: () => this.trigger(),
         });
@@ -649,10 +675,17 @@ export class SyncClient {
         if (err instanceof TransportError && err.status === 426) return this.block('upgrade');
       }
       if (this.disposed || this.currentFacts.blocked || abort.signal.aborted) return;
+      if (openedAt !== undefined && this.clock.now() - openedAt >= STABLE_STREAM_MS) attempt = 0;
+      let timer: unknown;
       await new Promise<void>((resolve) => {
-        this.streamTimer = this.clock.setTimeout(resolve, nextDelay(attempt++, this.random));
+        this.streamWake = resolve;
+        timer = this.streamTimer = this.clock.setTimeout(resolve, nextDelay(attempt++, this.random));
       });
-      this.streamTimer = undefined;
+      this.clock.clearTimeout(timer);
+      if (this.streamTimer === timer) {
+        this.streamTimer = undefined;
+        this.streamWake = undefined;
+      }
     }
   }
 
@@ -660,6 +693,8 @@ export class SyncClient {
     this.streamAbort.abort();
     if (this.streamTimer !== undefined) this.clock.clearTimeout(this.streamTimer);
     this.streamTimer = undefined;
+    this.streamWake?.();
+    this.streamWake = undefined;
   }
 
   private clearRetry(): void {

@@ -9,6 +9,8 @@ export interface Faults {
   dropResponse: number;
   duplicate: number;
   cut: number;
+  /** The client gives up on the request, which still reaches the server later, after the client's retry. */
+  late: number;
   maxDelayMs: number;
 }
 
@@ -17,6 +19,7 @@ export const DEFAULT_FAULTS: Faults = {
   dropResponse: 0.05,
   duplicate: 0.05,
   cut: 0.03,
+  late: 0.03,
   maxDelayMs: 400,
 };
 
@@ -41,7 +44,7 @@ export class SimNetwork {
 
   heal(): void {
     this.offline.clear();
-    this.faults = { dropRequest: 0, dropResponse: 0, duplicate: 0, cut: 0, maxDelayMs: 5 };
+    this.faults = { dropRequest: 0, dropResponse: 0, duplicate: 0, cut: 0, late: 0, maxDelayMs: 5 };
   }
 
   transportFor(client: number, user: AuthUser): Transport {
@@ -84,6 +87,12 @@ export class SimNetwork {
       const d3 = 1 + int(rng, f.maxDelayMs);
       let edge = f.dropRequest;
       if (roll < edge) return void fail(d1);
+      // Past the other faults' share of the roll, so adding it left the scenarios of existing seeds alone.
+      const late = edge + (partial ? f.cut : 0) + f.dropResponse + f.duplicate;
+      if (roll >= late && roll < late + f.late) {
+        fail(d1);
+        return void s.at(s.now + d1 + f.maxDelayMs + d3, () => after(exec, () => undefined));
+      }
 
       s.at(s.now + d1, () => {
         if (partial && roll < (edge += f.cut)) return after(partial, () => void fail(d2));

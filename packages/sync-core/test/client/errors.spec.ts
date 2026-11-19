@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
-import { MemoryStorage, SyncClient, TransportError, type Cursor } from '../../src';
-import { ScriptedTransport, emptyPull, flush } from '../support/scripted-transport';
+import { MemoryStorage, SyncClient, TransportError, type Cursor, type PushResponse } from '../../src';
+import { ScriptedTransport, deferred, emptyPull, flush } from '../support/scripted-transport';
 
 const SITE = '33333333-3333-4333-8333-333333333333';
 const create = () => ({ id: randomUUID(), siteId: SITE, title: 'A', description: '' });
@@ -80,5 +80,57 @@ describe('client error handling', () => {
     jest.advanceTimersToNextTimer();
     await flush();
     expect(transport.callsOf('push')).toHaveLength(2);
+  });
+
+  it('waits out the backoff also for a change made while the failing push was in flight', async () => {
+    jest.useFakeTimers();
+    const held = deferred<PushResponse>();
+    const transport = new ScriptedTransport().replyPush(held.promise).alwaysPush(new TransportError('network'));
+    const client = open(transport);
+    await client.ready;
+    await client.mutate('ticket.create', create());
+    await flush();
+    await client.mutate('ticket.create', create());
+    held.reject(new TransportError('network'));
+    await flush(50);
+    expect(transport.callsOf('push')).toHaveLength(1);
+
+    jest.advanceTimersToNextTimer();
+    await flush();
+    expect(transport.callsOf('push')).toHaveLength(2);
+  });
+
+  it('stops with an error instead of reporting offline when the device cannot store a pull', async () => {
+    class FullStorage extends MemoryStorage {
+      override commitPull(): Promise<boolean> {
+        return Promise.reject(new DOMException('quota', 'QuotaExceededError'));
+      }
+    }
+    const transport = new ScriptedTransport().alwaysPull(emptyPull());
+    const client = open(transport, new FullStorage());
+    await client.ready;
+
+    await client.sync();
+
+    expect(client.facts).toMatchObject({ connection: 'online', blocked: 'error' });
+    await client.sync();
+    expect(transport.callsOf('pull')).toHaveLength(1);
+  });
+
+  it('also stops with an error when the device cannot read back what a pull stored', async () => {
+    class Unreadable extends MemoryStorage {
+      broken = false;
+      override load() {
+        return this.broken ? Promise.reject(new DOMException('gone', 'UnknownError')) : super.load();
+      }
+    }
+    const storage = new Unreadable();
+    const client = open(new ScriptedTransport().alwaysPull(emptyPull()), storage);
+    await client.ready;
+    storage.broken = true;
+
+    await client.sync();
+
+    expect(client.facts).toMatchObject({ connection: 'online', blocked: 'error' });
   });
 });

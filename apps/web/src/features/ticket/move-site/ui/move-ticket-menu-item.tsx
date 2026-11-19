@@ -49,7 +49,10 @@ export function MoveTicketMenuItem({ ticketId, currentSiteId, sites }: MoveTicke
           <Button
             disabled={!toSiteId}
             onClick={() => {
-              if (toSiteId && move(toSiteId)) setOpen(false);
+              if (toSiteId && move(toSiteId)) {
+                setOpen(false);
+                setToSiteId(undefined);
+              }
             }}
           >
             Move

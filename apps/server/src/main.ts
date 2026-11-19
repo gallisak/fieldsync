@@ -24,4 +24,8 @@ async function bootstrap() {
   await app.listen(config.PORT);
   logger.log(`fieldsync server listening on ${config.PORT}`);
 }
-bootstrap();
+bootstrap().catch((err: unknown) => {
+  // eslint-disable-next-line no-console
+  console.error(JSON.stringify({ level: 'fatal', msg: 'fieldsync server failed to start', err: String((err as Error)?.stack ?? err) }));
+  process.exit(1);
+});

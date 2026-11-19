@@ -13,8 +13,8 @@ import {
 const BATCH = 4;
 const CALLS = 120;
 const OFFLINE_DEVICE = 2;
-const ROUGH: Faults = { dropRequest: 0.12, dropResponse: 0.12, duplicate: 0.12, cut: 0.12, maxDelayMs: 400 };
-const NO_FAULTS: Faults = { dropRequest: 0, dropResponse: 0, duplicate: 0, cut: 0, maxDelayMs: 5 };
+const ROUGH: Faults = { dropRequest: 0.12, dropResponse: 0.12, duplicate: 0.12, cut: 0.12, late: 0.12, maxDelayMs: 400 };
+const NO_FAULTS: Faults = { dropRequest: 0, dropResponse: 0, duplicate: 0, cut: 0, late: 0, maxDelayMs: 5 };
 const USER: AuthUser = { id: 'user', role: 'technician' };
 
 const batch = (): Mutation[] =>
@@ -37,7 +37,9 @@ interface Call {
   kind: 'push' | 'pull';
   offline: boolean;
   served: number[];
+  servedAt: number[];
   outcome?: string;
+  answeredAt?: number;
 }
 
 async function run(seed: number) {
@@ -47,6 +49,7 @@ async function run(seed: number) {
   const calls: Call[] = [];
   const serve = (clientId: string, size: number) => {
     calls[Number(clientId)].served.push(size);
+    calls[Number(clientId)].servedAt.push(s.now);
     trace.push(`${s.now} server #${clientId} ${size}`);
   };
   const server: SyncServerPort = {
@@ -67,16 +70,20 @@ async function run(seed: number) {
     if (n === 80) net.setOffline(OFFLINE_DEVICE, false);
     const device = int(rng, devices.length);
     const kind = n % 3 === 0 ? 'pull' : 'push';
-    const call: Call = { device, kind, offline: n >= 40 && n < 80 && device === OFFLINE_DEVICE, served: [] };
+    const call: Call = { device, kind, offline: n >= 40 && n < 80 && device === OFFLINE_DEVICE, served: [], servedAt: [] };
     calls.push(call);
     const clientId = String(n);
     const answer =
       kind === 'pull'
         ? devices[device].pull({ clientId, cursor: null, ackedMutationId: 0, limit: 100 })
         : devices[device].push({ clientId, mutations: batch() });
+    const answered = (outcome: string) => {
+      call.answeredAt = s.now;
+      trace.push(`${s.now} device ${device} #${n} ${(call.outcome = outcome)}`);
+    };
     void answer.then(
-      () => trace.push(`${s.now} device ${device} #${n} ${(call.outcome = 'ok')}`),
-      (err: TransportError) => trace.push(`${s.now} device ${device} #${n} ${(call.outcome = err.kind)}`),
+      () => answered('ok'),
+      (err: TransportError) => answered(err.kind),
     );
     await s.advance(int(rng, 100));
   }
@@ -89,6 +96,7 @@ function fate(c: Call): string {
   if (c.served.length === 0) return 'request lost';
   if (c.served.length === 2) return 'duplicated';
   if (c.kind === 'push' && c.served[0] < BATCH) return 'cut';
+  if (c.outcome !== 'ok' && c.servedAt[0] > c.answeredAt!) return 'arrived after the client gave up';
   return c.outcome === 'ok' ? 'delivered' : 'response lost';
 }
 
@@ -133,6 +141,7 @@ describe('simulation kit', () => {
     expect((await run(43)).trace).not.toEqual(first.trace);
 
     expect([...new Set(first.calls.map(fate))].sort()).toEqual([
+      'arrived after the client gave up',
       'cut',
       'delivered',
       'duplicated',

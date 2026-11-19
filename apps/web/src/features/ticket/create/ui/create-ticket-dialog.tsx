@@ -2,7 +2,7 @@
 
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { SiteSelect, type Site } from '@/entities/site';
 import { formErrors } from '@/shared/lib/form-errors';
@@ -31,12 +31,21 @@ export function CreateTicketDialog({ sites, defaultSiteId }: { sites: readonly S
     defaultValues: { title: '', description: '', siteId: initialSite },
   });
 
+  // The user's sites change while the dialog stays mounted, and with one site the field is hidden: keep it valid.
+  useEffect(() => {
+    if (!sites.some((s) => s.id === form.getValues('siteId'))) form.setValue('siteId', initialSite);
+  }, [sites, initialSite, form]);
+
   const onSubmit = form.handleSubmit(async (fields) => {
     const created = create(fields);
     if (!created) return;
     setOpen(false);
     form.reset({ title: '', description: '', siteId: initialSite });
     if (await created.stored) router.push(`/tickets/${created.id}`);
+    else {
+      form.reset(fields);
+      setOpen(true);
+    }
   });
 
   if (sites.length === 0) return null;

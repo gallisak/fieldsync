@@ -29,7 +29,7 @@ export function SignInForm() {
             <FormItem>
               <FormLabel>Access token</FormLabel>
               <FormControl>
-                <Input autoComplete="off" autoFocus {...field} />
+                <Input type="password" autoComplete="off" autoFocus {...field} />
               </FormControl>
               <FormMessage />
             </FormItem>

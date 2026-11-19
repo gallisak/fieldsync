@@ -1,6 +1,6 @@
 import type { StoredRejection } from '@fieldsync/sync-core';
 import type { ReactNode } from 'react';
-import { formatRelative } from '@/shared/lib/relative-time';
+import { RelativeTime } from '@/shared/ui/relative-time';
 import { describeMutation, describeRejection } from '../model/messages';
 
 interface RejectionItemProps {
@@ -16,9 +16,7 @@ export function RejectionItem({ rejection, actions }: RejectionItemProps) {
       <p className="font-medium">{title}</p>
       <p className="text-sm">{hint}</p>
       <div className="flex items-center justify-between gap-2">
-        <time dateTime={rejection.at} className="text-xs text-muted-foreground">
-          {formatRelative(rejection.at)}
-        </time>
+        <RelativeTime iso={rejection.at} className="text-xs text-muted-foreground" />
         {actions}
       </div>
     </div>

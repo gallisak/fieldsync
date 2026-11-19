@@ -1,6 +1,6 @@
 import Link from 'next/link';
-import { formatRelative } from '@/shared/lib/relative-time';
 import { Badge } from '@/shared/ui/badge';
+import { RelativeTime } from '@/shared/ui/relative-time';
 import { TableCell, TableRow } from '@/shared/ui/table';
 import type { Ticket } from '../model/types';
 import { TicketStatusBadge } from './ticket-status-badge';
@@ -24,7 +24,7 @@ export function TicketRow({ ticket, siteName, unsynced }: TicketRowProps) {
       </TableCell>
       <TableCell>{siteName}</TableCell>
       <TableCell className="text-muted-foreground">
-        <time dateTime={ticket.updatedAt}>{formatRelative(ticket.updatedAt)}</time>
+        <RelativeTime iso={ticket.updatedAt} />
       </TableCell>
       <TableCell>
         {unsynced && (

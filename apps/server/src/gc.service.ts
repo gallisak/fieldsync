@@ -50,20 +50,21 @@ export class GcService implements OnModuleInit, OnModuleDestroy {
       );
       const cut = found.rows[0].cut === null ? null : Number(found.rows[0].cut);
 
+      // Kept as long as the client row, not the log: an offline client must still learn why it was refused.
+      const rejections = await c.query(
+        `DELETE FROM mutation_rejections WHERE created_at < now() - make_interval(days => $1)`,
+        [days],
+      );
+      // Clients before entities, the order push locks them in, so the two cannot deadlock.
+      const clients = await c.query(`DELETE FROM clients WHERE last_seen_at < now() - make_interval(days => $1)`, [
+        days,
+      ]);
       let log = 0;
       let tombstones = 0;
       if (cut !== null) {
         log = (await c.query(`DELETE FROM change_log WHERE version <= $1`, [cut])).rowCount ?? 0;
         tombstones = (await c.query(`DELETE FROM entities WHERE deleted AND version <= $1`, [cut])).rowCount ?? 0;
       }
-      // Kept as long as the client row, not the log: an offline client must still learn why it was refused.
-      const rejections = await c.query(
-        `DELETE FROM mutation_rejections WHERE created_at < now() - make_interval(days => $1)`,
-        [days],
-      );
-      const clients = await c.query(`DELETE FROM clients WHERE last_seen_at < now() - make_interval(days => $1)`, [
-        days,
-      ]);
       if (cut !== null) {
         // Last: writers lock sync_state last and hold it to COMMIT, so taking it earlier would stall every push.
         await c.query(`UPDATE sync_state SET min_retained_version = GREATEST(min_retained_version, $1)`, [cut]);

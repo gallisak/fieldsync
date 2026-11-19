@@ -42,6 +42,7 @@ export interface SyncStorage {
   commitPull(c: PullCommit): Promise<boolean>;
   dismissRejection(rejectionId: number): Promise<void>;
   resetClient(): Promise<PersistedState>;
-  onVersionChange?(listener: () => void): () => void;
+  /** 'deleted': another tab removed the database, as signing out with "discard" does. */
+  onVersionChange?(listener: (reason: 'upgrade' | 'deleted') => void): () => void;
   close(): void;
 }

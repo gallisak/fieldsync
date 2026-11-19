@@ -1,5 +1,6 @@
 import type { Cursor, PullResponse, PushRequest, PushResponse } from '../protocol/types';
 import { PROTOCOL, PROTOCOL_HEADER } from '../protocol/version';
+import { newId } from '../uuid';
 import { TransportError } from './errors';
 
 export interface PullParams {
@@ -61,7 +62,7 @@ export class HttpTransport implements Transport {
             ...init.headers,
             authorization: `Bearer ${this.token}`,
             [PROTOCOL_HEADER]: String(PROTOCOL),
-            'x-request-id': globalThis.crypto.randomUUID(),
+            'x-request-id': newId(),
           },
         });
       } catch (err) {

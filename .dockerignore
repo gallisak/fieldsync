@@ -6,3 +6,5 @@
 **/*.log
 # Configuration is passed to containers at run time, never baked into an image.
 **/.env
+**/.env.*
+!.env.example

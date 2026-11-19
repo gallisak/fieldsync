@@ -25,7 +25,6 @@ describeDb('F12 revocation and site moves reach the client', () => {
       title: 'F12 site-A ticket',
     });
     const c = new SyncClient({
-      clientId: 'tech-a-device',
       transport: new HttpTransport(await listen(t.app), TOKENS.techA),
       storage: new MemoryStorage(),
     });

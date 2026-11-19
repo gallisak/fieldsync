@@ -7,7 +7,6 @@ import {
   type PushResponse,
 } from '@fieldsync/sync-core';
 import { PinoLogger } from 'nestjs-pino';
-import { ZodError } from 'zod';
 import type { PoolClient } from 'pg';
 import type { AuthUser } from './auth/auth.guard';
 import { ApiError } from './common/errors';
@@ -35,18 +34,24 @@ export class PushService {
 
   async push(user: AuthUser, req: PushRequest): Promise<PushResponse> {
     const results: MutationResult[] = [];
-    for (const m of req.mutations) {
-      const { result, sites } = await withContext({ clientId: req.clientId, mutationId: m.id }, async () => {
-        const started = performance.now();
-        const applied = await this.applyOne(user, req.clientId, m);
-        const { status, code } = applied.result;
-        this.metrics.mutations.inc({ status });
-        if (code && status === 'rejected') this.metrics.rejected.inc({ code });
-        this.logger.info({ status, code, durationMs: Math.round(performance.now() - started) }, 'mutation');
-        return applied;
-      });
-      if (sites.length) this.streams.notify(sites);
-      results.push(result);
+    const changed = new Set<string>();
+    try {
+      for (const m of req.mutations) {
+        const { result, sites } = await withContext({ clientId: req.clientId, mutationId: m.id }, async () => {
+          const started = performance.now();
+          const applied = await this.applyOne(user, req.clientId, m);
+          const { status, code } = applied.result;
+          this.metrics.mutations.inc({ status });
+          if (code && status === 'rejected') this.metrics.rejected.inc({ code });
+          this.logger.info({ status, code, durationMs: Math.round(performance.now() - started) }, 'mutation');
+          return applied;
+        });
+        for (const s of sites) changed.add(s);
+        results.push(result);
+      }
+    } finally {
+      // Also when a later mutation failed: the earlier ones are committed.
+      if (changed.size) this.streams.notify([...changed]);
     }
     return { results, lastMutationId: await this.clients.lastMutationId(this.db.pool, req.clientId, user.id) };
   }
@@ -91,9 +96,6 @@ export class PushService {
   private toRejection(err: unknown, m: Mutation): Rejection {
     if (err instanceof MutationRejected) {
       return { code: err.code, message: err.message, ...(err.details === undefined ? {} : { details: err.details }) };
-    }
-    if (err instanceof ZodError) {
-      return { code: 'BAD_ARGS', message: err.issues[0]?.message ?? 'Invalid arguments', details: err.issues };
     }
     this.logger.error({ err, mutator: m.name }, 'mutation failed');
     return { code: 'INTERNAL', message: 'Unexpected server error' };

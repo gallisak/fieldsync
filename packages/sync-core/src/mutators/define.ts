@@ -44,6 +44,10 @@ export interface MutatorDef {
   apply(tx: MutatorTx, args: unknown, ctx: MutatorCtx): void;
 }
 
+// A rejection quotes the client's keys, and jsonb refuses NUL and unpaired surrogates: unstorable, it would fail the push.
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+const storable = (s: string) => s.replaceAll('\u0000', '\uFFFD').replace(LONE_SURROGATE, '\uFFFD');
+
 export function defineMutator<S extends z.ZodType>(spec: {
   args: S;
   reads(a: z.infer<S>): Key[];
@@ -53,7 +57,10 @@ export function defineMutator<S extends z.ZodType>(spec: {
   const parse = (raw: unknown): z.infer<S> => {
     const result = spec.args.safeParse(raw);
     if (!result.success) {
-      const issues = result.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message }));
+      const issues = result.error.issues.map((i) => ({
+        path: storable(i.path.join('.')),
+        message: storable(i.message),
+      }));
       throw new MutationRejected('BAD_ARGS', 'Invalid arguments', issues);
     }
     return result.data;

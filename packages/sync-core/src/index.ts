@@ -20,3 +20,4 @@ export * from './client/backoff';
 export * from './tabs/coordinator';
 export * from './tabs/web-locks';
 export * from './tabs/memory';
+export * from './uuid';

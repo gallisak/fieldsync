@@ -63,6 +63,7 @@ describe('EditTicketFields', () => {
     });
 
     storage.fail = true;
+    const logged = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     actEnv(false);
     div.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
     await new Promise((r) => setTimeout(r, 100));
@@ -70,5 +71,7 @@ describe('EditTicketFields', () => {
     expect(client.rows('ticket')[0]).toMatchObject({ title: 'Old' });
     expect(div.querySelector('input')!.value).toBe('New');
     expect(div.querySelector<HTMLButtonElement>('button[type=submit]')!.disabled).toBe(false);
+    expect(logged).toHaveBeenCalledWith('fieldsync: a change could not be stored on this device', expect.any(Error));
+    logged.mockRestore();
   });
 });

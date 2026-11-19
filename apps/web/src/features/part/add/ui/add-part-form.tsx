@@ -1,5 +1,6 @@
 'use client';
 
+import { MAX_PART_QUANTITY } from '@fieldsync/sync-core';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm } from 'react-hook-form';
 import { formErrors } from '@/shared/lib/form-errors';
@@ -51,7 +52,7 @@ export function AddPartForm({ ticketId }: { ticketId: string }) {
                 <Input
                   type="number"
                   min={1}
-                  max={1000}
+                  max={MAX_PART_QUANTITY}
                   {...field}
                   value={Number.isNaN(field.value) ? '' : field.value}
                   onChange={(e) => field.onChange(e.target.valueAsNumber)}

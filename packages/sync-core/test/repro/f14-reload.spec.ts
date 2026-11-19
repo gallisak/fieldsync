@@ -7,7 +7,7 @@ const SITE = '33333333-3333-4333-8333-333333333333';
 describe('F14 reload', () => {
   const clients: SyncClient[] = [];
   const open = (storage: MemoryStorage, transport: ScriptedTransport) => {
-    const c = new SyncClient({ clientId: 'c1', transport, storage });
+    const c = new SyncClient({ transport, storage });
     clients.push(c);
     return c;
   };

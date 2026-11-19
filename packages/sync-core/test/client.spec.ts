@@ -17,7 +17,7 @@ class OfflineTransport implements Transport {
 }
 
 function makeClient(): SyncClient {
-  return new SyncClient({ clientId: 'c1', transport: new OfflineTransport(), storage: new MemoryStorage() });
+  return new SyncClient({ transport: new OfflineTransport(), storage: new MemoryStorage() });
 }
 
 describe('SyncClient', () => {

@@ -10,7 +10,7 @@ describe('F16 acknowledgement before the pull', () => {
     const transport = new ScriptedTransport()
       .replyPush({ results: [{ id: 1, status: 'applied' }], lastMutationId: 1 })
       .replyPull(held.promise);
-    const client = new SyncClient({ clientId: 'c1', transport, storage: new MemoryStorage() });
+    const client = new SyncClient({ transport, storage: new MemoryStorage() });
     try {
       await client.ready;
       await client.mutate('ticket.create', { id: TICKET, siteId: SITE, title: 'Leaking valve', description: '' });

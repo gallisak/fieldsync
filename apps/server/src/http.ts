@@ -10,5 +10,7 @@ export function configureHttp(app: NestExpressApplication, config: AppConfig): v
   app.enableCors({
     origin: config.CORS_ORIGINS,
     allowedHeaders: ['authorization', 'content-type', PROTOCOL_HEADER, 'x-request-id'],
+    // Every push and pull carries custom headers; without this each one is preceded by a preflight.
+    maxAge: 600,
   });
 }

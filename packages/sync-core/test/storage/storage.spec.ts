@@ -274,12 +274,6 @@ function openRaw(name: string, version?: number, upgrade?: (db: IDBDatabase, tx:
   });
 }
 
-const result = <T>(request: IDBRequest<T>) =>
-  new Promise<T>((resolve, reject) => {
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-
 describe('IdbStorage specifics', () => {
   const name = () => `fieldsync-test-${randomUUID()}`;
 
@@ -318,8 +312,7 @@ describe('IdbStorage specifics', () => {
 
     const migrated = await openRaw(db);
     expect(migrated.version).toBe(LOCAL_SCHEMA);
-    const index = migrated.transaction('entities').objectStore('entities').index('ticketId');
-    expect(await result(index.getAllKeys('t1'))).toEqual(['part/p1']);
+    expect([...migrated.transaction('entities').objectStore('entities').indexNames]).toEqual([]);
     migrated.close();
   });
 
@@ -461,6 +454,22 @@ describe('IdbStorage specifics', () => {
     expect(notified).toHaveBeenCalledTimes(1);
     expect(client.facts.blocked).toBe('upgrade');
     await expect(storage.load()).rejects.toThrow(/upgraded/);
+    client.dispose();
+  });
+
+  it('reports a database deleted by another tab as signed out, not as an upgrade', async () => {
+    const db = name();
+    const storage = new IdbStorage(db, indexedDB, { legacy: null });
+    const client = new SyncClient({ transport: new ScriptedTransport(), storage, env: {} });
+    await client.ready;
+
+    await new Promise<void>((resolve, reject) => {
+      const del = indexedDB.deleteDatabase(db);
+      del.onsuccess = () => resolve();
+      del.onerror = () => reject(del.error);
+    });
+
+    expect(client.facts.blocked).toBe('auth');
     client.dispose();
   });
 });

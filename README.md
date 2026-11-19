@@ -6,7 +6,7 @@ authoritative Postgres-backed server. Task: `ЗАВДАННЯ.md`.
 ## Run
 
     cp .env.example .env                 # one config for server, tests, web and compose; real env vars win
-    docker compose up --build            # web :3000, api :3001, postgres :5432 (POSTGRES_PORT); Compose ≥ 2.24
+    docker compose up --build            # web :3000, api :3001, postgres 127.0.0.1:5432 (POSTGRES_PORT); Compose ≥ 2.24
 
 Node 22 (`.nvmrc`). The database lives in the `pgdata` volume; `docker compose down -v` starts it over.
 A stack started from an older checkout kept its database in an anonymous volume, so it comes up empty here. To keep
@@ -20,8 +20,8 @@ Demo tokens: `admin-token` (all sites), `tech-a-token` (North Plant), `tech-b-to
 inserts them into an empty database only; with them and an empty `METRICS_TOKEN` (open `/metrics`), the compose
 setup is for development, not for exposure.
 
-    npm run lint && npm run typecheck && npm test   # integration tests need DATABASE_URL (from .env); CI fails without it
-    npm run sim                                     # simulation, see below
+    npm run lint && npm run typecheck && npm test   # needs DATABASE_URL (from .env); SKIP_DB=1 skips the database suites
+    npm run sim                                     # the sync-core simulation, see below (npm test runs the Postgres one)
     LOAD_SEED=1 npm run load                        # load run against a running server, see below
 
 ### Manual acceptance (Chrome, containers; the offline shell needs the production build)
@@ -114,10 +114,11 @@ watermark; an advisory lock; one counter row. *Chosen:* `UPDATE sync_state … R
 every write. *Why:* commit order without tying cursors to transaction ids. Idempotency: client row `FOR UPDATE`
 + per-mutation transaction + `SAVEPOINT` + stored rejections (a unique constraint alone gives a 500, not
 `duplicate`; serializable relies on retries). *Limits:* the tail of every write is serialised: fine at the
-measured 61 mutations/s; batching or the watermark is the escape hatch.
+measured 60 mutations/s; batching or the watermark is the escape hatch.
 
 **2. Deterministic simulation.** *Options:* property tests with fast-check; an own harness. *Chosen:* own
-harness: virtual clock, seeded network model (loss, duplicates, reorder, delay, cut batches), crashes, tabs,
+harness: virtual clock, seeded network model (loss, duplicates, delay, cut batches, and reordering: a duplicate or a
+request the client gave up on lands after later requests), crashes, tabs,
 access changes, GC; a model server plus the same runs on Postgres with a differential check. *Why:* the bugs
 need a clock and a network more than generic shrinking; step-count bisection gives short repros. *Limits:*
 Postgres runs are serialised, so real races are covered by the concurrency integration tests instead.
@@ -138,8 +139,8 @@ fingerprint answers a snapshot that replaces the client's base. A move logs `del
 *Why:* one mechanism covers grant, revoke and new devices. *Limits:* an access change costs a full snapshot.
 
 **5. Merge semantics.** *Chosen:* `ticket.update` takes a patch: per-field last-writer-wins in server order;
-`part.adjust` sends deltas (commutative); a delta below zero is rejected `NEGATIVE_QUANTITY` rather than
-clamped (clamping changes the sum depending on order); status follows a state machine and a stale `from` is
+`part.adjust` sends deltas (commutative); a result below zero is rejected `NEGATIVE_QUANTITY`, and above the
+1 000 that `part.add` accepts `BAD_ARGS`, rather than clamped (clamping changes the sum depending on order); status follows a state machine and a stale `from` is
 `STATUS_CONFLICT` with the current status, shown in the inbox with retry/dismiss. *Options:* optimistic
 versions per ticket (every unrelated edit becomes a conflict), CRDT registers. *Limits:* two edits of the same
 field: the later one wins silently.
@@ -151,7 +152,8 @@ pages (holds back vacuum). *Limits:* the client stages snapshot pages in memory 
 
 **7. Schema evolution.** *Chosen:* protocol version on every request, `426` with `{ min, current }`; the client
 blocks with its queue intact. IndexedDB migrations run in order inside the upgrade transaction, keep data (add,
-or copy into a new store: v3 re-keys rejections by their own id), may drop base only together with the cursor,
+or copy into a new store: v3 re-keys rejections by their own id; v4 drops entity indexes nothing read), may drop
+base only together with the cursor,
 and never touch the queue. *Options:* a start-up handshake (an app open across a deploy keeps the old
 protocol). *Limits:* none beyond a header per request.
 
@@ -258,8 +260,9 @@ the parts; migration `006` deletes, through the log, the orphans the starter lef
 **F20 · stream subscribers never released.** *What:* no removal on close, no backpressure, no heartbeat. *Risk:*
 unbounded memory, writes to dead sockets. *Reproduce:* `f20-stream-leak` (500 cycles → gauge 0; 200 000 pokes to
 a non-reader). *Fix:* remove on `close`, coalesce while `writableNeedDrain`, shared heartbeat, per-user cap
-(the oldest stream is closed: a socket left half-open by a network switch must not lock the user out), close on
-shutdown. *Alternatives:* `once('drain')` per write, dropping slow clients.
+(the oldest stream is closed: a socket left half-open by a network switch must not lock the user out; the client
+resets its reconnect backoff only after a stream stayed up for a minute, so two devices over the cap do not evict
+each other in a loop), close on shutdown. *Alternatives:* `once('drain')` per write, dropping slow clients.
 
 **F21 · dispose leaves requests and timers.** *What:* `dispose()` cleared only the retry timer, requests had no
 timeout, the web effect no cleanup. *Risk:* leaked clients; a hung request blocks syncing forever.
@@ -380,23 +383,24 @@ every 1–5 s; each has its own network that drops for 5–60 s windows about 20
 flight. After 10 minutes all go online and invariants 4–5 are checked against Postgres. Seeded per client
 (`LOAD_SEED`); real time decides the interleaving.
 
-    docker compose up -d --build server && LOAD_SEED=1 npm run load   # LOAD_CLIENTS, LOAD_SITES, LOAD_DURATION_S
+    docker compose up -d --build server && LOAD_SEED=1 npm run load
+    # also LOAD_CLIENTS, LOAD_SITES, LOAD_DURATION_S, LOAD_HEAL_TIMEOUT_S, LOAD_API_URL (default http://localhost:3001)
 
-Run of 2026-11-19 on an Apple M1 (8 cores, 16 GiB, macOS 26.5), against images built from a fresh clone of
-`f3a4a0e`; server and Postgres 16 in Docker Desktop on the same machine.
+Run of 2026-11-19 on an Apple M1 (8 cores, 16 GiB, macOS 26.5), against a server image built from the commit
+that added these numbers; server and Postgres 16 in Docker Desktop on the same machine.
 
 | | |
 |---|---|
-| Offline time (measured) | 18.6% |
-| Mutations | 36 707 (~61/s): applied 35 754, rejected 953, duplicate retries 80 |
-| Rejections by code | `STATUS_CONFLICT` 633, `NO_ACCESS` 297, `NEGATIVE_QUANTITY` 23; clients hold the same 953 |
-| Delivery lag, push → another client, p50 / p95 / p99 | 0.38 / 0.95 / 1.37 s |
-| Delivery lag, `mutate()` → another client (includes author offline) | 0.55 / 28.2 / 46.1 s |
+| Offline time (measured) | 19.3% |
+| Mutations | 36 160 (~60/s): applied 35 261, rejected 899, duplicate retries 94 |
+| Rejections by code | `STATUS_CONFLICT` 568, `NO_ACCESS` 315, `NEGATIVE_QUANTITY` 16; clients hold the same 899 |
+| Delivery lag, push → another client, p50 / p95 / p99 | 0.45 / 1.00 / 1.45 s |
+| Delivery lag, `mutate()` → another client (includes author offline) | 0.71 / 29.7 / 47.7 s |
 | Snapshots | 200 `initial` |
-| `change_log` rows written | 36 944 |
-| Convergence after healing | 4.0 s, every base and view equals the server |
+| `change_log` rows written | 36 555 |
+| Convergence after healing | 5.4 s, every base and view equals the server |
 
-The load process itself was busy (event-loop delay p99 633 ms), so the lags are an upper bound; push p95 stayed
+The load process itself was busy (event-loop delay p99 713 ms), so the lags are an upper bound; push p95 stayed
 ≤ 0.25 s, so the `sync_state` lock was not the limit.
 
 ## Not done / would do differently
@@ -411,8 +415,17 @@ The load process itself was busy (event-loop delay p99 633 ms), so the lags are 
 - Restoring a database backup reuses versions clients may already have seen; after a restore run
   `UPDATE sync_state SET epoch = gen_random_uuid()` so every client takes a snapshot.
 - Same-field edits are last-writer-wins without telling the loser.
+- Assignment is "Assign to me" and "Unassign": the client knows no other user's name. Assigning someone else needs
+  a user directory endpoint; the server already checks that the assignee can see the ticket's site.
+- "Cancelled" freezes the status only: title, description, parts and site stay editable, so the paperwork can be
+  finished. Making it read-only would be one check in each mutator.
+- A part is never removed: one added by mistake goes to quantity 0 and stays listed. A `part.remove` mutator is the
+  next step.
+- Failed token lookups are not rate-limited (each is one indexed query); a deployment would put a limiter in front.
 - The ticket table is not virtualised (needed above ~1 000 tickets per site).
 - The load run used one machine and one generator process; a distributed run would measure the server alone.
-- Next.js stays on 14.2 (latest patch) and NestJS on 10.4: the remaining `npm audit` advisories (Next, and
-  Express 4's `body-parser`, `qs`, `multer`) are fixed only in Next 16 and Nest 11, majors that need React 19 and
-  an Express 5 migration.
+- Next.js stays on 14.2 (latest patch) and NestJS on 10.4: the remaining `npm audit` advisories (Next and its
+  `postcss`; Nest's `file-type`, and Express 4's `body-parser`, `qs`, `multer`) are fixed only in Next 16 and Nest 11,
+  majors that need React 19 and an Express 5 migration.
+- Served over plain HTTP from a LAN address (not `localhost`), the browser withholds Web Locks and service workers:
+  the app still syncs, but every tab syncs on its own and there is no offline shell. Serve it over HTTPS.

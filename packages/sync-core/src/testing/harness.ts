@@ -170,7 +170,7 @@ class LedgerStorage implements SyncStorage {
     throw new Error('the simulation resets clients only on memory storage');
   }
 
-  onVersionChange(listener: () => void): () => void {
+  onVersionChange(listener: (reason: 'upgrade' | 'deleted') => void): () => void {
     return this.inner.onVersionChange?.(listener) ?? (() => undefined);
   }
 

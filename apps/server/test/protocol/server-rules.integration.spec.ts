@@ -19,6 +19,19 @@ describeDb('server rules', () => {
   const first = async (token: string, clientId: string, name: string, args: Record<string, unknown>) =>
     (await push(t.http, token, clientId, [{ id: 2, name, args } as never])).body.results[0];
 
+  it('rejects arguments with keys Postgres cannot store, and the client can go on', async () => {
+    const id = await ticket('c1');
+    const bad = await first(TOKENS.techA, 'c1', 'ticket.update', { id, patch: { title: 'x', '\u0000': 1, '\ud800': 2 } });
+    expect(bad).toMatchObject({ status: 'rejected', code: 'BAD_ARGS' });
+    const next = await push(t.http, TOKENS.techA, 'c1', [{ id: 3, name: 'ticket.update', args: { id, patch: { title: 'y' } } }]);
+    expect(next.body.results[0]).toMatchObject({ status: 'applied' });
+  });
+
+  it('refuses a client id with characters it would not store or log', async () => {
+    expect((await push(t.http, TOKENS.techA, 'a\u0000b', [])).status).toBe(400);
+    expect((await t.http.get('/sync/pull?clientId=a%00b').set('authorization', `Bearer ${TOKENS.techA}`).set('x-fieldsync-protocol', '2')).status).toBe(400);
+  });
+
   it('does not seed again over existing users, so a revoked site stays revoked', async () => {
     await t.pool.query(`DELETE FROM user_sites WHERE user_id = $1`, [DEMO.techA]);
     await seed(t.pool);
@@ -120,11 +133,23 @@ describe('configuration bounds', () => {
     ['a timer past what setInterval can hold', { GC_INTERVAL_MS: String(2 ** 31) }],
     ['a heartbeat the client watchdog would not wait for', { STREAM_HEARTBEAT_MS: '60000' }],
     ['clients kept for less time than the log', { CLIENT_RETENTION_DAYS: '1', CHANGELOG_RETENTION_SECONDS: '172800' }],
+    ['a number in exponent notation', { DB_POOL_MAX: '1e3' }],
+    ['a number in hex', { PORT: '0x10' }],
+    ['a wildcard origin', { CORS_ORIGINS: '*' }],
+    ['an origin with a trailing slash', { CORS_ORIGINS: 'http://localhost:3000/' }],
+    ['no origin at all', { CORS_ORIGINS: ' , ' }],
   ])('refuses %s', (_label, env) => {
     expect(() => parseConfig({ ...base, ...env })).toThrow();
   });
 
   it('accepts the defaults', () => {
-    expect(() => parseConfig(base)).not.toThrow();
+    expect(parseConfig(base)).toMatchObject({ PORT: 3001, CORS_ORIGINS: ['http://localhost:3000', 'http://127.0.0.1:3000'] });
+  });
+
+  it('reads numbers and a list of origins', () => {
+    expect(parseConfig({ ...base, PORT: '8080', CORS_ORIGINS: 'https://a.example.com, http://10.0.0.5:3000' })).toMatchObject({
+      PORT: 8080,
+      CORS_ORIGINS: ['https://a.example.com', 'http://10.0.0.5:3000'],
+    });
   });
 });

@@ -106,6 +106,15 @@ describe('openPokeStream', () => {
     expect(err).toMatchObject({ kind: 'http', status: 401, code: 'UNAUTHENTICATED' });
   });
 
+  it('refuses a 200 that is not an event stream, such as a captive portal page', async () => {
+    const onOpen = jest.fn();
+    const fetchImpl = (async () =>
+      new Response('<html>sign in</html>', { status: 200, headers: { 'content-type': 'text/html' } })) as unknown as typeof fetch;
+    const err = await settle(openPokeStream({ ...base, fetchImpl, onPoke: jest.fn(), onOpen }));
+    expect(err).toMatchObject({ kind: 'http', status: 200 });
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
   it('rejects with the abort reason, not a TransportError, when the caller aborts', async () => {
     const server = fakeStream();
     const caller = new AbortController();

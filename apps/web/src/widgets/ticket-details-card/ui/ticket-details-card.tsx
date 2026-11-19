@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useViewer } from '@/entities/session';
 import { TicketStatusBadge, usePendingKeys, useTicket } from '@/entities/ticket';
+import { AssignTicket } from '@/features/ticket/assign';
 import { ChangeStatusButtons } from '@/features/ticket/change-status';
 import { DeleteTicketButton } from '@/features/ticket/delete';
 import { EditTicketFields } from '@/features/ticket/edit-fields';
@@ -13,7 +14,7 @@ import { useHasSynced, useSyncStatus } from '@/shared/api';
 import { Badge } from '@/shared/ui/badge';
 import { Button } from '@/shared/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/ui/card';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/shared/ui/dropdown-menu';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/shared/ui/dropdown-menu';
 import { LoadingCard } from '@/shared/ui/loading-card';
 
 export function TicketDetailsCard({ id }: { id: string }) {
@@ -25,13 +26,19 @@ export function TicketDetailsCard({ id }: { id: string }) {
   const { facts } = useSyncStatus();
   const loading = facts.blocked ? 'stopped' : facts.connection !== 'online' ? 'offline' : 'loading';
 
-  if (!ticket && !synced) return <LoadingCard title="Ticket" state={loading} />;
+  // A change still queued for it means this device removed it: deleted here, not lost or not loaded yet.
+  const deletedHere = !ticket && pending.has(`ticket/${id}`);
+  if (!ticket && !synced && !deletedHere) return <LoadingCard title="Ticket" state={loading} />;
   if (!ticket) {
     return (
       <Card>
         <CardHeader>
-          <CardTitle>Ticket unavailable</CardTitle>
-          <CardDescription>It was deleted, moved, or you no longer have access.</CardDescription>
+          <CardTitle>{deletedHere ? 'Ticket deleted' : 'Ticket unavailable'}</CardTitle>
+          <CardDescription>
+            {deletedHere
+              ? 'Deleted on this device; the server learns of it when the device syncs.'
+              : 'It was deleted, moved, or you no longer have access.'}
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <Link href="/" className="text-sm underline">
@@ -64,14 +71,21 @@ export function TicketDetailsCard({ id }: { id: string }) {
                 <MoreHorizontal />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="space-y-1">
+            <DropdownMenuContent align="end">
               <MoveTicketMenuItem ticketId={ticket.id} currentSiteId={ticket.siteId} sites={sites} />
-              <div className="p-1">
-                <DeleteTicketButton ticketId={ticket.id} onDeleted={() => router.push('/')} />
-              </div>
+              <DeleteTicketButton
+                ticketId={ticket.id}
+                onDeleted={() => router.push('/')}
+                trigger={
+                  <DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={(e) => e.preventDefault()}>
+                    Delete
+                  </DropdownMenuItem>
+                }
+              />
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
+        <AssignTicket ticketId={ticket.id} assigneeId={ticket.assigneeId} />
         {ticket.status === 'cancelled' ? (
           <p className="text-sm text-muted-foreground">This ticket is cancelled; its status can no longer change.</p>
         ) : (

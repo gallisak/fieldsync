@@ -16,6 +16,7 @@ export async function migrate(pool: Pool, dir = MIGRATIONS): Promise<string[]> {
   const files = await migrationFiles(dir);
   const c = await pool.connect();
   const applied: string[] = [];
+  let broken = false;
   try {
     // Serialises concurrently booting instances; session-level, so it spans the per-file transactions.
     await c.query('SELECT pg_advisory_lock($1)', [LOCK_KEY]);
@@ -40,10 +41,13 @@ export async function migrate(pool: Pool, dir = MIGRATIONS): Promise<string[]> {
         applied.push(file);
       }
     } finally {
-      await c.query('SELECT pg_advisory_unlock($1)', [LOCK_KEY]);
+      // Must not hide the migration's own error; dropping the connection releases the lock as well.
+      await c.query('SELECT pg_advisory_unlock($1)', [LOCK_KEY]).catch(() => {
+        broken = true;
+      });
     }
   } finally {
-    c.release();
+    c.release(broken);
   }
   return applied;
 }

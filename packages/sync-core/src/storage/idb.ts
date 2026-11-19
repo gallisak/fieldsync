@@ -75,7 +75,7 @@ export class IdbStorage implements SyncStorage {
   private upgradedElsewhere = false;
   private closed = false;
   private generation = 0;
-  private readonly versionListeners = new Set<() => void>();
+  private readonly versionListeners = new Set<(reason: 'upgrade' | 'deleted') => void>();
   private readonly newId: () => string;
 
   constructor(
@@ -169,7 +169,7 @@ export class IdbStorage implements SyncStorage {
     return state;
   }
 
-  onVersionChange(listener: () => void): () => void {
+  onVersionChange(listener: (reason: 'upgrade' | 'deleted') => void): () => void {
     this.versionListeners.add(listener);
     return () => this.versionListeners.delete(listener);
   }
@@ -236,10 +236,11 @@ export class IdbStorage implements SyncStorage {
       }
       // Removed only after the upgrade committed: a failed upgrade must not lose the old state.
       if (imported && legacySource) clearLegacyState(legacySource);
-      db.addEventListener('versionchange', () => {
+      db.addEventListener('versionchange', (event) => {
         db.close();
         this.upgradedElsewhere = true;
-        for (const listener of this.versionListeners) listener();
+        const reason = event.newVersion === null ? 'deleted' : 'upgrade';
+        for (const listener of this.versionListeners) listener(reason);
       });
       // The browser closed it (site data cleared, disk error): the next call opens a new connection.
       db.addEventListener('close', () => {

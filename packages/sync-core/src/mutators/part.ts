@@ -1,5 +1,5 @@
 import { MutationRejected, defineMutator } from './define';
-import { addPartArgs, adjustPartArgs } from './schemas';
+import { MAX_PART_QUANTITY, addPartArgs, adjustPartArgs } from './schemas';
 
 export const addPart = defineMutator({
   args: addPartArgs,
@@ -28,6 +28,9 @@ export const adjustPart = defineMutator({
     if (!part) throw new MutationRejected('NO_ACCESS', 'Part is unavailable: deleted, moved, or access revoked');
     const quantity = (part.quantity as number) + a.delta;
     if (quantity < 0) throw new MutationRejected('NEGATIVE_QUANTITY', 'Quantity cannot go below zero');
+    if (quantity > MAX_PART_QUANTITY) {
+      throw new MutationRejected('BAD_ARGS', `Quantity cannot go above ${MAX_PART_QUANTITY}`);
+    }
     tx.put('part', a.id, { ...part, quantity });
   },
 });

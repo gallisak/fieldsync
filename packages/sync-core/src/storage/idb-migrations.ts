@@ -1,4 +1,4 @@
-export const LOCAL_SCHEMA = 3;
+export const LOCAL_SCHEMA = 4;
 
 /**
  * A step keeps data: it adds, or copies into a new store. It must never clear `mutations` (the user's unsynced
@@ -26,5 +26,12 @@ export const migrations: Record<number, (db: IDBDatabase, tx: IDBTransaction) =>
       for (const r of all.result as object[]) rejections.add(r);
       db.deleteObjectStore('rejections_v2');
     };
+  },
+  // Nothing reads by these: the client keeps its base in memory. Each put still had to update all three.
+  4(_db, tx) {
+    const entities = tx.objectStore('entities');
+    for (const index of ['entity', 'siteId', 'ticketId']) {
+      if (entities.indexNames.contains(index)) entities.deleteIndex(index);
+    }
   },
 };

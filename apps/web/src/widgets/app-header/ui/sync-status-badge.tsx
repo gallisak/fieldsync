@@ -34,7 +34,13 @@ export function SyncStatusBadge({ inbox }: { inbox: (trigger: ReactElement) => R
     <TooltipProvider>
       <Tooltip>
         <TooltipTrigger asChild>
-          <span className="inline-flex">{element}</span>
+          {/* Focusable only around the plain status, so keyboard users reach its tooltip; a button already is. */}
+          <span
+            className="inline-flex rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            tabIndex={badge === 'rejected' || badge === 'auth' ? undefined : 0}
+          >
+            {element}
+          </span>
         </TooltipTrigger>
         <TooltipContent>{tooltip}</TooltipContent>
       </Tooltip>

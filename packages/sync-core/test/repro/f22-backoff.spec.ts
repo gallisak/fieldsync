@@ -8,7 +8,7 @@ describe('F22 retry scheduling', () => {
   afterEach(() => jest.useRealTimers());
 
   const makeClient = (transport: ScriptedTransport) =>
-    new SyncClient({ clientId: 'c1', transport, storage: new MemoryStorage(), random: () => 0.5 });
+    new SyncClient({ transport, storage: new MemoryStorage(), random: () => 0.5 });
 
   it('backs off with growing, capped delays while the server is unreachable', async () => {
     jest.useFakeTimers({ now: 0 });

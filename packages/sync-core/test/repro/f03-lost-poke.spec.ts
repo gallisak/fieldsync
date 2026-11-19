@@ -5,7 +5,7 @@ describe('F3 poke during an in-flight sync', () => {
   it('pulls again after the running sync finishes', async () => {
     const held = deferred<PullResponse>();
     const transport = new ScriptedTransport().replyPull(held.promise).alwaysPull(emptyPull());
-    const client = new SyncClient({ clientId: 'c1', transport, storage: new MemoryStorage() });
+    const client = new SyncClient({ transport, storage: new MemoryStorage() });
     try {
       const first = client.sync();
       await flush();

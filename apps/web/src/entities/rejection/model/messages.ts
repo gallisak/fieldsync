@@ -70,7 +70,7 @@ export function describeRejection(r: StoredRejection): { title: string; hint: st
         hint: 'It was deleted, moved to another site, or your access was removed.',
       };
     case 'ALREADY_EXISTS':
-      return { title: 'This item already exists', hint: 'Reload and try again.' };
+      return { title: 'This item already exists', hint: 'Another item already uses its id. Create it again.' };
     case 'BAD_ARGS':
       return { title: 'The change was not valid', hint: r.message };
     case 'INTERNAL':

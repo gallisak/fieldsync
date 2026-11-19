@@ -5,8 +5,8 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-fieldsync}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fieldsync}
       POSTGRES_DB: ${POSTGRES_DB:-fieldsync}
-    # POSTGRES_PORT moves it off a local Postgres already on 5432.
-    ports: ["${POSTGRES_PORT:-5432}:5432"]
+    # POSTGRES_PORT moves it off a local Postgres already on 5432. Only this machine: the credentials are defaults.
+    ports: ["127.0.0.1:${POSTGRES_PORT:-5432}:5432"]
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:

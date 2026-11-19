@@ -73,6 +73,9 @@ export async function openPokeStream(opts: PokeStreamOptions): Promise<void> {
         typeof body?.message === 'string' ? body.message : undefined,
       );
     }
+    if (!res.headers.get('content-type')?.startsWith('text/event-stream')) {
+      throw new TransportError('http', res.status, undefined, undefined, 'Not an event stream');
+    }
     opts.onOpen?.();
 
     const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();

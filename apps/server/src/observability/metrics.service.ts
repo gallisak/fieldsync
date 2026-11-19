@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Counter, Gauge, Histogram, Registry } from 'prom-client';
+import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from 'prom-client';
 import { Db } from '../database/db.service';
 import { StreamService } from '../stream.service';
 
@@ -55,6 +55,7 @@ export class MetricsService {
   });
 
   constructor(db: Db, streams: StreamService) {
+    collectDefaultMetrics({ register: this.registry });
     new Gauge({
       name: 'fieldsync_active_streams',
       help: 'Open poke streams',

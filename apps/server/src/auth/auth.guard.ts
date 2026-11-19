@@ -1,5 +1,5 @@
 import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
 import { Db } from '../database/db.service';
 import { requestContext } from '../common/request-context';
 import { tokenHash } from './token-hash';
@@ -16,14 +16,19 @@ export class AuthGuard implements CanActivate {
   constructor(private readonly db: Db) {}
 
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
-    const req = ctx.switchToHttp().getRequest<AuthedRequest>();
+    const http = ctx.switchToHttp();
+    const req = http.getRequest<AuthedRequest>();
     const header = req.headers.authorization;
-    const token = typeof header === 'string' && header.startsWith('Bearer ') ? header.slice(7) : '';
-    if (!token) throw new UnauthorizedException();
+    const token = typeof header === 'string' ? (/^bearer +(\S+)$/i.exec(header)?.[1] ?? '') : '';
+    const refuse = () => {
+      http.getResponse<Response>().setHeader('www-authenticate', 'Bearer');
+      return new UnauthorizedException();
+    };
+    if (!token) throw refuse();
     const { rows } = await this.db.pool.query<AuthUser>(`SELECT id, role FROM users WHERE token_hash = $1`, [
       tokenHash(token),
     ]);
-    if (rows.length === 0) throw new UnauthorizedException();
+    if (rows.length === 0) throw refuse();
     req.user = rows[0];
     const context = requestContext.getStore();
     if (context) {

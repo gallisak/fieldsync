@@ -58,7 +58,13 @@ export class WebLocksCoordinator implements TabCoordinator {
         // Held until released: aborting the signal only cancels a request that is still waiting.
         return new Promise<void>((resolve) => (this.release = resolve));
       })
-      .catch(() => undefined);
+      .catch((err: unknown) => {
+        if (pending.signal.aborted || this.closed) return;
+        // Without the lock no tab could lead, and nothing would sync: lead as a browser without Web Locks does.
+        console.error('fieldsync: tab leadership unavailable, this tab syncs on its own:', err);
+        this.leading = true;
+        this.onLeaderChange?.(true);
+      });
   }
 
   private readonly onPageHide = (): void => {

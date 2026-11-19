@@ -1,5 +1,6 @@
 import { PROTOCOL, PROTOCOL_HEADER, type Change } from '@fieldsync/sync-core';
 import { DEMO, TOKENS, createTicket, listen, openStream, pull, seed } from '../support/api';
+import { tokenHash } from '../../src/auth/token-hash';
 import { createTestApp, describeDb, until, type TestApp } from '../support/pg';
 
 describeDb('admin access endpoints', () => {
@@ -79,6 +80,23 @@ describeDb('admin access endpoints', () => {
       await until(async () => pokes() >= 4, 'a poke for its own site');
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(pokes()).toBe(4);
+    } finally {
+      stream.req.destroy();
+    }
+  });
+
+  it('refreshes the open stream also when the ids in the URL are in upper case', async () => {
+    const userId = 'abcdef00-0000-4000-8000-0000000000cd';
+    await t.pool.query(`INSERT INTO users (id, name, role, token_hash) VALUES ($1, 'Upper', 'technician', $2)`, [
+      userId,
+      tokenHash('upper-token'),
+    ]);
+    const stream = await openStream(await listen(t.app), { token: 'upper-token' });
+    try {
+      expect(stream.status).toBe(200);
+      const path = `/admin/users/${userId.toUpperCase()}/sites/${DEMO.siteA.toUpperCase()}`;
+      expect((await call('post', path, TOKENS.admin)).status).toBe(204);
+      await until(async () => stream.received().includes('event: poke'), 'a poke after the grant');
     } finally {
       stream.req.destroy();
     }

@@ -1,4 +1,5 @@
 import type { Change, Cursor, Row } from '../protocol/types';
+import { newId } from '../uuid';
 import type { PersistedState, PullCommit, StoredMutation, StoredRejection, SyncStorage } from './types';
 
 export interface WholeState {
@@ -12,7 +13,7 @@ export interface WholeState {
   nextRejectionId?: number;
 }
 
-export const newClientId = (): string => globalThis.crypto.randomUUID();
+export const newClientId = (): string => newId();
 
 export function emptyState(clientId: string): WholeState {
   return { clientId, cursor: null, lastMutationId: 0, nextMutationId: 1, base: [], pending: [], rejections: [] };

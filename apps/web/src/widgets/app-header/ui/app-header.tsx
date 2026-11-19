@@ -12,6 +12,7 @@ import { Button } from '@/shared/ui/button';
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
@@ -44,7 +45,7 @@ export function AppHeader({ inbox }: AppHeaderProps) {
           )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="sm">
+              <Button variant="ghost" size="sm" aria-label={`Account: ${role}`}>
                 {role}
               </Button>
             </DropdownMenuTrigger>
@@ -56,9 +57,7 @@ export function AppHeader({ inbox }: AppHeaderProps) {
                 </span>
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
-              <div className="p-1">
-                <SignOutButton />
-              </div>
+              <SignOutButton trigger={<DropdownMenuItem onSelect={(e) => e.preventDefault()}>Sign out</DropdownMenuItem>} />
             </DropdownMenuContent>
           </DropdownMenu>
         </div>

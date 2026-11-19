@@ -12,10 +12,12 @@ import { APP_CONFIG, parseConfig } from '../../src/config/env';
 import { Db } from '../../src/database/db.service';
 import { configureHttp } from '../../src/http';
 
+// A missing DATABASE_URL must not turn most of the suite into a green run of skipped tests.
 export function requireDatabaseUrl(): string | undefined {
   const url = process.env.DATABASE_URL;
-  if (!url && process.env.CI) throw new Error('DATABASE_URL is required in CI');
-  return url || undefined;
+  if (url) return url;
+  if (process.env.SKIP_DB && !process.env.CI) return undefined;
+  throw new Error('DATABASE_URL is required for the database suites (see .env.example); SKIP_DB=1 skips them');
 }
 
 export function describeDb(name: string, fn: () => void): void {

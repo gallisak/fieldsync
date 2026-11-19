@@ -43,7 +43,7 @@ describe('rejection messages', () => {
       'Ticket is no longer available',
       'It was deleted, moved to another site, or your access was removed.',
     ],
-    ['ALREADY_EXISTS', rejection('ALREADY_EXISTS'), 'This item already exists', 'Reload and try again.'],
+    ['ALREADY_EXISTS', rejection('ALREADY_EXISTS'), 'This item already exists', 'Another item already uses its id. Create it again.'],
     ['BAD_ARGS', rejection('BAD_ARGS'), 'The change was not valid', 'server says no'],
     ['INTERNAL', rejection('INTERNAL'), 'Server error', 'Your change was not applied. You can try again.'],
   ])('%s', (_code, r, title, hint) => {

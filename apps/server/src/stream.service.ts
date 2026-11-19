@@ -21,6 +21,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   private readonly subscribers = new Set<Subscriber>();
   private readonly refreshing = new Map<string, Promise<void>>();
   private timer?: NodeJS.Timeout;
+  private closing = false;
 
   constructor(
     private readonly db: Db,
@@ -37,6 +38,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   }
 
   onModuleDestroy(): void {
+    this.closing = true;
     if (this.timer) clearInterval(this.timer);
     for (const sub of this.subscribers) sub.res.end();
     this.subscribers.clear();
@@ -45,6 +47,11 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   add(userId: string, sites: Iterable<string>, res: Response): void {
     // The client may have left while its sites were being read; its 'close' has already fired.
     if (!res.socket || res.socket.destroyed) return;
+    // Opened while shutting down: nothing would end it, and the HTTP server would wait for it.
+    if (this.closing) {
+      res.status(503).end();
+      return;
+    }
     // A peer that vanished without closing its socket (network switch) still counts; the newest stream is live.
     const open = [...this.subscribers].filter((s) => s.userId === userId);
     const excess = open.length + 1 - this.config.STREAM_MAX_PER_USER;

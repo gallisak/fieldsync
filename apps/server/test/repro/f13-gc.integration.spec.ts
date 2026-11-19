@@ -16,9 +16,8 @@ describeDb('F13 change-log GC vs stale and new clients', () => {
     await t?.close();
   });
 
-  const newClient = (baseUrl: string, clientId: string) => {
+  const newClient = (baseUrl: string) => {
     const c = new SyncClient({
-      clientId,
       transport: new HttpTransport(baseUrl, TOKENS.admin),
       storage: new MemoryStorage(),
     });
@@ -42,7 +41,7 @@ describeDb('F13 change-log GC vs stale and new clients', () => {
       );
     }
 
-    const stale = newClient(baseUrl, 'stale-device');
+    const stale = newClient(baseUrl);
     await stale.sync();
     expect(stale.rows('ticket')).toHaveLength(10);
 
@@ -72,7 +71,7 @@ describeDb('F13 change-log GC vs stale and new clients', () => {
     await stale.sync();
     expect(sortById(stale.rows('ticket'))).toEqual(server);
 
-    const fresh = newClient(baseUrl, 'fresh-device');
+    const fresh = newClient(baseUrl);
     await fresh.sync();
     expect(sortById(fresh.rows('ticket'))).toEqual(server);
   });

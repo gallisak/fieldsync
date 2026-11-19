@@ -27,11 +27,13 @@ export const deleteTicketArgs = z.object({ id });
 
 export const moveTicketArgs = z.object({ id, toSiteId: id });
 
+export const MAX_PART_QUANTITY = 1000;
+
 export const addPartArgs = z.object({
   id,
   ticketId: id,
   name: storable(z.string().trim().min(1).max(100)),
-  quantity: z.number().int().min(1).max(1000),
+  quantity: z.number().int().min(1).max(MAX_PART_QUANTITY),
 });
 
-export const adjustPartArgs = z.object({ id, delta: z.number().int().min(-1000).max(1000) });
+export const adjustPartArgs = z.object({ id, delta: z.number().int().min(-MAX_PART_QUANTITY).max(MAX_PART_QUANTITY) });

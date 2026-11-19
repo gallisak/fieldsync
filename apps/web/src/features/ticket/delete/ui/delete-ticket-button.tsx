@@ -11,16 +11,21 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/shared/ui/alert-dialog';
+import type { ReactElement } from 'react';
 import { Button } from '@/shared/ui/button';
 import { useDeleteTicket } from '../model/use-delete-ticket';
 
-export function DeleteTicketButton({ ticketId, onDeleted }: { ticketId: string; onDeleted?: () => void }) {
+interface DeleteTicketButtonProps {
+  ticketId: string;
+  onDeleted?: () => void;
+  trigger?: ReactElement;
+}
+
+export function DeleteTicketButton({ ticketId, onDeleted, trigger }: DeleteTicketButtonProps) {
   const remove = useDeleteTicket(ticketId);
   return (
     <AlertDialog>
-      <AlertDialogTrigger asChild>
-        <Button variant="destructive">Delete</Button>
-      </AlertDialogTrigger>
+      <AlertDialogTrigger asChild>{trigger ?? <Button variant="destructive">Delete</Button>}</AlertDialogTrigger>
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>Delete this ticket?</AlertDialogTitle>

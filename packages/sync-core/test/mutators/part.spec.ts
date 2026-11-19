@@ -67,6 +67,14 @@ describe('part.adjust', () => {
     expect(tx.get('part', PART)?.quantity).toBe(1);
   });
 
+  it('allows reaching exactly 1000, the most part.add accepts, and rejects going above it', () => {
+    const tx = new MapTx([['part', part(998)]]);
+    run(tx, 'part.adjust', { id: PART, delta: 2 });
+    expect(tx.get('part', PART)?.quantity).toBe(1000);
+    expectRejected(tx, 'part.adjust', { id: PART, delta: 1 }, 'BAD_ARGS');
+    expect(tx.get('part', PART)?.quantity).toBe(1000);
+  });
+
   it('rejects a missing part with NO_ACCESS', () => {
     expectRejected(new MapTx(), 'part.adjust', { id: PART, delta: 1 }, 'NO_ACCESS');
   });

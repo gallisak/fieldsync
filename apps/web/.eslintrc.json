@@ -51,5 +51,6 @@
         ]
       }
     ]
-  }
+  },
+  "overrides": [{ "files": ["test/**"], "rules": { "no-restricted-imports": "off" } }]
 }

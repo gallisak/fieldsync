@@ -17,10 +17,18 @@ describe('part.add', () => {
     expect(tx.get('part', PART)).toEqual(part(2));
   });
 
-  it('is a no-op when the part already exists', () => {
+  it('is a no-op when the part already exists on this ticket (a retry)', () => {
     const tx = new MapTx([['ticket', ticket], ['part', part(7)]]);
     run(tx, 'part.add', args);
     expect(tx.get('part', PART)).toEqual(part(7));
+  });
+
+  it('rejects an id taken by a part of another ticket, or by a deleted part, with ALREADY_EXISTS', () => {
+    const elsewhere = new MapTx([['ticket', ticket], ['part', { ...part(7), ticketId: 'another' }]]);
+    expectRejected(elsewhere, 'part.add', args, 'ALREADY_EXISTS');
+    const deleted = new MapTx([['ticket', ticket]]);
+    deleted.exists = (entity, id) => entity === 'part' && id === PART;
+    expectRejected(deleted, 'part.add', args, 'ALREADY_EXISTS');
   });
 
   it('rejects a missing ticket with NO_ACCESS', () => {

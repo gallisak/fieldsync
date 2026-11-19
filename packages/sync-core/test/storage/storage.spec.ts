@@ -202,9 +202,29 @@ describe.each(backends)('%s', (_name, backend) => {
     const s = handle();
     await s.enqueue(mutation('a'));
     await s.commitPull(page(null, 'c1', { lastMutationId: 1, rejections: [{ mutationId: 1, code: 'NO_ACCESS', message: 'gone' }] }));
-    expect((await s.load()).rejections).toHaveLength(1);
-    await s.dismissRejection(1);
+    const [rejection] = (await s.load()).rejections;
+    await s.dismissRejection(rejection.id);
     expect((await handle().load()).rejections).toHaveLength(0);
+  });
+
+  it('keeps a rejection from before a client reset apart from a new one with the same mutation id', async () => {
+    const s = handle();
+    const reject = (expected: string | null, next: string, message: string) =>
+      s.commitPull(page(expected, next, { lastMutationId: 1, rejections: [{ mutationId: 1, code: 'NO_ACCESS', message }] }));
+    await s.enqueue(mutation('old'));
+    await reject(null, 'c1', 'old one');
+    await s.resetClient();
+    await s.enqueue(mutation('new'));
+    await reject('c1', 'c2', 'new one');
+
+    const { rejections } = await handle().load();
+    expect(rejections.map((r) => [r.mutation.id, r.message])).toEqual([
+      [1, 'old one'],
+      [1, 'new one'],
+    ]);
+    expect(new Set(rejections.map((r) => r.id)).size).toBe(2);
+    await s.dismissRejection(rejections[0].id);
+    expect((await handle().load()).rejections.map((r) => r.message)).toEqual(['new one']);
   });
 
   it('resets the client: new id, queue renumbered from 1, data and cursor kept', async () => {
@@ -303,15 +323,16 @@ describe('IdbStorage specifics', () => {
     migrated.close();
   });
 
-  it('imports the starter blob once: data and lastMutationId, a null cursor, the old client id', async () => {
+  it('imports the starter blob once: its data under a new client id, whose counter it cannot trust', async () => {
     const ls = fakeLocalStorage();
     ls.setItem(LEGACY_CLIENT_ID_KEY, 'legacy-client');
     ls.setItem(LEGACY_STATE_KEY, JSON.stringify({ cursor: 42, lastMutationId: 5, base: { 'ticket/t': row('t') } }));
     const s = new IdbStorage(name(), indexedDB, { legacy: ls });
     const state = await s.load();
-    expect(state).toMatchObject({ clientId: 'legacy-client', cursor: null, lastMutationId: 5, pending: [] });
+    expect(state).toMatchObject({ cursor: null, lastMutationId: 0, pending: [] });
+    expect(state.clientId).not.toBe('legacy-client');
     expect([...state.base]).toEqual([['ticket/t', row('t')]]);
-    expect((await s.enqueue(mutation('a'))).id).toBe(6);
+    expect((await s.enqueue(mutation('a'))).id).toBe(1);
     expect(ls.getItem(LEGACY_STATE_KEY)).toBeNull();
     expect(ls.getItem(LEGACY_CLIENT_ID_KEY)).toBeNull();
     s.close();
@@ -344,6 +365,43 @@ describe('IdbStorage specifics', () => {
     s.close();
   });
 
+  it.each([
+    ['null', 'null'],
+    ['a number', '42'],
+    ['a blob without base', JSON.stringify({ cursor: 3, lastMutationId: 2 })],
+    ['a row without a site', JSON.stringify({ cursor: 3, lastMutationId: 2, base: { 'ticket/t': { id: 't' } } })],
+  ])('opens normally when the legacy state is %s', async (_label, raw) => {
+    const ls = fakeLocalStorage();
+    ls.setItem(LEGACY_STATE_KEY, raw);
+    const s = new IdbStorage(name(), indexedDB, { legacy: ls });
+    expect(await s.load()).toMatchObject({ lastMutationId: 0, pending: [], rejections: [] });
+    s.close();
+  });
+
+  it('migrates rejections of a version 2 database, which were keyed by mutation id', async () => {
+    const db = name();
+    const rejection = { mutation: { ...mutation('a'), id: 4 }, code: 'NO_ACCESS', message: 'gone', at: '2026-01-01T10:00:00.000Z' };
+    const v2 = await openRaw(db, 2, (raw, tx) => {
+      raw.createObjectStore('meta');
+      const entities = raw.createObjectStore('entities');
+      entities.createIndex('entity', 'entity');
+      entities.createIndex('siteId', 'siteId');
+      entities.createIndex('ticketId', 'data.ticketId');
+      raw.createObjectStore('mutations', { keyPath: 'id' });
+      raw.createObjectStore('rejections', { keyPath: 'mutation.id' });
+      tx.objectStore('meta').put('v2-client', 'clientId');
+      tx.objectStore('rejections').put(rejection);
+    });
+    v2.close();
+
+    const s = new IdbStorage(db, indexedDB, { legacy: null });
+    const { rejections } = await s.load();
+    expect(rejections).toEqual([{ ...rejection, id: expect.any(Number) }]);
+    await s.dismissRejection(rejections[0].id);
+    expect((await s.load()).rejections).toEqual([]);
+    s.close();
+  });
+
   it('imports nothing into a database that already exists', async () => {
     const db = name();
     const first = new IdbStorage(db, indexedDB, { legacy: null });
@@ -355,6 +413,33 @@ describe('IdbStorage specifics', () => {
     expect(await second.load()).toMatchObject({ clientId, lastMutationId: 0 });
     expect(ls.getItem(LEGACY_STATE_KEY)).not.toBeNull();
     second.close();
+  });
+
+  it('blocks with "upgrade" instead of using memory quietly when the database is newer than this app', async () => {
+    jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const db = name();
+    (await openRaw(db, LOCAL_SCHEMA + 1)).close();
+    const client = new SyncClient({ transport: new ScriptedTransport(), storage: new IdbStorage(db, indexedDB, { legacy: null }), env: {} });
+    await client.ready;
+    expect(client.facts).toMatchObject({ storage: 'memory', blocked: 'upgrade' });
+    client.dispose();
+    jest.restoreAllMocks();
+  });
+
+  it('does not open again once closed', async () => {
+    const s = new IdbStorage(name(), indexedDB, { legacy: null });
+    await s.load();
+    s.close();
+    await expect(s.load()).rejects.toThrow(/closed/);
+  });
+
+  it('stamps a rejection with the time the pull was received', async () => {
+    const s = new IdbStorage(name(), indexedDB, { legacy: null });
+    await s.enqueue(mutation('a'));
+    const receivedAt = '2030-05-05T05:05:05.000Z';
+    await s.commitPull({ ...page(null, 'c1'), receivedAt, lastMutationId: 1, rejections: [{ mutationId: 1, code: 'NO_ACCESS', message: 'gone' }] });
+    expect((await s.load()).rejections[0].at).toBe(receivedAt);
+    s.close();
   });
 
   it('closes when a newer app version upgrades the database, and the client blocks with "upgrade"', async () => {

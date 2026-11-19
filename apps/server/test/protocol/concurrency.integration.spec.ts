@@ -135,6 +135,69 @@ describeDb('concurrency on real Postgres', () => {
     }, 30_000);
   });
 
+  describe('one new id written from two sites at once', () => {
+    async function race(a: Mutation, b: Mutation): Promise<string[]> {
+      const http = request(await listen(t.app));
+      const blocker = await t.pool.connect();
+      try {
+        await blocker.query('BEGIN');
+        await blocker.query('SELECT 1 FROM sync_state FOR UPDATE');
+        const { rows } = await blocker.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+
+        const inFlight = Promise.all([
+          push(http, TOKENS.techA, 'tech-a', [a]),
+          push(http, TOKENS.techB, 'tech-b', [b]),
+        ]);
+        await until(async () => (await waitersOn(t.pool, rows[0].pid)) >= 2, 'both requests to queue', 10_000);
+        await blocker.query('ROLLBACK');
+
+        const responses = await inFlight;
+        for (const r of responses) expect(r.status).toBeLessThan(300);
+        return responses.map((r) => r.body.results[0].status).sort();
+      } finally {
+        await blocker.query('ROLLBACK').catch(() => undefined);
+        blocker.release();
+      }
+    }
+
+    const sitesOf = async (id: string) =>
+      (await t.pool.query<{ s: string }>(`SELECT site_id AS s FROM change_log WHERE entity_id = $1`, [id])).rows.map(
+        (r) => r.s,
+      );
+
+    it('ticket.create: the first wins, the second is rejected and leaves no trace', async () => {
+      const id = randomUUID();
+      const statuses = await race(
+        { id: 1, name: 'ticket.create', args: { id, siteId: DEMO.siteA, title: 'from A', description: '' } },
+        { id: 1, name: 'ticket.create', args: { id, siteId: DEMO.siteB, title: 'from B', description: '' } },
+      );
+
+      expect(statuses).toEqual(['applied', 'rejected']);
+      const logged = await sitesOf(id);
+      expect(logged).toHaveLength(1);
+      const { rows } = await t.pool.query<{ s: string }>(`SELECT site_id AS s FROM entities WHERE id = $1`, [id]);
+      expect(rows).toEqual([{ s: logged[0] }]);
+    }, 30_000);
+
+    it('part.add: one part id on tickets of two sites stays on the first', async () => {
+      const setup = { mutationId: 1, title: 'setup' };
+      const onA = await createTicket(t.http, { ...setup, token: TOKENS.techA, clientId: 'setup-a', siteId: DEMO.siteA });
+      const onB = await createTicket(t.http, { ...setup, token: TOKENS.techB, clientId: 'setup-b', siteId: DEMO.siteB });
+      const id = randomUUID();
+
+      const statuses = await race(
+        { id: 1, name: 'part.add', args: { id, ticketId: onA, name: 'filter', quantity: 1 } },
+        { id: 1, name: 'part.add', args: { id, ticketId: onB, name: 'filter', quantity: 1 } },
+      );
+
+      expect(statuses).toEqual(['applied', 'rejected']);
+      const logged = await sitesOf(id);
+      expect(logged).toHaveLength(1);
+      const { rows } = await t.pool.query<{ s: string }>(`SELECT site_id AS s FROM entities WHERE id = $1`, [id]);
+      expect(rows).toEqual([{ s: logged[0] }]);
+    }, 30_000);
+  });
+
   it('a rejection in the middle of a batch survives a lost response', async () => {
     const ticketId = await createTicket(t.http, {
       token: TOKENS.admin,
@@ -218,6 +281,23 @@ describeDb('concurrency on real Postgres', () => {
       expect(again.body.results).toEqual([{ id: 2, status: 'applied' }]);
       expect(await count(`change_log WHERE entity_id = $1`, [m.args.id])).toBe(1);
       expect(await count(`entities WHERE id = $1`, [m.args.id])).toBe(1);
+    });
+
+    it('a database that cancels the statement is answered 503 and does not consume the id', async () => {
+      failAfterLogInsert('cancelled', async (c) => {
+        await c.query('SELECT pg_cancel_backend(pg_backend_pid())');
+      });
+      const m = create(2, 'cancelled');
+
+      const res = await push(t.http, TOKENS.admin, 'c1', [m]);
+
+      expect(res.status).toBe(503);
+      expect(await count(`mutation_rejections WHERE client_id = $1`, ['c1'])).toBe(0);
+      expect(await lastMutationId('c1')).toBe(1);
+
+      executor.hooks.afterLogInsert = undefined;
+      const again = await push(t.http, TOKENS.admin, 'c1', [m]);
+      expect(again.body.results).toEqual([{ id: 2, status: 'applied' }]);
     });
 
     it('an exception rolls back to the savepoint: no row, INTERNAL rejection, the next mutation applies', async () => {

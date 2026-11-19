@@ -6,6 +6,7 @@ export class WebLocksCoordinator implements TabCoordinator {
   private release?: () => void;
   private leading = false;
   private closed = false;
+  private resigned = false;
   private onLeaderChange?: (isLeader: boolean) => void;
 
   constructor(private readonly scope: string) {}
@@ -30,6 +31,14 @@ export class WebLocksCoordinator implements TabCoordinator {
     this.channel?.postMessage(m);
   }
 
+  resign(): void {
+    this.resigned = true;
+    this.pending?.abort();
+    this.release?.();
+    this.release = undefined;
+    this.leading = false;
+  }
+
   close(): void {
     this.closed = true;
     globalThis.removeEventListener?.('pagehide', this.onPageHide);
@@ -43,7 +52,7 @@ export class WebLocksCoordinator implements TabCoordinator {
     const pending = (this.pending = new AbortController());
     globalThis.navigator.locks
       .request(`fieldsync-leader:${this.scope}`, { signal: pending.signal }, () => {
-        if (this.closed || pending.signal.aborted) return undefined;
+        if (this.closed || this.resigned || pending.signal.aborted) return undefined;
         this.leading = true;
         this.onLeaderChange?.(true);
         // Held until released: aborting the signal only cancels a request that is still waiting.
@@ -62,6 +71,6 @@ export class WebLocksCoordinator implements TabCoordinator {
   };
 
   private readonly onPageShow = (event: Event): void => {
-    if ((event as PageTransitionEvent).persisted && !this.closed) this.requestLeadership();
+    if ((event as PageTransitionEvent).persisted && !this.closed && !this.resigned) this.requestLeadership();
   };
 }

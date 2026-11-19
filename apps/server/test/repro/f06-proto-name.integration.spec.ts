@@ -11,23 +11,22 @@ describeDb('F6 prototype-property mutator names', () => {
   });
   afterAll(() => t?.close());
 
-  it.each(['constructor', '__proto__'])(
-    'answers "%s" with 400 or a rejection, and the queue keeps moving',
+  it.each(['constructor', '__proto__', 'toString'])(
+    'refuses a push naming "%s" with 400 before it reaches the queue; the client id stays usable',
     async (name) => {
       const clientId = `c-${name}`;
       const bad = { id: 1, name, args: {} } as unknown as Mutation;
       const res = await push(t.http, TOKENS.admin, clientId, [bad]);
 
-      expect(res.status).not.toBe(500);
-      if (res.status < 300) expect(res.body.results[0].status).toBe('rejected');
-      else expect(res.status).toBe(400);
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('BAD_REQUEST');
+      const { rows } = await t.pool.query(`SELECT 1 FROM clients WHERE client_id = $1`, [clientId]);
+      expect(rows).toEqual([]);
 
-      const nextId = res.status < 300 ? 2 : 1;
       const next = await push(t.http, TOKENS.admin, clientId, [
-        { id: nextId, name: 'ticket.create', args: { id: randomUUID(), siteId: DEMO.siteA, title: `after ${name}`, description: '' } },
+        { id: 1, name: 'ticket.create', args: { id: randomUUID(), siteId: DEMO.siteA, title: `after ${name}`, description: '' } },
       ]);
-      expect(next.status).toBeLessThan(300);
-      expect(next.body.results[0].status).toBe('applied');
+      expect(next.body.results).toEqual([{ id: 1, status: 'applied' }]);
     },
   );
 });

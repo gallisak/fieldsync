@@ -9,6 +9,7 @@ export interface WholeState {
   base: [string, Row][];
   pending: StoredMutation[];
   rejections: StoredRejection[];
+  nextRejectionId?: number;
 }
 
 export const newClientId = (): string => globalThis.crypto.randomUUID();
@@ -38,7 +39,7 @@ export abstract class WholeStateStorage implements SyncStorage {
 
   private current(): WholeState {
     const stored = this.read();
-    if (stored) return stored;
+    if (stored) return withRejectionIds(stored);
     const fresh = emptyState(this.newId());
     this.write(fresh);
     return fresh;
@@ -69,11 +70,14 @@ export abstract class WholeStateStorage implements SyncStorage {
     if (c.lastMutationId !== null) {
       const acked = c.lastMutationId;
       const reasons = new Map(c.rejections.map((r) => [r.mutationId, r]));
-      const at = new Date().toISOString();
+      const at = c.receivedAt ?? new Date().toISOString();
       for (const m of s.pending) {
         const r = m.id <= acked ? reasons.get(m.id) : undefined;
         if (!r) continue;
+        const id = s.nextRejectionId ?? 1;
+        s.nextRejectionId = id + 1;
         s.rejections.push({
+          id,
           mutation: m,
           code: r.code,
           message: r.message,
@@ -90,9 +94,9 @@ export abstract class WholeStateStorage implements SyncStorage {
     return true;
   }
 
-  async dismissRejection(mutationId: number): Promise<void> {
+  async dismissRejection(rejectionId: number): Promise<void> {
     const s = this.current();
-    s.rejections = s.rejections.filter((r) => r.mutation.id !== mutationId);
+    s.rejections = s.rejections.filter((r) => r.id !== rejectionId);
     this.write(s);
   }
 
@@ -107,6 +111,14 @@ export abstract class WholeStateStorage implements SyncStorage {
   }
 
   close(): void {}
+}
+
+// State written before rejections had their own id.
+function withRejectionIds(s: WholeState): WholeState {
+  let next = Math.max(s.nextRejectionId ?? 1, ...s.rejections.map((r) => (r.id ?? 0) + 1));
+  s.rejections = s.rejections.map((r) => (r.id === undefined ? { ...r, id: next++ } : r));
+  s.nextRejectionId = next;
+  return s;
 }
 
 function toPersisted(s: WholeState): PersistedState {

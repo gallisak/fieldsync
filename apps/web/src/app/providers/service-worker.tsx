@@ -5,7 +5,15 @@ import { useSyncStatus } from '@/shared/api';
 
 export function ServiceWorkerRegistration() {
   useEffect(() => {
-    if (process.env.NODE_ENV !== 'production' || !('serviceWorker' in navigator)) return;
+    if (!('serviceWorker' in navigator)) return;
+    if (process.env.NODE_ENV !== 'production') {
+      // A worker left by a production run on the same origin would serve stale chunks to `next dev`.
+      void navigator.serviceWorker
+        .getRegistrations()
+        .then((all) => Promise.all(all.map((r) => r.unregister())))
+        .catch(() => undefined);
+      return;
+    }
     navigator.serviceWorker.register('/sw.js').catch((err: unknown) => {
       console.error('fieldsync: the offline shell could not be installed', err);
     });

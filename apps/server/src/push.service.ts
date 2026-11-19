@@ -13,7 +13,7 @@ import type { AuthUser } from './auth/auth.guard';
 import { ApiError } from './common/errors';
 import { withContext } from './common/request-context';
 import { MetricsService } from './observability/metrics.service';
-import { Db, isTransient } from './database/db.service';
+import { Db, isOperational } from './database/db.service';
 import { MutationExecutor } from './sync/push/mutation-executor';
 import { ClientRepository } from './sync/repositories/client.repository';
 import { RejectionRepository, type Rejection } from './sync/repositories/rejection.repository';
@@ -72,7 +72,7 @@ export class PushService {
         sites = await this.executor.execute(c, user, m, clientId);
         result = { id: m.id, status: 'applied' };
       } catch (err) {
-        if (isTransient(err)) throw err;
+        if (!(err instanceof MutationRejected) && isOperational(err)) throw err;
         await c.query('ROLLBACK TO SAVEPOINT m');
         const rejection = this.toRejection(err, m);
         await this.rejections.insert(c, clientId, m.id, rejection);

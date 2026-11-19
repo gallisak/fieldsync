@@ -5,18 +5,14 @@ import { describeMutation, describeRejection } from '../model/messages';
 
 interface RejectionItemProps {
   rejection: StoredRejection;
-  ticketTitle?: string;
   actions?: ReactNode;
 }
 
-export function RejectionItem({ rejection, ticketTitle, actions }: RejectionItemProps) {
+export function RejectionItem({ rejection, actions }: RejectionItemProps) {
   const { title, hint } = describeRejection(rejection);
   return (
     <div className="space-y-2 rounded-md border p-3">
-      <p className="text-sm text-muted-foreground">
-        {describeMutation(rejection.mutation)}
-        {ticketTitle && <> · {ticketTitle}</>}
-      </p>
+      <p className="text-sm text-muted-foreground">{describeMutation(rejection.mutation)}</p>
       <p className="font-medium">{title}</p>
       <p className="text-sm">{hint}</p>
       <div className="flex items-center justify-between gap-2">

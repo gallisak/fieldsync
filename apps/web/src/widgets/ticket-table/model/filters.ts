@@ -13,11 +13,13 @@ export interface TicketFilters {
   status: TicketStatus | null;
 }
 
-const isStatus = (s: string | null): s is TicketStatus => s !== null && s in STATUS_LABEL;
+const isStatus = (s: string | null): s is TicketStatus => s !== null && Object.hasOwn(STATUS_LABEL, s);
 
-export function readFilters(params: Pick<URLSearchParams, 'get'> | null): TicketFilters {
+/** A site the viewer cannot see is ignored like a missing one. */
+export function readFilters(params: Pick<URLSearchParams, 'get'> | null, siteIds: readonly string[]): TicketFilters {
   const status = params?.get('status') ?? null;
-  return { site: params?.get('site') || null, status: isStatus(status) ? status : null };
+  const site = params?.get('site') ?? null;
+  return { site: site && siteIds.includes(site) ? site : null, status: isStatus(status) ? status : null };
 }
 
 export function filterTickets(tickets: readonly Ticket[], { site, status }: TicketFilters): readonly Ticket[] {

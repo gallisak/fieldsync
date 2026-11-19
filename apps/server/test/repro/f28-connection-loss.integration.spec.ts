@@ -5,6 +5,10 @@ import { DEMO, TOKENS } from '../support/api';
 import { describeDb, requireDatabaseUrl, until } from '../support/pg';
 import { startServerProcess, type ServerProcess } from '../support/server-process';
 
+// Each test starts the server as a child process, which compiles its TypeScript on the fly: slow on a busy machine.
+const START_MS = 60_000;
+const TEST_MS = 30_000;
+
 describeDb('F28 lost database connection', () => {
   const name = 'f28_' + randomBytes(6).toString('hex');
   let admin: Pool;
@@ -17,18 +21,19 @@ describeDb('F28 lost database connection', () => {
   afterAll(() => admin?.end());
 
   beforeEach(async () => {
+    server = undefined;
     await admin.query(`CREATE SCHEMA "${name}"`);
     const url = new URL(requireDatabaseUrl()!);
     url.searchParams.set('options', `-c search_path=${name}`);
     db = new Pool({ connectionString: url.toString(), max: 2 });
     url.searchParams.set('application_name', name);
     server = await startServerProcess({ DATABASE_URL: url.toString(), SEED_DEMO: 'true' });
-  });
+  }, START_MS);
   afterEach(async () => {
     await server?.stop();
     await db?.end();
     await admin.query(`DROP SCHEMA "${name}" CASCADE`);
-  });
+  }, TEST_MS);
 
   const headers = {
     authorization: `Bearer ${TOKENS.admin}`,
@@ -54,7 +59,7 @@ describeDb('F28 lost database connection', () => {
 
     expect(server!.alive()).toBe(true);
     expect((await fetch(`${server!.url}/sync/pull`, { headers })).status).toBe(200);
-  });
+  }, TEST_MS);
 
   it('retries a push whose connection is dropped mid-transaction and applies it once', async () => {
     const blocker = await db.connect();
@@ -93,5 +98,5 @@ describeDb('F28 lost database connection', () => {
       await blocker.query('ROLLBACK').catch(() => undefined);
       blocker.release();
     }
-  });
+  }, TEST_MS);
 });

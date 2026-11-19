@@ -24,8 +24,8 @@
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "test": "jest",
-    "test:unit": "jest --testPathIgnorePatterns sim",
-    "test:sim": "jest sim --passWithNoTests"
+    "test:unit": "jest --testPathIgnorePatterns '\\.sim\\.spec\\.ts$'",
+    "test:sim": "jest --testRegex '\\.sim\\.spec\\.ts$'"
   },
   "jest": {
     "moduleFileExtensions": [

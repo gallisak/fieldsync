@@ -6,11 +6,19 @@ authoritative Postgres-backed server. Task: `ЗАВДАННЯ.md`.
 ## Run
 
     cp .env.example .env                 # one config for server, tests, web and compose; real env vars win
-    docker compose up --build            # web :3000, api :3001, postgres :5432
+    docker compose up --build            # web :3000, api :3001, postgres :5432 (POSTGRES_PORT); Compose ≥ 2.24
+
+Node 22 (`.nvmrc`). The database lives in the `pgdata` volume; `docker compose down -v` starts it over.
+A stack started from an older checkout kept its database in an anonymous volume, so it comes up empty here. To keep
+that data, stop the stack and copy it over before the first `up`:
+`docker run --rm -v <old volume>:/from -v fieldsync-starter_pgdata:/to alpine cp -a /from/. /to/`
+(`docker volume ls` lists the old one).
 
 Locally: `docker compose up -d postgres`, `npm install`, `npm run build:core`, then
 `npm run build -w @fieldsync/server && npm start -w @fieldsync/server` and `npm run dev -w @fieldsync/web`.
-Demo tokens: `admin-token` (all sites), `tech-a-token` (North Plant), `tech-b-token` (South Plant).
+Demo tokens: `admin-token` (all sites), `tech-a-token` (North Plant), `tech-b-token` (South Plant). `SEED_DEMO`
+inserts them into an empty database only; with them and an empty `METRICS_TOKEN` (open `/metrics`), the compose
+setup is for development, not for exposure.
 
     npm run lint && npm run typecheck && npm test   # integration tests need DATABASE_URL (from .env); CI fails without it
     npm run sim                                     # simulation, see below
@@ -24,7 +32,7 @@ Demo tokens: `admin-token` (all sites), `tech-a-token` (North Plant), `tech-b-to
 3. Reload normally (not Shift-reload), still offline: everything is there.
 4. Open a second tab, set it **Offline** too, create a ticket: both tabs list both tickets.
 5. Both tabs back online: **Syncing…** → **All changes saved**. Close the second tab.
-6. First tab offline again. In a private window sign in with `admin-token`, open the first ticket, **Cancel**.
+6. First tab offline again. In a private window sign in with `admin-token`, open the first ticket, **Cancel ticket** and confirm.
 7. In the technician tab press **Mark done** on it, go online: **1 change was rejected**, the inbox says
    **Status was changed by someone else. It is now cancelled.**
 8. Revoke tech A's site; the technician's list empties (`-X POST` gives it back):
@@ -38,8 +46,8 @@ Demo tokens: `admin-token` (all sites), `tech-a-token` (North Plant), `tech-b-to
   coordination, simulation kit. Knows nothing of React, Nest or Postgres.
 - `apps/server`: NestJS + raw `pg`. Controller → service → repository. Push, pull, SSE pokes, admin access, GC,
   logs and `/metrics`.
-- `apps/web`: Next.js 14, Feature-Sliced Design, shadcn/ui. Reads only the local view, writes only through
-  `client.mutate`.
+- `apps/web`: Next.js 14, Feature-Sliced Design, shadcn/ui. Reads tickets and parts only from the local view and
+  writes only through `client.mutate`; the user's sites come from `/me`.
 
 The client shows `view = base + queued mutations replayed`. Push sends the queue; pull brings changes into
 `base`; a mutation leaves the queue only when the pull that carries its effect is committed.
@@ -54,11 +62,11 @@ sequenceDiagram
   participant O as Other clients
   UI->>C: mutate(name, args): validated, applied in memory
   C->>IDB: [IDB tx] next id + append to queue
-  Note over C,IDB: crash before commit: the change is lost and was never shown as saved
+  Note over C,IDB: write fails: the change is taken back off the screen and the user is told; tab dies first: it is lost
   C->>API: POST /sync/push (≤100)
   Note over C,API: request or response lost: retried, deduplicated
   API->>PG: [tx per mutation] lock client row → dedup → SAVEPOINT → rows FOR UPDATE → authorize on stored site → mutator → lock sync_state, versions → change_log + entities (or rollback to savepoint + mutation_rejections) → last_mutation_id → COMMIT
-  Note over API,PG: transient error: whole tx retried ×3, then 503, id not consumed
+  Note over API,PG: transient error: whole tx retried ×3, then 503; any database-side error: 503; id not consumed
   API-->>O: SSE poke after commit (best effort, a 30 s jittered poll covers a lost one)
   C->>API: GET /sync/pull?cursor
   API->>PG: [REPEATABLE READ READ ONLY] sites + fingerprint → floor check → delta or snapshot page → lastMutationId + rejections
@@ -68,9 +76,11 @@ sequenceDiagram
   C-->>UI: subscribe() → re-render
 ```
 
-Protocol v2: header `x-fieldsync-protocol: 2` on every request (else `426 UPGRADE_REQUIRED`). Cursor is opaque
-`base64url(JSON)` with a site fingerprint; a malformed one is `400`. Pull answers `delta` or a paged `snapshot`
-with `reason` (`initial`, `access_changed`, `cursor_expired`, `cursor_ahead`). Errors are `{ code, message, details? }`.
+Protocol v2: header `x-fieldsync-protocol: 2` on every sync, stream and admin request; an older or missing one is
+`426 UPGRADE_REQUIRED`, a newer one `503` (the app shipped before the server: wait, do not ask to update). Cursor
+is opaque `base64url(JSON)` with a fingerprint of the user's sites and the database epoch; a malformed one is
+`400`. Pull answers `delta` or a paged `snapshot` with `reason` (`initial`, `access_changed`, `cursor_expired`,
+`cursor_ahead`). Errors are `{ code, message, details? }`.
 
 ## Guarantee model
 
@@ -80,15 +90,18 @@ with `reason` (`initial`, `access_changed`, `cursor_expired`, `cursor_ahead`). E
   a 30 s jittered poll bounds staleness.
 - **Mutation application**: effectively-once. The client resends until acknowledged; the server deduplicates on
   `(clientId, mutationId)` under the client row lock, in the same transaction as the effect. Holds while the
-  `clients` row exists (`CLIENT_RETENTION_DAYS`, 90, longer than log retention).
+  `clients` row exists (`CLIENT_RETENTION_DAYS`, 90, checked at start to outlast log retention; every push and
+  pull keeps it alive).
 - **Rejection**: consumes its id, is stored in `mutation_rejections`, returned in the push response and in every
-  pull until acknowledged; a lost response cannot hide it.
+  pull until acknowledged; a lost response cannot hide it. The client takes it from the pull that acknowledges the
+  mutation (F16), so the push results only advance what it has sent.
 - **Atomicity**: one mutation = one transaction (effect, log, counter, ack). A crash leaves all or nothing.
 
 ## Observability
 
-- Logs: JSON (pino); every line carries `requestId`, `userId`, `clientId`, `mutationId`; one `mutation` line per
-  mutation with status, code and duration. `Authorization`, cookies and URL tokens are redacted.
+- Logs: JSON (pino). Every line of a request carries `requestId`, and once authenticated `userId` and the
+  `clientId` it names; one `mutation` line per mutation adds `mutationId`, status, code and duration.
+  `Authorization`, cookies and URL tokens are redacted; health checks and scrapes are not logged.
 - `/metrics` (Prometheus, optional `METRICS_TOKEN`): `fieldsync_mutations_total{status}`,
   `fieldsync_mutations_rejected_total{code}`, `fieldsync_delivery_lag_seconds`, `fieldsync_active_streams`,
   `fieldsync_change_log_rows`, `fieldsync_full_resyncs_total{reason}`, push/pull durations, GC deletions.
@@ -101,7 +114,7 @@ watermark; an advisory lock; one counter row. *Chosen:* `UPDATE sync_state … R
 every write. *Why:* commit order without tying cursors to transaction ids. Idempotency: client row `FOR UPDATE`
 + per-mutation transaction + `SAVEPOINT` + stored rejections (a unique constraint alone gives a 500, not
 `duplicate`; serializable relies on retries). *Limits:* the tail of every write is serialised: fine at the
-measured 62 mutations/s; batching or the watermark is the escape hatch.
+measured 61 mutations/s; batching or the watermark is the escape hatch.
 
 **2. Deterministic simulation.** *Options:* property tests with fast-check; an own harness. *Chosen:* own
 harness: virtual clock, seeded network model (loss, duplicates, reorder, delay, cut batches), crashes, tabs,
@@ -110,11 +123,13 @@ need a clock and a network more than generic shrinking; step-count bisection giv
 Postgres runs are serialised, so real races are covered by the concurrency integration tests instead.
 
 **3. Offline-first client.** *Chosen:* transactional storage (IndexedDB via `idb`) that owns the queue and the
-id counter; one leader tab by Web Lock with `BroadcastChannel`; full-jitter backoff; status as facts mapped to
-one badge. Notifications: SSE over `fetch` with the `Authorization` header. *Options:* `SharedWorker` (missing on
-Chrome for Android), per-tab client ids (more server clients, still racing storage); `EventSource` + URL ticket
-(an extra endpoint and state), WebSocket (two-way protocol for one-way, payload-free pokes). *Limits:* without
-IndexedDB the client falls back to memory with a visible warning.
+id counter; one leader tab by Web Lock with `BroadcastChannel` (a leader blocked by `426`/`401` hands it on);
+full-jitter backoff; status as facts mapped to one badge: offline, server unavailable, syncing, waiting, then
+rejected (it also has its own inbox button). Notifications: SSE over `fetch` with the `Authorization` header.
+*Options:* `SharedWorker` (missing on Chrome for Android), per-tab client ids (more server clients, still racing
+storage); `EventSource` + URL ticket (an extra endpoint and state), WebSocket (two-way protocol for one-way,
+payload-free pokes). *Limits:* without IndexedDB the client falls back to memory with a visible warning; a local
+database written by a newer app blocks with "update" instead.
 
 **4. Partial replication and access.** *Chosen:* authorize every write on the sites stored with the loaded rows,
 read inside the transaction; the cursor carries a fingerprint of the user's sites, and a different
@@ -135,17 +150,19 @@ then followed by a delta from it. *Options:* keep the log forever; one transacti
 pages (holds back vacuum). *Limits:* the client stages snapshot pages in memory (fine for tens of thousands of rows).
 
 **7. Schema evolution.** *Chosen:* protocol version on every request, `426` with `{ min, current }`; the client
-blocks with its queue intact. IndexedDB migrations run in order inside the upgrade transaction, are additive,
-may drop base only together with the cursor, and never touch the queue. *Options:* a start-up handshake (an app
-open across a deploy keeps the old protocol). *Limits:* none beyond a header per request.
+blocks with its queue intact. IndexedDB migrations run in order inside the upgrade transaction, keep data (add,
+or copy into a new store: v3 re-keys rejections by their own id), may drop base only together with the cursor,
+and never touch the queue. *Options:* a start-up handshake (an app open across a deploy keeps the old
+protocol). *Limits:* none beyond a header per request.
 
 **Persistence.** Raw `pg`, not an ORM: correctness lives in explicit `FOR UPDATE`, savepoints, isolation levels
 and lock order (client → ticket → parts → `sync_state`), which an ORM would hide.
 
 ## Found issues
 
-Each is reproduced by a test committed as `it.failing` before the fix, then switched to `it`. Server tests are
-in `apps/server/test/repro/`, client tests in `packages/sync-core/test/repro/`.
+F1–F23, F28 and F29 are each reproduced by a test committed as `it.failing` before the fix, then switched to
+`it`; server tests are in `apps/server/test/repro/`, client tests in `packages/sync-core/test/repro/`. F24–F27
+are tests that could not fail: each entry names the bug they let through on the starter.
 
 **F1 · ordering: versions visible out of commit order.** *What:* `bigserial` versions are taken at insert,
 visible at commit; a pull between two commits moves the cursor past the later-committing one. *Risk:* silent
@@ -171,7 +188,8 @@ on a lock: one `applied`, nine `duplicate`. *Fix:* lock the client row in the mu
 **F5 · a rejection blocks the queue.** *What:* `MutationRejected` became a 500 and the counter stayed. *Risk:* one
 stale edit freezes the device. *Reproduce:* `f05-poison`: applied, conflict, applied → `lastMutationId = 3`.
 *Fix:* `SAVEPOINT`, store the reason, advance the counter; other errors as `INTERNAL`; transient ones retried
-then `503`. *Alternatives:* reject the batch and let the client drop the head; reason only in the response.
+then `503`; an error of the database itself (lock or statement timeout, shutdown, resources) is `503` too and
+does not consume the id. *Alternatives:* reject the batch and let the client drop the head; reason only in the response.
 
 **F6 · prototype names reach the registry.** *What:* `MUTATORS['constructor']` is truthy → `TypeError` → 500.
 *Risk:* a client-controlled permanent block. *Reproduce:* `f06-proto-name`. *Fix:* `z.enum` names on the wire
@@ -185,7 +203,8 @@ unrecoverable loop after ids diverge. *Reproduce:* `f07-out-of-order`: id 5 on a
 **F8 · writes authorized by the client's `siteId`.** *What:* authorization trusted the argument, before rows were
 loaded; deleted ids could be revived. *Risk:* anyone edits any site by knowing an id. *Reproduce:*
 `f08-write-access`. *Fix:* authorize on the stored site of every loaded row (deleted ones too) and of every
-written row; `NO_ACCESS` for unknown and forbidden alike. *Alternatives:* checks inside each mutator.
+written row; `NO_ACCESS` for unknown and forbidden alike. A deleted id stays taken while its tombstone is kept
+(log retention, 7 days). *Alternatives:* checks inside each mutator.
 
 **F9 · incremental pulls return every site.** *What:* the site filter only applied at cursor 0. *Risk:* full
 cross-tenant leak. *Reproduce:* `f09-read-access`. *Fix:* one delta query, always per accessible site.
@@ -232,13 +251,15 @@ form filled once. *Risk:* the later sync silently restores the other field. *Rep
 *Fix:* patch semantics, the form sends only changed fields (record 5). *Alternatives:* optimistic versions, CRDT.
 
 **F19 · deleting a ticket leaves parts.** *What:* only the ticket row was deleted. *Risk:* orphan parts
-replicated forever. *Reproduce:* `f19-orphan-parts`. *Fix:* mutators declare `scans()`;
-delete and move cover the parts. *Alternatives:* `ON DELETE CASCADE` (never reaches the log or the client).
+replicated forever. *Reproduce:* `f19-orphan-parts`. *Fix:* mutators declare `scans()`; delete and move cover
+the parts; migration `006` deletes, through the log, the orphans the starter left. *Alternatives:*
+`ON DELETE CASCADE` (never reaches the log or the client).
 
 **F20 · stream subscribers never released.** *What:* no removal on close, no backpressure, no heartbeat. *Risk:*
 unbounded memory, writes to dead sockets. *Reproduce:* `f20-stream-leak` (500 cycles → gauge 0; 200 000 pokes to
 a non-reader). *Fix:* remove on `close`, coalesce while `writableNeedDrain`, shared heartbeat, per-user cap
-(429), close on shutdown. *Alternatives:* `once('drain')` per write, dropping slow clients.
+(the oldest stream is closed: a socket left half-open by a network switch must not lock the user out), close on
+shutdown. *Alternatives:* `once('drain')` per write, dropping slow clients.
 
 **F21 · dispose leaves requests and timers.** *What:* `dispose()` cleared only the retry timer, requests had no
 timeout, the web effect no cleanup. *Risk:* leaked clients; a hung request blocks syncing forever.
@@ -296,7 +317,8 @@ None weakens a real assertion: each removed test could not fail and has a replac
 - `server/test/sync.integration.spec.ts` (F27): only `SELECT 1`. Removed; integration suites now fail in CI
   without `DATABASE_URL`, and `npm run typecheck` covers the web app.
 - `sync-core/test/client.spec.ts` (F27): two `it.todo` replaced by `f14-reload` and `f15-two-tabs`; `ticket.create`
-  calls pass an `id` (F17).
+  calls pass an `id` (F17). `numbers local mutations sequentially` asserted only the row count, before any id
+  existed; it now awaits both mutations and checks the ids are 1 and 2.
 
 ## Indexes
 
@@ -322,13 +344,18 @@ the server) in virtual time with one seeded generator, so a seed replays exactly
 partitions, crash and restart on the same storage, a second tab, grant/revoke, ticket moves, GC and long
 offline. The network loses, duplicates, cuts and delays (≤ 400 ms) requests and responses; pages are 3 rows.
 
-Invariants. After every step: (1) no client holds a row outside its user's sites; (2) no mutation applied
-twice; (3) a cursor never goes back except through a snapshot. At the end, after healing: (4) every tab's
-base equals the server's rows for its user; (5) nothing pending, view = base; (6) every mutation applied
-xor rejected with a reason the client knows; (7) part quantity = initial + applied deltas.
+Invariants. After every step, for every tab: (1) it holds no row outside the sites its user had when the server
+issued the tab's cursor; (2) no mutation applied twice; (3) a cursor never goes back except through a snapshot,
+and every cursor was issued by the server. At the end, after healing: (4) every tab's base equals the server's
+rows for its user; (5) nothing pending, view = base; (6) every mutation applied xor rejected with a reason the
+client knows; (7) part quantity = initial + applied deltas.
 
-    npm run sim                              # regression seeds, then seeds 1–500 × 400 steps (~45 s)
+    npm run sim                              # regression seeds, seeds 1–500 × 400 steps, then the two runs below (~75 s)
     SIM_SEED=1234 SIM_STEPS=57 npm run sim   # one seed, optionally shortened; SIM_SEEDS=50 for seeds 1–50
+
+Two more runs: seeds 1–100 where the server also forgets quiet clients (retention GC of the `clients` row), so
+clients reset to a new id and renumber; and seeds 1–20 × 200 steps on IndexedDB (`fake-indexeddb`, one connection
+per tab) instead of synchronous memory, so storage transactions interleave with the network.
 
 A failure is bisected to the shortest failing step count and printed as a command with the last 30 steps. The
 same runs go against real Postgres (`apps/server/test/sim/`, 50 seeds × 200 steps) plus a differential test that
@@ -355,8 +382,8 @@ flight. After 10 minutes all go online and invariants 4–5 are checked against 
 
     docker compose up -d --build server && LOAD_SEED=1 npm run load   # LOAD_CLIENTS, LOAD_SITES, LOAD_DURATION_S
 
-Run of 2026-11-19 on an Apple M1 (8 cores, 16 GiB, macOS 26.5), against the final images built from a fresh clone;
-server and Postgres 16 in Docker Desktop on the same machine.
+Run of 2026-11-19 on an Apple M1 (8 cores, 16 GiB, macOS 26.5), against images built from a fresh clone of
+`f3a4a0e`; server and Postgres 16 in Docker Desktop on the same machine.
 
 | | |
 |---|---|
@@ -381,6 +408,11 @@ The load process itself was busy (event-loop delay p99 633 ms), so the lags are 
   the number of sites (admins).
 - Deduplication ends with the 90-day `clients` row: a mutation applied just before expiry with a lost ack could
   apply twice.
+- Restoring a database backup reuses versions clients may already have seen; after a restore run
+  `UPDATE sync_state SET epoch = gen_random_uuid()` so every client takes a snapshot.
 - Same-field edits are last-writer-wins without telling the loser.
 - The ticket table is not virtualised (needed above ~1 000 tickets per site).
 - The load run used one machine and one generator process; a distributed run would measure the server alone.
+- Next.js stays on 14.2 (latest patch) and NestJS on 10.4: the remaining `npm audit` advisories (Next, and
+  Express 4's `body-parser`, `qs`, `multer`) are fixed only in Next 16 and Nest 11, majors that need React 19 and
+  an Express 5 migration.

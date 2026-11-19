@@ -1,6 +1,6 @@
 import { HttpTransport } from '@fieldsync/sync-core';
 import { randomUUID } from 'crypto';
-import { DEMO, TOKENS, listen, push, seed } from '../support/api';
+import { DEMO, TOKENS, listen, pull, push, seed } from '../support/api';
 import { createTestApp, describeDb, type TestApp } from '../support/pg';
 
 type Line = Record<string, unknown> & { req?: { id?: string; headers?: Record<string, string> } };
@@ -25,6 +25,12 @@ describeDb('structured logs', () => {
   const ofRequest = (id: string) => logs.filter((l) => l.requestId === id);
   const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
 
+  it('does not log health checks and scrapes', async () => {
+    for (const path of ['/health', '/ready', '/metrics']) await t.http.get(path).set('x-request-id', `probe-${path.slice(1)}`);
+    await settle();
+    expect(logs.filter((l) => String(l.requestId ?? '').startsWith('probe-'))).toEqual([]);
+  });
+
   it('tags every line of a push with its request, user, client and mutation, and logs no token', async () => {
     const res = await push(t.http, TOKENS.techA, 'log-device', [create(1, DEMO.siteA), create(2, DEMO.siteB)]).set(
       'x-request-id',
@@ -34,6 +40,8 @@ describeDb('structured logs', () => {
     await settle();
 
     const lines = ofRequest('trace-p71');
+    expect(lines.length).toBeGreaterThan(2);
+    for (const line of lines) expect(line).toMatchObject({ userId: DEMO.techA, clientId: 'log-device' });
     const mutations = lines.filter((l) => l.msg === 'mutation');
     expect(mutations.map((l) => [l.mutationId, l.status, l.code])).toEqual([
       [1, 'applied', undefined],
@@ -49,12 +57,22 @@ describeDb('structured logs', () => {
     }
     expect(lines.find((l) => l.msg === 'request completed')).toMatchObject({
       userId: DEMO.techA,
+      clientId: 'log-device',
       req: { id: 'trace-p71', headers: { authorization: '[Redacted]' } },
       res: { statusCode: 201 },
     });
     for (const token of Object.values(TOKENS)) {
       expect(logs.filter((l) => JSON.stringify(l).includes(token))).toEqual([]);
     }
+  });
+
+  it('tags a pull with its user and client', async () => {
+    await pull(t.http, TOKENS.techA, { clientId: 'log-device' }).set('x-request-id', 'trace-pull');
+    await settle();
+    expect(ofRequest('trace-pull').find((l) => l.msg === 'request completed')).toMatchObject({
+      userId: DEMO.techA,
+      clientId: 'log-device',
+    });
   });
 
   it('takes the request id from the client transport, a new one per request', async () => {

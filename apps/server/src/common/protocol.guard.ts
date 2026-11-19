@@ -8,7 +8,11 @@ export class ProtocolGuard implements CanActivate {
   canActivate(ctx: ExecutionContext): boolean {
     const raw = ctx.switchToHttp().getRequest<Request>().headers[PROTOCOL_HEADER];
     const version = typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : 1;
-    if (version < MIN_PROTOCOL || version > PROTOCOL) {
+    // The app was deployed before the server: it is not too old, so it should wait and retry, not ask to update.
+    if (version > PROTOCOL) {
+      throw new ApiError('UNAVAILABLE', 503, { current: PROTOCOL }, 'The server is being updated; retry later');
+    }
+    if (version < MIN_PROTOCOL) {
       throw new ApiError(
         'UPGRADE_REQUIRED',
         426,

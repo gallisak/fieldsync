@@ -12,18 +12,18 @@ const STATUS: Record<TicketStatus, string> = {
 };
 
 export function ResolveRejectionActions({ rejection }: { rejection: StoredRejection }) {
-  const { dismiss, tryAgain } = useResolveRejection(rejection);
+  const { dismiss, tryAgain, retrying } = useResolveRejection(rejection);
   const to = rejection.mutation.args.to as TicketStatus;
   const retryLabel = rejection.code === 'STATUS_CONFLICT' ? `Set to ${STATUS[to] ?? to} anyway` : 'Try again';
 
   return (
     <div className="flex gap-2">
       {tryAgain && (
-        <Button size="sm" onClick={tryAgain}>
+        <Button size="sm" onClick={() => void tryAgain()} disabled={retrying}>
           {retryLabel}
         </Button>
       )}
-      <Button size="sm" variant="outline" onClick={dismiss}>
+      <Button size="sm" variant="outline" onClick={() => void dismiss()}>
         Dismiss
       </Button>
     </div>

@@ -15,7 +15,7 @@ const rejection = (
   code: RejectionCode,
   m: StoredMutation = mutation('ticket.setStatus', { id: 't', from: 'in_progress', to: 'done' }),
   extra: Partial<StoredRejection> = {},
-): StoredRejection => ({ mutation: m, code, message: 'server says no', at: '2026-01-01T00:00:00.000Z', ...extra });
+): StoredRejection => ({ id: m.id, mutation: m, code, message: 'server says no', at: '2026-01-01T00:00:00.000Z', ...extra });
 
 describe('rejection messages', () => {
   it.each<[RejectionCode, StoredRejection, string, string]>([
@@ -81,16 +81,14 @@ describe('rejection selectors', () => {
 });
 
 describe('rejection UI', () => {
-  it('shows what was tried, why it failed, the ticket and the actions', () => {
+  it('shows what was tried, why it failed and the actions', () => {
     const html = renderToStaticMarkup(
       <RejectionItem
         rejection={rejection('STATUS_CONFLICT', undefined, { details: { current: 'cancelled' } })}
-        ticketTitle="Broken pump"
         actions={<button>Dismiss</button>}
       />,
     );
     expect(html).toContain('Mark done');
-    expect(html).toContain('Broken pump');
     expect(html).toContain('Status was changed by someone else');
     expect(html).toContain('It is now cancelled.');
     expect(html).toContain('<button>Dismiss</button>');

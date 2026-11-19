@@ -42,6 +42,12 @@ describe('ticket.create', () => {
     expect(tx.get('ticket', TICKET)).toEqual(ticket());
   });
 
+  it('accepts text with emoji, which are surrogate pairs', () => {
+    const tx = new MapTx();
+    run(tx, 'ticket.create', { ...args, title: 'Pump 🔧', description: 'Leaks 💧' });
+    expect(tx.get('ticket', TICKET)).toMatchObject({ title: 'Pump 🔧', description: 'Leaks 💧' });
+  });
+
   it('rejects the id of a deleted ticket with ALREADY_EXISTS instead of reviving it', () => {
     const tx = new MapTx();
     tx.exists = (entity, id) => entity === 'ticket' && id === TICKET;
@@ -55,6 +61,10 @@ describe('ticket.create', () => {
     ['a 201-char title', { ...args, title: 'x'.repeat(201) }],
     ['a 5001-char description', { ...args, description: 'x'.repeat(5001) }],
     ['a missing siteId', { id: TICKET, title: 'Pump', description: '' }],
+    ['an uppercase id', { ...args, id: TICKET.toUpperCase().replace(/1/g, 'A') }],
+    ['the nil uuid', { ...args, id: '00000000-0000-0000-0000-000000000000' }],
+    ['a NUL in the title', { ...args, title: 'Pu\u0000mp' }],
+    ['an unpaired surrogate in the description', { ...args, description: 'broken \uD83D text' }],
   ])('rejects %s with BAD_ARGS', (_label, bad) => {
     const tx = new MapTx();
     expectRejected(tx, 'ticket.create', bad, 'BAD_ARGS');
@@ -90,6 +100,20 @@ describe('ticket.update', () => {
     const tx = new MapTx([['ticket', ticket()]]);
     expectRejected(tx, 'ticket.update', bad, 'BAD_ARGS');
     expect(tx.get('ticket', TICKET)).toEqual(ticket());
+  });
+
+  it('checks the assignee where the caller can tell who sees the site, and trusts it where it cannot', () => {
+    const args = { id: TICKET, patch: { assigneeId: USER } };
+    const server = new MapTx([['ticket', ticket()]]);
+    server.canSee = (userId, siteId) => userId === USER && siteId === SITE_B;
+    expectRejected(server, 'ticket.update', args, 'BAD_ARGS');
+    server.canSee = (userId, siteId) => userId === USER && siteId === SITE_A;
+    run(server, 'ticket.update', args, LATER);
+    expect(server.get('ticket', TICKET)).toMatchObject({ assigneeId: USER });
+
+    const client = new MapTx([['ticket', ticket()]]);
+    run(client, 'ticket.update', args, LATER);
+    expect(client.get('ticket', TICKET)).toMatchObject({ assigneeId: USER });
   });
 });
 
@@ -162,6 +186,23 @@ describe('ticket.move', () => {
     const tx = new MapTx([['ticket', ticket()]]);
     run(tx, 'ticket.move', { id: TICKET, toSiteId: SITE_A }, LATER);
     expect(tx.get('ticket', TICKET)).toEqual(ticket());
+  });
+
+  it('unassigns an assignee who cannot see the target site, where the caller can tell', () => {
+    const args = { id: TICKET, toSiteId: SITE_B };
+    const server = new MapTx([['ticket', ticket({ assigneeId: USER })]]);
+    server.canSee = (userId, siteId) => userId === USER && siteId === SITE_A;
+    run(server, 'ticket.move', args, LATER);
+    expect(server.get('ticket', TICKET)).toMatchObject({ siteId: SITE_B, assigneeId: null });
+
+    const allowed = new MapTx([['ticket', ticket({ assigneeId: USER })]]);
+    allowed.canSee = () => true;
+    run(allowed, 'ticket.move', args, LATER);
+    expect(allowed.get('ticket', TICKET)).toMatchObject({ siteId: SITE_B, assigneeId: USER });
+
+    const client = new MapTx([['ticket', ticket({ assigneeId: USER })]]);
+    run(client, 'ticket.move', args, LATER);
+    expect(client.get('ticket', TICKET)).toMatchObject({ siteId: SITE_B, assigneeId: USER });
   });
 
   it('rejects a missing ticket with NO_ACCESS', () => {

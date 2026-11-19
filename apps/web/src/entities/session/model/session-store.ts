@@ -24,8 +24,24 @@ const listeners = new Set<() => void>();
 let cached: { raw: string | null; session: Session | null } = { raw: null, session: null };
 const viewers = new WeakMap<Session, Viewer>();
 
+export class StorageUnavailableError extends Error {
+  constructor(options?: { cause?: unknown }) {
+    super('This browser does not allow this site to store data', options);
+    this.name = 'StorageUnavailableError';
+  }
+}
+
+// Throws when the browser blocks site data; that reads as signed out.
+function readRaw(): string | null {
+  try {
+    return localStorage.getItem(KEY);
+  } catch {
+    return null;
+  }
+}
+
 export function readSession(): Session | null {
-  const raw = localStorage.getItem(KEY);
+  const raw = readRaw();
   if (raw !== cached.raw) {
     let session: Session | null = null;
     try {
@@ -72,11 +88,26 @@ export function useViewer(): Viewer {
 }
 
 export function signIn(session: Session): void {
-  localStorage.setItem(KEY, JSON.stringify(session));
+  try {
+    localStorage.setItem(KEY, JSON.stringify(session));
+  } catch (err) {
+    throw new StorageUnavailableError({ cause: err });
+  }
   emit();
 }
 
+export function updateAccess(token: string, access: { id: string; role: Session['role']; sites: Session['sites'] }): void {
+  const current = readSession();
+  if (!current || current.token !== token || current.userId !== access.id) return;
+  if (current.role === access.role && JSON.stringify(current.sites) === JSON.stringify(access.sites)) return;
+  signIn({ ...current, role: access.role, sites: access.sites });
+}
+
 export function signOut(): void {
-  localStorage.removeItem(KEY);
+  try {
+    localStorage.removeItem(KEY);
+  } catch {
+    // Nothing could have been stored either.
+  }
   emit();
 }

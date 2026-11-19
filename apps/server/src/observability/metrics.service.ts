@@ -36,7 +36,7 @@ export class MetricsService {
 
   readonly deliveryLag = new Histogram({
     name: 'fieldsync_delivery_lag_seconds',
-    help: "Time from a change's commit to its delivery to another client",
+    help: 'Time from writing a change to delivering it to another client in a pull (each delivery)',
     buckets: [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 300, 3600],
     registers: [this.registry],
   });
@@ -67,11 +67,16 @@ export class MetricsService {
       name: 'fieldsync_change_log_rows',
       help: 'Change-log rows retained (last_version - min_retained_version)',
       registers: [this.registry],
+      // Without the database it keeps its last value, and the rest of /metrics is still served.
       async collect() {
-        const { rows } = await db.pool.query<{ n: string }>(
-          `SELECT last_version - min_retained_version AS n FROM sync_state`,
-        );
-        this.set(Number(rows[0].n));
+        try {
+          const { rows } = await db.pool.query<{ n: string }>(
+            `SELECT last_version - min_retained_version AS n FROM sync_state`,
+          );
+          this.set(Number(rows[0].n));
+        } catch {
+          return;
+        }
       },
     });
   }

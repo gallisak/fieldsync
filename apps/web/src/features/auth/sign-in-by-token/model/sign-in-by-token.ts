@@ -1,5 +1,5 @@
 import { TransportError } from '@fieldsync/sync-core';
-import { signIn } from '@/entities/session';
+import { StorageUnavailableError, signIn } from '@/entities/session';
 import { fetchMe } from '@/shared/api';
 
 export async function signInByToken(token: string): Promise<string | null> {
@@ -8,6 +8,7 @@ export async function signInByToken(token: string): Promise<string | null> {
     signIn({ token, userId: me.id, role: me.role, sites: me.sites });
     return null;
   } catch (err) {
+    if (err instanceof StorageUnavailableError) return 'This browser blocks site data. Allow it for this site to sign in.';
     if (!(err instanceof TransportError)) {
       console.error('fieldsync: sign-in failed', err);
       return 'Sign-in failed. Try again.';

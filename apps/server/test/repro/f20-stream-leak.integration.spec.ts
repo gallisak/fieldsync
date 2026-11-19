@@ -121,16 +121,17 @@ describeDb('F20 stream subscribers are released', () => {
     for (const s of streams) expect(s.received()).toContain(': hb\n\n');
   });
 
-  it('refuses more than STREAM_MAX_PER_USER streams for one user', async () => {
+  it('keeps at most STREAM_MAX_PER_USER streams per user by closing the oldest', async () => {
     const { baseUrl, service } = await start({ STREAM_MAX_PER_USER: '2' });
     const first = await open(baseUrl, TOKENS.admin);
-    expect((await open(baseUrl, TOKENS.admin)).status).toBe(200);
-    expect((await open(baseUrl, TOKENS.admin)).status).toBe(429);
-    expect((await open(baseUrl, TOKENS.techA)).status).toBe(200);
+    const firstEnded = new Promise((resolve) => first.res.on('end', resolve));
+    const second = await open(baseUrl, TOKENS.admin);
+    const third = await open(baseUrl, TOKENS.admin);
+    const other = await open(baseUrl, TOKENS.techA);
 
-    first.req.destroy();
-    await until(() => service.count === 2);
-    expect((await open(baseUrl, TOKENS.admin)).status).toBe(200);
+    expect([second.status, third.status, other.status]).toEqual([200, 200, 200]);
+    await firstEnded;
+    expect(service.count).toBe(3);
   });
 
   it('ends open streams when the server shuts down', async () => {

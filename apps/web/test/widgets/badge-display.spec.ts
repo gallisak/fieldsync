@@ -16,6 +16,7 @@ describe('badgeDisplay', () => {
     ['pending', facts(3), '3 waiting to sync', 'Will be sent automatically.'],
     ['syncing', facts(1), 'Syncing…', undefined],
     ['offline', facts(6), 'Offline · 6 saved on this device', 'Changes are kept and sent when the connection returns.'],
+    ['unavailable', facts(2), 'Server unavailable · 2 saved on this device', 'Retrying automatically. Changes are kept.'],
     ['rejected', facts(0, 1), '1 change was rejected', undefined],
     ['rejected', facts(0, 2), '2 changes were rejected', undefined],
     ['auth', facts(2), 'Sign in again', 'Your unsynced changes are kept.'],

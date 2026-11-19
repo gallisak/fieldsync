@@ -41,13 +41,15 @@ export function RejectionInbox({ trigger }: { trigger: ReactElement }) {
                       <Link href={`/tickets/${g.ticketId}`} className="hover:underline">
                         {g.title}
                       </Link>
+                    ) : g.notCreated !== null ? (
+                      `Not created: ${g.notCreated}`
                     ) : (
                       'Deleted ticket'
                     )}
                   </h3>
                   {g.rejections.map((r) => (
                     <RejectionItem
-                      key={r.mutation.id}
+                      key={r.id}
                       rejection={r}
                       actions={<ResolveRejectionActions rejection={r} />}
                     />

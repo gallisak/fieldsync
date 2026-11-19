@@ -32,6 +32,10 @@ export const updateTicket = defineMutator({
   reads: (a) => [{ entity: 'ticket', id: a.id }],
   apply(tx, a, ctx) {
     const next: Row = { ...requireTicket(tx, a.id) };
+    const assignee = a.patch.assigneeId;
+    if (assignee && tx.canSee && !tx.canSee(assignee, next.siteId as string)) {
+      throw new MutationRejected('BAD_ARGS', 'The assignee cannot see this ticket');
+    }
     for (const [field, value] of Object.entries(a.patch)) {
       if (value !== undefined) next[field] = value;
     }
@@ -74,7 +78,9 @@ export const moveTicket = defineMutator({
   apply(tx, a, ctx) {
     const ticket = requireTicket(tx, a.id);
     if (ticket.siteId === a.toSiteId) return;
-    tx.put('ticket', a.id, { ...ticket, siteId: a.toSiteId, updatedAt: ctx.now });
+    const assignee = ticket.assigneeId as string | null;
+    const keeps = !assignee || !tx.canSee || tx.canSee(assignee, a.toSiteId);
+    tx.put('ticket', a.id, { ...ticket, siteId: a.toSiteId, assigneeId: keeps ? assignee : null, updatedAt: ctx.now });
     for (const part of tx.scan('part', { ticketId: a.id })) {
       tx.put('part', String(part.id), { ...part, siteId: a.toSiteId });
     }

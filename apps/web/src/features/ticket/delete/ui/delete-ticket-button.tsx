@@ -29,8 +29,8 @@ export function DeleteTicketButton({ ticketId, onDeleted }: { ticketId: string; 
         <AlertDialogFooter>
           <AlertDialogCancel>Keep it</AlertDialogCancel>
           <AlertDialogAction
-            onClick={() => {
-              if (remove()) onDeleted?.();
+            onClick={async () => {
+              if (await remove()) onDeleted?.();
             }}
           >
             Delete

@@ -16,7 +16,9 @@ export function UpgradeGate({ children }: { children: ReactNode }) {
         <CardHeader>
           <CardTitle>A new version of FieldSync is required</CardTitle>
           <CardDescription>
-            Your {n} unsynced {n === 1 ? 'change is' : 'changes are'} kept and will be sent after the update.
+            {n === 0
+              ? 'Reload to get it.'
+              : `Your ${n} unsynced ${n === 1 ? 'change is' : 'changes are'} kept and will be sent after the update.`}
           </CardDescription>
         </CardHeader>
         <CardContent>

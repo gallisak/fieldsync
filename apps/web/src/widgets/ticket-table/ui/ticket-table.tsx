@@ -1,19 +1,25 @@
 'use client';
 
 import type { TicketStatus } from '@fieldsync/sync-core';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { usePathname, useSearchParams } from 'next/navigation';
 import { Suspense, useMemo } from 'react';
 import { useViewer } from '@/entities/session';
 import { SiteSelect } from '@/entities/site';
 import { TicketRow, usePendingKeys, useTickets } from '@/entities/ticket';
 import { CreateTicketDialog } from '@/features/ticket/create';
+import { useHasSynced, useSyncStatus } from '@/shared/api';
 import { Button } from '@/shared/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/ui/card';
+import { LoadingCard } from '@/shared/ui/loading-card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/ui/select';
 import { Table, TableBody, TableHead, TableHeader, TableRow } from '@/shared/ui/table';
 import { STATUS_LABEL, filterTickets, readFilters } from '../model/filters';
 
 const ALL = 'all';
+
+// The router would fetch the page from the server, which offline turns into a full reload; Next keeps
+// useSearchParams in step with history.replaceState.
+const replaceUrl = (url: string) => window.history.replaceState(null, '', url);
 
 export function TicketTable() {
   return (
@@ -29,9 +35,12 @@ function TicketTableContent() {
   const pending = usePendingKeys();
   const params = useSearchParams();
   const pathname = usePathname() ?? '/';
-  const router = useRouter();
+  const synced = useHasSynced();
+  const { facts } = useSyncStatus();
+  const loading = facts.blocked ? 'stopped' : facts.connection !== 'online' ? 'offline' : 'loading';
 
-  const filters = useMemo(() => readFilters(params), [params]);
+  const siteIds = useMemo(() => sites.map((s) => s.id), [sites]);
+  const filters = useMemo(() => readFilters(params, siteIds), [params, siteIds]);
   const visible = useMemo(() => filterTickets(tickets, filters), [tickets, filters]);
 
   const setFilter = (key: 'site' | 'status', value: string | null) => {
@@ -39,9 +48,10 @@ function TicketTableContent() {
     if (value) next.set(key, value);
     else next.delete(key);
     const query = next.toString();
-    router.replace(query ? `${pathname}?${query}` : pathname);
+    replaceUrl(query ? `${pathname}?${query}` : pathname);
   };
 
+  if (tickets.length === 0 && !synced) return <LoadingCard title="Tickets" state={loading} />;
   if (tickets.length === 0) {
     return (
       <Card>
@@ -91,7 +101,7 @@ function TicketTableContent() {
       {visible.length === 0 ? (
         <div className="space-y-2 rounded-md border p-6 text-center">
           <p>No tickets match the filters</p>
-          <Button variant="outline" onClick={() => router.replace(pathname)}>
+          <Button variant="outline" onClick={() => replaceUrl(pathname)}>
             Clear filters
           </Button>
         </div>
@@ -105,9 +115,6 @@ function TicketTableContent() {
               <TableHead>Updated</TableHead>
               <TableHead>
                 <span className="sr-only">Sync</span>
-              </TableHead>
-              <TableHead>
-                <span className="sr-only">Actions</span>
               </TableHead>
             </TableRow>
           </TableHeader>

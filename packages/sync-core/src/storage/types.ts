@@ -6,6 +6,8 @@ export interface StoredMutation extends Mutation {
 }
 
 export interface StoredRejection {
+  /** Local to this device; mutation ids restart at 1 when the client id is replaced. */
+  id: number;
   mutation: StoredMutation;
   code: RejectionCode;
   message: string;
@@ -29,6 +31,8 @@ export interface PullCommit {
   snapshot?: Change[];
   lastMutationId: number | null;
   rejections: { mutationId: number; code: RejectionCode; message: string; details?: unknown }[];
+  /** When the pull was received, stamped on new rejections; the client passes its own clock. */
+  receivedAt?: string;
 }
 
 /** Every method is atomic, also when several tabs share the storage. */
@@ -36,7 +40,7 @@ export interface SyncStorage {
   load(): Promise<PersistedState>;
   enqueue(m: Omit<StoredMutation, 'id'>): Promise<StoredMutation>;
   commitPull(c: PullCommit): Promise<boolean>;
-  dismissRejection(mutationId: number): Promise<void>;
+  dismissRejection(rejectionId: number): Promise<void>;
   resetClient(): Promise<PersistedState>;
   onVersionChange?(listener: () => void): () => void;
   close(): void;

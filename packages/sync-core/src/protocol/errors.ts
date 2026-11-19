@@ -1,10 +1,16 @@
 export type ApiErrorCode =
   | 'UPGRADE_REQUIRED'
   | 'UNAUTHENTICATED'
+  | 'FORBIDDEN'
+  | 'NOT_FOUND'
   | 'CLIENT_MISMATCH'
   | 'OUT_OF_ORDER'
   | 'BAD_REQUEST'
-  | 'UNAVAILABLE';
+  | 'PAYLOAD_TOO_LARGE'
+  | 'TOO_MANY_REQUESTS'
+  | 'UNAVAILABLE'
+  | 'INTERNAL'
+  | `HTTP_${number}`;
 
 export type RejectionCode =
   | 'BAD_ARGS'

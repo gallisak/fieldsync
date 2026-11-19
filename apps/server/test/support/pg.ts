@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { randomBytes } from 'crypto';
 import type { INestApplication } from '@nestjs/common';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
 import { Logger } from 'nestjs-pino';
 import { Pool } from 'pg';
@@ -9,6 +10,7 @@ import { AppModule } from '../../src/app.module';
 import { LOG_DESTINATION } from '../../src/common/logging';
 import { APP_CONFIG, parseConfig } from '../../src/config/env';
 import { Db } from '../../src/database/db.service';
+import { configureHttp } from '../../src/http';
 
 export function requireDatabaseUrl(): string | undefined {
   const url = process.env.DATABASE_URL;
@@ -76,8 +78,9 @@ export async function createTestApp(
       .overrideProvider(LOG_DESTINATION)
       .useValue({ write: (line: string) => void opts.logs?.push(JSON.parse(line)) })
       .compile();
-    const app = moduleRef.createNestApplication({ bufferLogs: true });
+    const app = moduleRef.createNestApplication<NestExpressApplication>({ bufferLogs: true });
     app.useLogger(app.get(Logger));
+    configureHttp(app, config);
     await app.init();
 
     return {

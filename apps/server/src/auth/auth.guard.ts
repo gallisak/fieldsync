@@ -26,7 +26,12 @@ export class AuthGuard implements CanActivate {
     if (rows.length === 0) throw new UnauthorizedException();
     req.user = rows[0];
     const context = requestContext.getStore();
-    if (context) context.userId = req.user.id;
+    if (context) {
+      context.userId = req.user.id;
+      // Push sends it in the body, pull in the query; the request's later lines, including the last, carry it.
+      const clientId = (req.body as { clientId?: unknown } | undefined)?.clientId ?? req.query?.clientId;
+      if (typeof clientId === 'string' && clientId.length <= 64) context.clientId = clientId;
+    }
     return true;
   }
 }

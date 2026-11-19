@@ -37,8 +37,8 @@ export class PullService {
     const { response, committed } = await this.db.tx(
       async (c) => {
         const sites = [...(await this.access.accessibleSites(c, user))];
-        const fp = this.access.fingerprint(user, sites);
         const state = await this.log.state(c);
+        const fp = this.access.fingerprint(user, sites, state.epoch);
         const cur = q.cursor ? decodeCursor(q.cursor) : undefined;
         const reason = snapshotReason(cur, fp, state);
         let page: PullPage;
@@ -63,6 +63,7 @@ export class PullService {
       },
       { isolation: 'repeatable read', readOnly: true },
     );
+    if (q.clientId) await this.clients.touch(this.db.pool, q.clientId, user.id).catch(() => undefined);
     // Counted here, not in the transaction, which may run more than once.
     const now = Date.now();
     for (const at of committed) this.metrics.deliveryLag.observe((now - at.getTime()) / 1000);

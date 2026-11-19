@@ -1,4 +1,4 @@
-import { HttpException, HttpStatus, Inject, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import type { Response } from 'express';
 import { AccessService } from './access/access.service';
 import type { AuthUser } from './auth/auth.guard';
@@ -17,7 +17,9 @@ interface Subscriber {
 
 @Injectable()
 export class StreamService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(StreamService.name);
   private readonly subscribers = new Set<Subscriber>();
+  private readonly refreshing = new Map<string, Promise<void>>();
   private timer?: NodeJS.Timeout;
 
   constructor(
@@ -43,9 +45,12 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   add(userId: string, sites: Iterable<string>, res: Response): void {
     // The client may have left while its sites were being read; its 'close' has already fired.
     if (!res.socket || res.socket.destroyed) return;
-    const open = [...this.subscribers].filter((s) => s.userId === userId).length;
-    if (open >= this.config.STREAM_MAX_PER_USER) {
-      throw new HttpException('Too many open streams', HttpStatus.TOO_MANY_REQUESTS);
+    // A peer that vanished without closing its socket (network switch) still counts; the newest stream is live.
+    const open = [...this.subscribers].filter((s) => s.userId === userId);
+    const excess = open.length + 1 - this.config.STREAM_MAX_PER_USER;
+    for (const stale of excess > 0 ? open.slice(0, excess) : []) {
+      this.subscribers.delete(stale);
+      stale.res.end();
     }
 
     res.writeHead(200, {
@@ -58,6 +63,10 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     const sub: Subscriber = { userId, sites: new Set(sites), res, dirty: false };
     this.subscribers.add(sub);
     res.on('close', () => this.subscribers.delete(sub));
+    // The sites were read before the subscriber existed, so a grant or revoke in between would not reach it.
+    this.refreshUser(userId, false).catch((err: unknown) =>
+      this.logger.error(`stream access refresh failed: ${(err as Error).message}`),
+    );
     res.on('drain', () => {
       if (!sub.dirty) return;
       sub.dirty = false;
@@ -71,14 +80,25 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async refreshUser(userId: string): Promise<void> {
-    const subs = [...this.subscribers].filter((s) => s.userId === userId);
-    if (subs.length === 0) return;
+  /** One at a time per user, so an older read never overwrites a newer one. */
+  refreshUser(userId: string, poke = true): Promise<void> {
+    const run = (this.refreshing.get(userId) ?? Promise.resolve()).then(() => this.reloadSites(userId, poke));
+    // A failed refresh must not hold up the next one; the caller still gets the error.
+    const next = run.catch(() => undefined);
+    this.refreshing.set(userId, next);
+    void next.then(() => {
+      if (this.refreshing.get(userId) === next) this.refreshing.delete(userId);
+    });
+    return run;
+  }
+
+  private async reloadSites(userId: string, poke: boolean): Promise<void> {
+    if (![...this.subscribers].some((s) => s.userId === userId)) return;
     const { rows } = await this.db.pool.query<AuthUser>(`SELECT id, role FROM users WHERE id = $1`, [userId]);
     const sites = rows[0] ? await this.access.accessibleSites(this.db.pool, rows[0]) : new Set<string>();
-    for (const sub of subs) {
+    for (const sub of [...this.subscribers].filter((s) => s.userId === userId)) {
       sub.sites = new Set(sites);
-      this.poke(sub);
+      if (poke) this.poke(sub);
     }
   }
 

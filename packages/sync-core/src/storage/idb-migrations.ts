@@ -1,8 +1,8 @@
-export const LOCAL_SCHEMA = 2;
+export const LOCAL_SCHEMA = 3;
 
 /**
- * Additive only. A step must never clear `mutations` (the user's unsynced work); it may drop `entities` only
- * together with setting the cursor to `null`, so the next pull re-fetches them.
+ * A step keeps data: it adds, or copies into a new store. It must never clear `mutations` (the user's unsynced
+ * work); it may drop `entities` only together with setting the cursor to `null`, so the next pull re-fetches them.
  */
 export const migrations: Record<number, (db: IDBDatabase, tx: IDBTransaction) => void> = {
   1(db) {
@@ -15,5 +15,16 @@ export const migrations: Record<number, (db: IDBDatabase, tx: IDBTransaction) =>
   },
   2(_db, tx) {
     tx.objectStore('entities').createIndex('ticketId', 'data.ticketId');
+  },
+  // Keyed by mutation id, a rejection kept from before a client id reset was overwritten by a new one.
+  3(db, tx) {
+    const old = tx.objectStore('rejections');
+    old.name = 'rejections_v2';
+    const rejections = db.createObjectStore('rejections', { keyPath: 'id', autoIncrement: true });
+    const all = old.getAll();
+    all.onsuccess = () => {
+      for (const r of all.result as object[]) rejections.add(r);
+      db.deleteObjectStore('rejections_v2');
+    };
   },
 };

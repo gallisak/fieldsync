@@ -27,6 +27,13 @@ interface Write {
   id: string;
   row?: Row;
   prevSite?: string;
+  fresh?: boolean;
+}
+
+// FOR UPDATE on a missing row locks nothing, so a concurrent insert of the same id can win; SQLSTATE 40001 makes
+// Db.tx run the mutation again, and the retry finds the row and locks it.
+class ConcurrentInsert extends Error {
+  readonly code = '40001';
 }
 
 class BufferedTx implements MutatorTx {
@@ -35,7 +42,13 @@ class BufferedTx implements MutatorTx {
   constructor(
     private readonly loaded: Map<string, Loaded>,
     private readonly scanned: Map<string, string[]>,
+    private readonly people: Map<string, { admin: boolean; sites: Set<string> }>,
   ) {}
+
+  canSee(userId: string, siteId: string): boolean {
+    const p = this.people.get(userId);
+    return p !== undefined && (p.admin || p.sites.has(siteId));
+  }
 
   get(entity: EntityName, id: string): Row | undefined {
     return this.loaded.get(`${entity}/${id}`)?.row;
@@ -53,7 +66,14 @@ class BufferedTx implements MutatorTx {
   put(entity: EntityName, id: string, row: Row): void {
     const prev = this.loaded.get(`${entity}/${id}`);
     this.loaded.set(`${entity}/${id}`, { row, siteId: row.siteId as string });
-    this.writes.push({ op: 'put', entity, id, row, prevSite: prev?.row ? prev.siteId : undefined });
+    this.writes.push({
+      op: 'put',
+      entity,
+      id,
+      row,
+      prevSite: prev?.row ? prev.siteId : undefined,
+      fresh: prev?.siteId === undefined,
+    });
   }
 
   del(entity: EntityName, id: string): void {
@@ -119,14 +139,35 @@ export class MutationExecutor {
     const sites = await this.access.accessibleSites(c, user);
     if ([...loaded.values()].some((l) => l.siteId !== undefined && !sites.has(l.siteId))) throw noAccess();
 
-    const { rows: clock } = await c.query<{ now: Date }>(`SELECT transaction_timestamp() AS now`);
-    const tx = new BufferedTx(loaded, scanned);
+    // After the row locks: the transaction's start time can be older than the change it now builds on.
+    const { rows: clock } = await c.query<{ now: Date }>(`SELECT clock_timestamp() AS now`);
+    const tx = new BufferedTx(loaded, scanned, await this.loadPeople(c, m, loaded));
     def.apply(tx, m.args, { now: clock[0].now.toISOString() });
     if (tx.writes.some((w) => w.op === 'put' && !sites.has(w.row?.siteId as string))) throw noAccess();
 
     const touched = await this.write(c, tx.writes, clientId, m);
     await this.hooks.afterWrites?.(c, m);
     return touched;
+  }
+
+  // Assignees a mutation names or finds on its tickets, with what they can see: apply() runs without the database.
+  private async loadPeople(
+    c: PoolClient,
+    m: Mutation,
+    loaded: Map<string, Loaded>,
+  ): Promise<Map<string, { admin: boolean; sites: Set<string> }>> {
+    const patch = (m.args as { patch?: { assigneeId?: unknown } }).patch;
+    const named = [patch?.assigneeId, ...[...loaded.values()].map((l) => l.row?.assigneeId)];
+    const ids = [...new Set(named.filter((id): id is string => typeof id === 'string'))];
+    const people = new Map<string, { admin: boolean; sites: Set<string> }>();
+    if (ids.length === 0) return people;
+    const { rows } = await c.query<{ id: string; role: string; sites: string[] }>(
+      `SELECT u.id, u.role, ARRAY(SELECT site_id::text FROM user_sites s WHERE s.user_id = u.id) AS sites
+         FROM users u WHERE u.id = ANY($1::uuid[])`,
+      [ids],
+    );
+    for (const r of rows) people.set(r.id, { admin: r.role === 'admin', sites: new Set(r.sites) });
+    return people;
   }
 
   private async write(c: PoolClient, writes: Write[], clientId: string, m: Mutation): Promise<string[]> {
@@ -154,7 +195,14 @@ export class MutationExecutor {
 
     for (const [i, w] of writes.entries()) {
       const version = logRows[versionIndex[i]].version;
-      if (w.op === 'put') {
+      if (w.op === 'put' && w.fresh) {
+        const { rowCount } = await c.query(
+          `INSERT INTO entities (entity, id, site_id, data, deleted, version) VALUES ($1, $2, $3, $4, false, $5)
+           ON CONFLICT (entity, id) DO NOTHING`,
+          [w.entity, w.id, w.row?.siteId, JSON.stringify(w.row), version],
+        );
+        if (rowCount === 0) throw new ConcurrentInsert(`${w.entity} ${w.id} was inserted concurrently`);
+      } else if (w.op === 'put') {
         await c.query(
           `INSERT INTO entities (entity, id, site_id, data, deleted, version) VALUES ($1, $2, $3, $4, false, $5)
            ON CONFLICT (entity, id) DO UPDATE

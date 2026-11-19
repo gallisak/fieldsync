@@ -17,8 +17,12 @@ export function AddPartForm({ ticketId }: { ticketId: string }) {
     defaultValues: EMPTY,
   });
 
-  const onSubmit = form.handleSubmit((fields) => {
-    if (add(fields)) form.reset(EMPTY);
+  const onSubmit = form.handleSubmit(async (fields) => {
+    const stored = add(fields);
+    if (!stored) return;
+    form.reset(EMPTY);
+    // Not kept on this device: put the input back so it can be sent again.
+    if (!(await stored)) form.reset(fields);
   });
 
   return (

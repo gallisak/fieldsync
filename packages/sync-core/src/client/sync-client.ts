@@ -347,9 +347,9 @@ export class SyncClient {
       this.storage = new MemoryStorage();
       state = await this.storage.load();
       this.setFacts({ storage: 'memory' });
-      this.leaveTabs();
       // Data written by a newer app: its queue is not ours to send, and the update is the way out.
       if (err instanceof StorageVersionError) this.block('upgrade');
+      this.leaveTabs();
     }
     this.adopt(state);
     this.emit();
@@ -480,7 +480,8 @@ export class SyncClient {
 
   private block(reason: BlockReason): void {
     this.selfBlocked = true;
-    if (this.isLeader && this.tabs) {
+    // A follower resigns too, or its queued lock request would win leadership it can never use.
+    if (this.tabs) {
       this.isLeader = false;
       this.tabs.resign();
     }
@@ -564,6 +565,7 @@ export class SyncClient {
   }
 
   private lead(): void {
+    if (this.selfBlocked) return;
     this.closeStream();
     if (this.pollTimer !== undefined) this.clock.clearTimeout(this.pollTimer);
     this.schedulePoll();

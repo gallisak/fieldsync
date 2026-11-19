@@ -19,11 +19,11 @@ export function ResolveRejectionActions({ rejection }: { rejection: StoredReject
   return (
     <div className="flex gap-2">
       {tryAgain && (
-        <Button size="sm" onClick={tryAgain} disabled={retrying}>
+        <Button size="sm" onClick={() => void tryAgain()} disabled={retrying}>
           {retryLabel}
         </Button>
       )}
-      <Button size="sm" variant="outline" onClick={dismiss}>
+      <Button size="sm" variant="outline" onClick={() => void dismiss()}>
         Dismiss
       </Button>
     </div>

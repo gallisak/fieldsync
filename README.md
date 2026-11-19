@@ -9,6 +9,10 @@ authoritative Postgres-backed server. Task: `ЗАВДАННЯ.md`.
     docker compose up --build            # web :3000, api :3001, postgres :5432 (POSTGRES_PORT); Compose ≥ 2.24
 
 Node 22 (`.nvmrc`). The database lives in the `pgdata` volume; `docker compose down -v` starts it over.
+A stack started from an older checkout kept its database in an anonymous volume, so it comes up empty here. To keep
+that data, stop the stack and copy it over before the first `up`:
+`docker run --rm -v <old volume>:/from -v fieldsync-starter_pgdata:/to alpine cp -a /from/. /to/`
+(`docker volume ls` lists the old one).
 
 Locally: `docker compose up -d postgres`, `npm install`, `npm run build:core`, then
 `npm run build -w @fieldsync/server && npm start -w @fieldsync/server` and `npm run dev -w @fieldsync/web`.
@@ -28,7 +32,7 @@ setup is for development, not for exposure.
 3. Reload normally (not Shift-reload), still offline: everything is there.
 4. Open a second tab, set it **Offline** too, create a ticket: both tabs list both tickets.
 5. Both tabs back online: **Syncing…** → **All changes saved**. Close the second tab.
-6. First tab offline again. In a private window sign in with `admin-token`, open the first ticket, **Cancel**.
+6. First tab offline again. In a private window sign in with `admin-token`, open the first ticket, **Cancel ticket** and confirm.
 7. In the technician tab press **Mark done** on it, go online: **1 change was rejected**, the inbox says
    **Status was changed by someone else. It is now cancelled.**
 8. Revoke tech A's site; the technician's list empties (`-X POST` gives it back):

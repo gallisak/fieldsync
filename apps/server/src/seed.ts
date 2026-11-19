@@ -1,4 +1,4 @@
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import { tokenHash } from './auth/token-hash';
 
 export const DEMO = {
@@ -11,8 +11,23 @@ export const DEMO = {
 
 // Only into an empty database: run on every boot, it would hand back access an admin has revoked since.
 export async function seedDemo(pool: Pool): Promise<void> {
-  const { rows } = await pool.query(`SELECT 1 FROM users LIMIT 1`);
-  if (rows.length > 0) return;
+  const c = await pool.connect();
+  try {
+    await c.query('BEGIN');
+    // One transaction, so a boot that dies half-way leaves the database empty and the next one seeds it in full.
+    await c.query(`LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE`);
+    const { rows } = await c.query(`SELECT 1 FROM users LIMIT 1`);
+    if (rows.length === 0) await insertDemo(c);
+    await c.query('COMMIT');
+  } catch (err) {
+    await c.query('ROLLBACK').catch(() => undefined);
+    throw err;
+  } finally {
+    c.release();
+  }
+}
+
+async function insertDemo(pool: PoolClient): Promise<void> {
   await pool.query(
     `INSERT INTO sites (id, name) VALUES ($1, 'North Plant'), ($2, 'South Plant') ON CONFLICT DO NOTHING`,
     [DEMO.siteA, DEMO.siteB],

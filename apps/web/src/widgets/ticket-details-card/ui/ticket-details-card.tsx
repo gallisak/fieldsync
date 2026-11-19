@@ -22,9 +22,10 @@ export function TicketDetailsCard({ id }: { id: string }) {
   const pending = usePendingKeys();
   const router = useRouter();
   const synced = useHasSynced();
-  const offline = useSyncStatus().facts.connection !== 'online';
+  const { facts } = useSyncStatus();
+  const loading = facts.blocked ? 'stopped' : facts.connection !== 'online' ? 'offline' : 'loading';
 
-  if (!ticket && !synced) return <LoadingCard title="Ticket" offline={offline} />;
+  if (!ticket && !synced) return <LoadingCard title="Ticket" state={loading} />;
   if (!ticket) {
     return (
       <Card>

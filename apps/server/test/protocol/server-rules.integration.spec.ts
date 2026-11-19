@@ -92,6 +92,25 @@ describeDb('server rules', () => {
     const changes: Change[] = (await pull(t.http, TOKENS.techA, { cursor })).body.changes;
     expect(changes).toEqual([expect.objectContaining({ entity: 'part', id: orphan, op: 'del' })]);
   });
+
+  it('keeps a part whose ticket id was stored in upper case, and lowers the stored ids', async () => {
+    const id = await ticket('c1');
+    const kept = randomUUID();
+    await first(TOKENS.techA, 'c1', 'part.add', { id: kept, ticketId: id, name: 'belt', quantity: 1 });
+    await t.pool.query(
+      `UPDATE entities SET data = data || jsonb_build_object('ticketId', upper(data->>'ticketId'))
+        WHERE entity = 'part' AND id = $1`,
+      [kept],
+    );
+
+    const sql = await readFile(join(__dirname, '../../src/database/migrations/006_orphan_parts.sql'), 'utf8');
+    await t.pool.query(sql);
+
+    const { rows } = await t.pool.query(`SELECT deleted, data->>'ticketId' AS "ticketId" FROM entities WHERE id = $1`, [
+      kept,
+    ]);
+    expect(rows).toEqual([{ deleted: false, ticketId: id }]);
+  });
 });
 
 describe('configuration bounds', () => {

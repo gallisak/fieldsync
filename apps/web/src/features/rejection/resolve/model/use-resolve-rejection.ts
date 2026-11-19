@@ -13,18 +13,21 @@ export function useResolveRejection(rejection: StoredRejection) {
   // The rejection disappears only once the dismissal is stored; a second click before that would queue it twice.
   const [retrying, setRetrying] = useState(false);
 
-  const dismiss = () => {
-    client.dismissRejection(rejection.id).catch((err: unknown) => {
-      console.error('fieldsync: could not dismiss a rejection', err);
-      toast.error('Could not dismiss this message. Try again.');
-    });
-  };
+  const dismiss = () =>
+    client.dismissRejection(rejection.id).then(
+      () => true,
+      (err: unknown) => {
+        console.error('fieldsync: could not dismiss a rejection', err);
+        toast.error('Could not dismiss this message. Try again.');
+        return false;
+      },
+    );
   const tryAgain = retry
-    ? () => {
+    ? async () => {
         if (retrying) return;
         setRetrying(true);
-        if (mutate(retry.name, retry.args)) dismiss();
-        else setRetrying(false);
+        const stored = await mutate(retry.name, retry.args);
+        if (!stored || !(await dismiss())) setRetrying(false);
       }
     : null;
 

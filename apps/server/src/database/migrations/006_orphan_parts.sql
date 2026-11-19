@@ -1,3 +1,15 @@
+-- Ids were accepted in upper case before they had to be lower case, and the uuid columns hide the difference.
+-- No log entry: 007 changes the epoch, so every client takes a snapshot of these rows.
+UPDATE entities
+   SET data = data
+       || jsonb_build_object('id', lower(data->>'id'), 'siteId', lower(data->>'siteId'))
+       || CASE WHEN entity = 'part' THEN jsonb_build_object('ticketId', lower(data->>'ticketId'))
+               WHEN data->>'assigneeId' IS NOT NULL THEN jsonb_build_object('assigneeId', lower(data->>'assigneeId'))
+               ELSE '{}'::jsonb END
+ WHERE data IS NOT NULL
+   AND (data->>'id' <> lower(data->>'id') OR data->>'siteId' <> lower(data->>'siteId')
+        OR data->>'ticketId' <> lower(data->>'ticketId') OR data->>'assigneeId' <> lower(data->>'assigneeId'));
+
 -- Parts the starter's ticket delete left behind (F19): deleted for every client through the log, as one change.
 WITH orphans AS (
   SELECT p.id, p.site_id, row_number() OVER (ORDER BY p.id) AS n

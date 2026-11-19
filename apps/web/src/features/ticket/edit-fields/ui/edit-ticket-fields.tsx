@@ -29,12 +29,19 @@ export function EditTicketFields({ ticket }: { ticket: Ticket }) {
     for (const f of FIELDS) if (!form.getFieldState(f).isDirty) seen.current[f] = current[f];
   }, [title, description, form]);
 
-  const onSubmit = form.handleSubmit((values) => {
+  const onSubmit = form.handleSubmit(async (values) => {
     const patch: Partial<TicketFields> = {};
     for (const f of FIELDS) if (dirtyFields[f]) patch[f] = values[f];
-    if (Object.keys(patch).length === 0 || !save(patch)) return;
+    const stored = Object.keys(patch).length > 0 ? save(patch) : null;
+    if (!stored) return;
+    const before = { ...seen.current };
     seen.current = values;
     form.reset(values);
+    if (await stored) return;
+    // Not kept on this device: the edit is back to unsaved, so the user can try again.
+    seen.current = before;
+    form.reset(before);
+    for (const f of Object.keys(patch) as (keyof TicketFields)[]) form.setValue(f, values[f], { shouldDirty: true });
   });
 
   return (

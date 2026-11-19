@@ -141,7 +141,7 @@ export class MutationExecutor {
 
     // After the row locks: the transaction's start time can be older than the change it now builds on.
     const { rows: clock } = await c.query<{ now: Date }>(`SELECT clock_timestamp() AS now`);
-    const tx = new BufferedTx(loaded, scanned, await this.loadPeople(c, m));
+    const tx = new BufferedTx(loaded, scanned, await this.loadPeople(c, m, loaded));
     def.apply(tx, m.args, { now: clock[0].now.toISOString() });
     if (tx.writes.some((w) => w.op === 'put' && !sites.has(w.row?.siteId as string))) throw noAccess();
 
@@ -150,10 +150,15 @@ export class MutationExecutor {
     return touched;
   }
 
-  // Users a mutation names (a ticket's assignee), with what they can see: apply() runs without the database.
-  private async loadPeople(c: PoolClient, m: Mutation): Promise<Map<string, { admin: boolean; sites: Set<string> }>> {
+  // Assignees a mutation names or finds on its tickets, with what they can see: apply() runs without the database.
+  private async loadPeople(
+    c: PoolClient,
+    m: Mutation,
+    loaded: Map<string, Loaded>,
+  ): Promise<Map<string, { admin: boolean; sites: Set<string> }>> {
     const patch = (m.args as { patch?: { assigneeId?: unknown } }).patch;
-    const ids = typeof patch?.assigneeId === 'string' ? [patch.assigneeId] : [];
+    const named = [patch?.assigneeId, ...[...loaded.values()].map((l) => l.row?.assigneeId)];
+    const ids = [...new Set(named.filter((id): id is string => typeof id === 'string'))];
     const people = new Map<string, { admin: boolean; sites: Set<string> }>();
     if (ids.length === 0) return people;
     const { rows } = await c.query<{ id: string; role: string; sites: string[] }>(

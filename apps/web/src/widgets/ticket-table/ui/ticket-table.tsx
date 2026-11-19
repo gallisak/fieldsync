@@ -36,7 +36,8 @@ function TicketTableContent() {
   const params = useSearchParams();
   const pathname = usePathname() ?? '/';
   const synced = useHasSynced();
-  const offline = useSyncStatus().facts.connection !== 'online';
+  const { facts } = useSyncStatus();
+  const loading = facts.blocked ? 'stopped' : facts.connection !== 'online' ? 'offline' : 'loading';
 
   const siteIds = useMemo(() => sites.map((s) => s.id), [sites]);
   const filters = useMemo(() => readFilters(params, siteIds), [params, siteIds]);
@@ -50,7 +51,7 @@ function TicketTableContent() {
     replaceUrl(query ? `${pathname}?${query}` : pathname);
   };
 
-  if (tickets.length === 0 && !synced) return <LoadingCard title="Tickets" offline={offline} />;
+  if (tickets.length === 0 && !synced) return <LoadingCard title="Tickets" state={loading} />;
   if (tickets.length === 0) {
     return (
       <Card>

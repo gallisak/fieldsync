@@ -1,4 +1,4 @@
-import { Inject, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import type { Response } from 'express';
 import { AccessService } from './access/access.service';
 import type { AuthUser } from './auth/auth.guard';
@@ -17,6 +17,7 @@ interface Subscriber {
 
 @Injectable()
 export class StreamService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(StreamService.name);
   private readonly subscribers = new Set<Subscriber>();
   private readonly refreshing = new Map<string, Promise<void>>();
   private timer?: NodeJS.Timeout;
@@ -63,7 +64,9 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     this.subscribers.add(sub);
     res.on('close', () => this.subscribers.delete(sub));
     // The sites were read before the subscriber existed, so a grant or revoke in between would not reach it.
-    void this.refreshUser(userId, false);
+    this.refreshUser(userId, false).catch((err: unknown) =>
+      this.logger.error(`stream access refresh failed: ${(err as Error).message}`),
+    );
     res.on('drain', () => {
       if (!sub.dirty) return;
       sub.dirty = false;
@@ -79,14 +82,14 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
 
   /** One at a time per user, so an older read never overwrites a newer one. */
   refreshUser(userId: string, poke = true): Promise<void> {
-    const next = (this.refreshing.get(userId) ?? Promise.resolve())
-      .then(() => this.reloadSites(userId, poke))
-      .catch(() => undefined);
+    const run = (this.refreshing.get(userId) ?? Promise.resolve()).then(() => this.reloadSites(userId, poke));
+    // A failed refresh must not hold up the next one; the caller still gets the error.
+    const next = run.catch(() => undefined);
     this.refreshing.set(userId, next);
     void next.then(() => {
       if (this.refreshing.get(userId) === next) this.refreshing.delete(userId);
     });
-    return next;
+    return run;
   }
 
   private async reloadSites(userId: string, poke: boolean): Promise<void> {

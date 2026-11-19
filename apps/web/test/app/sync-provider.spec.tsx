@@ -1,7 +1,6 @@
 /** @jest-environment jsdom */
 import type { SyncClient } from '@fieldsync/sync-core';
-import { StrictMode } from 'react';
-import { act } from 'react-dom/test-utils';
+import { act, StrictMode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { SyncProvider } from '@/app/providers/sync-provider';
 import { signIn, signOut } from '@/entities/session';
@@ -82,8 +81,7 @@ describe('SyncProvider', () => {
     await act(async () => signOut());
     expect(live()).toHaveLength(0);
 
-    signIn(session('u1'));
-    await act(async () => undefined);
+    await act(async () => signIn(session('u1')));
     expect(live()).toHaveLength(1);
     await act(async () => root.unmount());
     expect(live()).toHaveLength(0);

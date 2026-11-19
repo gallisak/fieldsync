@@ -188,6 +188,23 @@ describe('ticket.move', () => {
     expect(tx.get('ticket', TICKET)).toEqual(ticket());
   });
 
+  it('unassigns an assignee who cannot see the target site, where the caller can tell', () => {
+    const args = { id: TICKET, toSiteId: SITE_B };
+    const server = new MapTx([['ticket', ticket({ assigneeId: USER })]]);
+    server.canSee = (userId, siteId) => userId === USER && siteId === SITE_A;
+    run(server, 'ticket.move', args, LATER);
+    expect(server.get('ticket', TICKET)).toMatchObject({ siteId: SITE_B, assigneeId: null });
+
+    const allowed = new MapTx([['ticket', ticket({ assigneeId: USER })]]);
+    allowed.canSee = () => true;
+    run(allowed, 'ticket.move', args, LATER);
+    expect(allowed.get('ticket', TICKET)).toMatchObject({ siteId: SITE_B, assigneeId: USER });
+
+    const client = new MapTx([['ticket', ticket({ assigneeId: USER })]]);
+    run(client, 'ticket.move', args, LATER);
+    expect(client.get('ticket', TICKET)).toMatchObject({ siteId: SITE_B, assigneeId: USER });
+  });
+
   it('rejects a missing ticket with NO_ACCESS', () => {
     expectRejected(new MapTx(), 'ticket.move', { id: TICKET, toSiteId: SITE_B }, 'NO_ACCESS');
   });

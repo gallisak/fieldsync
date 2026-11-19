@@ -78,7 +78,9 @@ export const moveTicket = defineMutator({
   apply(tx, a, ctx) {
     const ticket = requireTicket(tx, a.id);
     if (ticket.siteId === a.toSiteId) return;
-    tx.put('ticket', a.id, { ...ticket, siteId: a.toSiteId, updatedAt: ctx.now });
+    const assignee = ticket.assigneeId as string | null;
+    const keeps = !assignee || !tx.canSee || tx.canSee(assignee, a.toSiteId);
+    tx.put('ticket', a.id, { ...ticket, siteId: a.toSiteId, assigneeId: keeps ? assignee : null, updatedAt: ctx.now });
     for (const part of tx.scan('part', { ticketId: a.id })) {
       tx.put('part', String(part.id), { ...part, siteId: a.toSiteId });
     }

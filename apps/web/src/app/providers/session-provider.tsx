@@ -7,8 +7,17 @@ import { FullPageSkeleton } from './full-page-skeleton';
 
 const SIGN_IN = '/sign-in';
 
-// Only a path on this site: `//host` and `/\host` would leave it.
-const isLocalPath = (p: string | null): p is string => !!p && p.startsWith('/') && !/^\/[/\\]/.test(p);
+// Resolved the way the browser will resolve it, so tabs or backslashes cannot point it at another origin.
+function localTarget(next: string | null): string {
+  if (!next?.startsWith('/')) return '/';
+  try {
+    const url = new URL(next, window.location.origin);
+    if (url.origin !== window.location.origin || url.pathname === SIGN_IN) return '/';
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return '/';
+  }
+}
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const session = useSession();
@@ -24,8 +33,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       const here = `${window.location.pathname}${window.location.search}`;
       router.replace(here === '/' ? SIGN_IN : `${SIGN_IN}?next=${encodeURIComponent(here)}`);
     } else if (redirect === 'back') {
-      const next = new URLSearchParams(window.location.search).get('next');
-      router.replace(isLocalPath(next) ? next : '/');
+      router.replace(localTarget(new URLSearchParams(window.location.search).get('next')));
     }
   }, [redirect, router]);
 

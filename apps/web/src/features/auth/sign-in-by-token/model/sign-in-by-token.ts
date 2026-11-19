@@ -2,7 +2,6 @@ import { TransportError } from '@fieldsync/sync-core';
 import { signIn } from '@/entities/session';
 import { fetchMe } from '@/shared/api';
 
-/** Resolves to an error message for the form, or `null` once signed in. */
 export async function signInByToken(token: string): Promise<string | null> {
   try {
     const me = await fetchMe(token);

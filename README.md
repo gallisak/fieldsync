@@ -31,6 +31,38 @@ contain a `.env`. Demo tokens (with `SEED_DEMO=true`): `admin-token` (all sites)
 Integration tests take `DATABASE_URL` from `.env` (or the environment). Without it they are skipped locally; in
 CI (`CI` set) a missing `DATABASE_URL` fails the run.
 
+### Manual acceptance
+
+Run the containers (`docker compose up --build`) and use Chrome. The offline shell is a service worker, which
+only a production build registers, so step 3 does not work under `npm run dev`.
+
+1. Open http://localhost:3000 and sign in with `tech-a-token`. The badge in the header reads **All changes
+   saved**.
+2. In DevTools → Network choose **Offline**. Then:
+   - create a ticket (**New ticket** → **Create**);
+   - change its title and press **Save**;
+   - add a part under **Parts used**, and press **+** twice;
+   - press **Start work**.
+
+   The badge reads **Offline · 6 saved on this device**, and every change is visible.
+3. Reload the page, still offline. Use a normal reload: Shift-reload bypasses the service worker. Everything is
+   still there.
+4. Open http://localhost:3000 in a second tab and set that tab to **Offline** too, since DevTools sets it per
+   tab. Create another ticket there. Both tabs list both tickets.
+5. Set both tabs back to **No throttling**. The badge passes through **Syncing…** to **All changes saved**.
+   Close the second tab.
+6. Set the first tab to **Offline** again. In a private window, sign in with `admin-token`: both tickets are
+   there. Open the first one and press **Cancel**.
+7. In the technician tab, which has not heard of the cancel, open the first ticket and press **Mark done**. Go
+   online. The badge reads **1 change was rejected**. Clicking it opens the inbox: **Status was changed by
+   someone else**, **It is now cancelled.**
+8. Revoke tech A's site as the admin. The technician's list empties itself:
+
+       curl -X DELETE -H 'authorization: Bearer admin-token' -H 'x-fieldsync-protocol: 2' \
+         http://localhost:3001/admin/users/00000000-0000-4000-8000-000000000002/sites/00000000-0000-4000-8000-0000000000a1
+
+   The same request with `-X POST` gives the site back.
+
 ## Architecture
 
 - `packages/sync-core` – protocol types, shared mutators, sync client (runs in Node and the browser)
@@ -132,6 +164,7 @@ in `packages/sync-core/test/repro/`.
 | F26 | Vacuous test | Fake DB ignores the query; encodes F8 | replaced by `f08-write-access` | fixed — see below |
 | F27 | Vacuous test | `SELECT 1` "integration", `it.todo`, silent skip without `DATABASE_URL`, web not type-checked | replaced by the repro suites; tooling | fixed — see below |
 | F28 | Resilience (server) | A dropped database connection raises an unhandled `'error'` event and crashes the server process | `f28-connection-loss.integration.spec.ts` | fixed |
+| F29 | Resilience (client) | A page kept in the back/forward cache keeps the tab leadership; no live tab syncs | `f29-bfcache-leader.spec.ts` | fixed |
 
 ### F1 — change versions visible out of commit order
 
@@ -786,6 +819,43 @@ affected.
 **Alternatives considered.** A global `process.on('uncaughtException')` would keep the process alive but also
 swallow genuine bugs and leave it in an unknown state; restarting via a supervisor still drops every in-flight
 request and stream on each blip.
+
+### F29 — a page kept in the back/forward cache keeps the tab leadership
+
+Found while writing the manual acceptance script (P8.8); not in the original list.
+
+**What.** The syncing tab is chosen with a Web Lock that its page holds until it closes. When the page is left
+with a full navigation, the browser can keep it frozen in the back/forward cache instead of closing it. A frozen
+page still holds its locks.
+
+Such navigations are common:
+- Next itself falls back to a full navigation when a client-side one cannot load its data, for example offline;
+- the user types an address;
+- the user goes back.
+
+**Why it is dangerous.** Nothing syncs. The new page in the same tab and every other tab wait for the lock, but
+the frozen page never pushes or pulls. Queued changes stay on the device until the browser evicts the frozen
+page, which can take minutes. Meanwhile the followers' badges show a status that no leader updates.
+
+**Reproduce.**
+- `packages/sync-core/test/repro/f29-bfcache-leader.spec.ts` uses a minimal `navigator.locks` (one exclusive
+  queue) and page events. Page A leads and is hidden into the cache (`pagehide`, `persisted`). A new page B
+  must then lead. When A is shown again and B closes, A must lead again.
+- In Chrome: go offline in two tabs and navigate within the first one. Neither tab can lead, and after going
+  online nothing syncs. With `--disable-features=BackForwardCache` it works, which pins the cause.
+
+**Fix.** `WebLocksCoordinator` steps down on `pagehide`:
+- it cancels a waiting lock request;
+- it releases a held lock;
+- it tells the client it no longer leads.
+
+On `pageshow` with `persisted` (the page came back from the cache), it queues for the lock again. Each request
+has its own `AbortController`, because an aborted one cannot be reused. The P8.8 script now passes in a stock
+Chrome, with both tabs offline and the second tab leading after the first one navigates.
+
+**Alternatives considered.** Disposing the whole client on `pagehide` would also free the lock, but a page
+restored from the cache would come back without a client. An `unload` handler makes the page ineligible for the
+cache, which slows down every back navigation, and Chrome is phasing `unload` out.
 
 ## Changes to existing tests
 

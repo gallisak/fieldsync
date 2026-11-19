@@ -21,7 +21,6 @@ interface MoveTicketMenuItemProps {
   sites: readonly Site[];
 }
 
-/** A dropdown menu item: render it inside a `DropdownMenuContent`. */
 export function MoveTicketMenuItem({ ticketId, currentSiteId, sites }: MoveTicketMenuItemProps) {
   const [open, setOpen] = useState(false);
   const [toSiteId, setToSiteId] = useState<string>();

@@ -17,7 +17,6 @@ import {
 } from '@/shared/ui/alert-dialog';
 import { Button } from '@/shared/ui/button';
 
-/** `trigger` replaces the default button, e.g. with a status badge that starts the same sign-out flow. */
 export function SignOutButton({ trigger }: { trigger?: ReactElement }) {
   const pending = useSyncStatus().facts.pendingCount;
   const element = trigger ?? (

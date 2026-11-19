@@ -243,7 +243,6 @@ async function perform(a: Action, sim: Sim): Promise<void> {
       return sim.openTab(devices[a.device]);
     case 'close-tab':
       return devices[a.device].tabs.splice(a.tab, 1)[0].dispose();
-    // A real server's I/O lets pending client work run meanwhile; settling first keeps model and Postgres runs equal.
     case 'grant':
       await settle();
       return server.grant(a.userId, a.siteId);
@@ -272,7 +271,6 @@ export async function runSimulation(
   const s = new Scheduler();
   const server = makeServer(() => s.now);
   const world = await seedWorld(rng, server);
-  // A cursor carries its site set's fingerprint, so the sites recorded per cursor are those "as of that pull".
   const served = new Map<string, Set<string>>();
   const port: SyncServerPort = {
     push: (user, req) => server.push(user, req),
@@ -295,7 +293,6 @@ export async function runSimulation(
         const res = await network.pull({ ...q, limit: PAGE_LIMIT }, signal);
         const sites = served.get(res.cursor);
         if (!sites) throw new Error(`a pull answered with a cursor the server never issued: ${res.cursor}`);
-        // A snapshot page with more to come is only staged in memory; the base still reflects the earlier sites.
         if (res.mode === 'delta' || !res.hasMore) d.sitesAtLastPull = sites;
         if (res.mode === 'snapshot') d.snapshotSinceLastCheck = true;
         return res;
@@ -345,7 +342,7 @@ export async function runSimulation(
     }
 
     net.heal();
-    await s.advance(600_000); // several times the backoff cap and the poll period
+    await s.advance(600_000);
     if (server.refresh) await server.refresh();
     checkConvergence(server, devices, { seed: cfg.seed, step: cfg.steps, trace });
     return { applied: server.applied.length, rejected: server.rejectedCount, endTime: s.now, trace };

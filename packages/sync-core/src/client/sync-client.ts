@@ -356,14 +356,14 @@ export class SyncClient {
 
   private serial<T>(step: () => Promise<T>): Promise<T> {
     const run = this.writeChain.then(step);
-    this.writeChain = run.catch(() => undefined); // a failed step must not block the ones after it
+    this.writeChain = run.catch(() => undefined);
     return run;
   }
 
   private async run(): Promise<void> {
     try {
       await this.ready;
-      await this.writeChain; // every local mutation is stored and has its id
+      await this.writeChain;
       await this.push();
       await this.pull();
       this.attempt = 0;
@@ -380,7 +380,6 @@ export class SyncClient {
     return this.queue.filter((m) => m.id > from);
   }
 
-  /** Nothing leaves the queue here, only in the commit of the pull page that holds its effect (F16). */
   private async push(): Promise<void> {
     for (;;) {
       const batch = this.unpushed().slice(0, 100);
@@ -393,7 +392,6 @@ export class SyncClient {
       );
       this.setFacts({ connection: 'online' });
       const top = Math.max(from, ...resp.results.map((r) => r.id));
-      // A 200 that handled nothing would otherwise be resent at once, forever: treat it as a failure (F22).
       if (top === from) throw new TransportError('http', 502, undefined, undefined, 'Push answered without results');
       this.pushedUpTo = top;
     }
@@ -408,7 +406,6 @@ export class SyncClient {
     if (e?.code === 'OUT_OF_ORDER') {
       const expected = (e.details as { expected?: unknown } | undefined)?.expected;
       if (typeof expected === 'number') {
-        // The server has no record of this client (e.g. a restored database): start over as a new client.
         if (expected === 1 && this.lastMutationId > 0) return this.resetClient();
         const highest = Math.max(this.lastMutationId, ...this.queue.map((m) => m.id));
         if (expected <= highest + 1 && !this.outOfOrderRetried) {
@@ -450,10 +447,7 @@ export class SyncClient {
     void this.sync();
   }
 
-  /**
-   * Snapshot pages are committed together, so storage never holds part of a snapshot. The delta pull that always
-   * follows brings what changed while the snapshot was paged.
-   */
+  /** Snapshot pages are committed together, so storage never holds part of a snapshot. */
   private async pull(): Promise<void> {
     let cursor = this.cursor;
     let staged: Change[] | undefined;

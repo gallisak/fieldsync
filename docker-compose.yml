@@ -14,8 +14,6 @@ services:
     build:
       context: .
       dockerfile: apps/server/Dockerfile
-    # Settings come from .env (optional: a fresh clone runs on the defaults). Only what differs inside the
-    # compose network is set here.
     env_file:
       - path: .env
         required: false

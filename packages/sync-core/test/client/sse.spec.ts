@@ -20,7 +20,6 @@ function fakeStream(status = 200, errorBody?: unknown) {
   };
 }
 
-/** The stream's outcome as a value, captured at once so an early failure is never an unhandled rejection. */
 const settle = (p: Promise<void>): Promise<'ended' | unknown> => p.then(
   () => 'ended',
   (err: unknown) => err,

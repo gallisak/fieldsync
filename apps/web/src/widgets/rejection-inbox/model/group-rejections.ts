@@ -4,7 +4,6 @@ type View = ReadonlyMap<string, Row>;
 
 export interface RejectionGroup {
   ticketId: string | null;
-  /** `null` when the ticket is not in the view: deleted, moved away or no longer accessible. */
   title: string | null;
   rejections: StoredRejection[];
 }
@@ -20,7 +19,6 @@ function ticketIdOf(r: StoredRejection, view: View): string | null {
   return null;
 }
 
-/** Groups by the ticket each change targeted, keeping the order of `rejections` for groups and items. */
 export function groupRejections(rejections: readonly StoredRejection[], view: View): RejectionGroup[] {
   const groups = new Map<string | null, RejectionGroup>();
   for (const r of rejections) {

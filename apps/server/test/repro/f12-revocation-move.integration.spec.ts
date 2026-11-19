@@ -64,7 +64,7 @@ describeDb('F12 revocation and site moves reach the client', () => {
       siteId: DEMO.siteA,
       title: 'moving ticket',
     });
-    const parts = [randomUUID(), randomUUID()].sort(); // the server visits parts in id order
+    const parts = [randomUUID(), randomUUID()].sort();
     await push(
       t.http,
       TOKENS.admin,

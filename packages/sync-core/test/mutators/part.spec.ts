@@ -81,7 +81,6 @@ describe('part.adjust', () => {
       [2, 0, 1],
       [2, 1, 0],
     ];
-    // Start at 3 so that no order dips below zero.
     const results = orders.map((order) => {
       const tx = new MapTx([['part', part(3)]]);
       for (const i of order) run(tx, 'part.adjust', { id: PART, delta: deltas[i] });

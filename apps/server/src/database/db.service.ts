@@ -9,12 +9,10 @@ export interface TxOptions {
   readOnly?: boolean;
 }
 
-/** serialization_failure, deadlock_detected, admin_shutdown. */
 const TRANSIENT_SQLSTATES = new Set(['40001', '40P01', '57P01']);
 const NETWORK_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE']);
 const MAX_RETRIES = 3;
 
-/** Class 08 is connection_exception; node-postgres reports a dropped or timed-out connection with no code. */
 export function isTransient(err: unknown): boolean {
   const code = (err as { code?: unknown } | null)?.code;
   if (typeof code === 'string') return TRANSIENT_SQLSTATES.has(code) || code.startsWith('08') || NETWORK_CODES.has(code);
@@ -49,7 +47,6 @@ export class Db implements OnModuleInit, OnModuleDestroy {
 
     for (let attempt = 0; ; attempt++) {
       const client = await this.pool.connect();
-      // While checked out, the client's 'error' event is ours to handle (the pool listens only to idle ones).
       const onLost = (err: Error) => this.logger.warn(`database connection lost during a transaction: ${err.message}`);
       client.on('error', onLost);
       let broken = false;

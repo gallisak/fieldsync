@@ -6,10 +6,7 @@ import { RejectionInbox } from '@/widgets/rejection-inbox';
 import { TicketDetailsCard } from '@/widgets/ticket-details-card';
 import { TicketParts } from '@/widgets/ticket-parts';
 
-/**
- * The id comes from the address, not from the route params: offline, the service worker answers any
- * `/tickets/…` with one cached ticket document, whose params belong to another ticket.
- */
+/** The id comes from the address, not the params: offline, one cached ticket document answers every ticket URL. */
 export function TicketDetailsPage() {
   const id = decodeURIComponent(usePathname()?.split('/')[2] ?? '');
   return (

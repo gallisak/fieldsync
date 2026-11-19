@@ -60,7 +60,6 @@ export async function createTestApp(
   const admin = new Pool({ connectionString, max: 1 });
   await admin.query(`CREATE SCHEMA "${schema}"`);
 
-  // libpq `options` in the URL pins every pooled connection to the private schema.
   const url = new URL(connectionString);
   url.searchParams.set('options', `-c search_path=${schema}`);
   const config = parseConfig({

@@ -63,7 +63,6 @@ function writeLegacy(tx: IDBTransaction, legacy: LegacyState): void {
   for (const r of legacy.rejections) tx.objectStore('rejections').put(r);
 }
 
-/** Safe across tabs: IndexedDB runs overlapping readwrite transactions on the same stores one at a time. */
 export class IdbStorage implements SyncStorage {
   private db?: Promise<IDBPDatabase>;
   private upgradedElsewhere = false;
@@ -130,7 +129,6 @@ export class IdbStorage implements SyncStorage {
         }
         await mutations.delete(m.id);
       }
-      // Never backwards: a lower value means the server lost this client or does not own it.
       meta.lastMutationId = Math.max(meta.lastMutationId, acked);
       meta.nextMutationId = Math.max(meta.nextMutationId, meta.lastMutationId + 1);
     }

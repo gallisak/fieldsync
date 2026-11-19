@@ -11,7 +11,6 @@ const RACERS = 50;
 describeDb('concurrency on real Postgres', () => {
   let t: TestApp;
   beforeEach(async () => {
-    // Every racing request holds a pooled connection while it waits inside Postgres.
     t = await createTestApp({ DB_POOL_MAX: String(RACERS + 10) });
     await seed(t.pool);
   });
@@ -53,7 +52,6 @@ describeDb('concurrency on real Postgres', () => {
       const versions: number[] = [];
       let cursor = start;
       for (;;) {
-        // Read the flag before pulling: only a pull that started after the last commit may end the loop.
         const finished = writersDone;
         const res = await pull(http, TOKENS.admin, { cursor, limit: 7 });
         if (res.status !== 200) throw new Error(`pull: HTTP ${res.status} ${JSON.stringify(res.body)}`);
@@ -78,7 +76,6 @@ describeDb('concurrency on real Postgres', () => {
   }, 120_000);
 
   describe('identical requests in flight together', () => {
-    /** Holding sync_state keeps every request inside its transaction until all of them have arrived. */
     async function race(clientId: string, m: Mutation): Promise<string[]> {
       const http = request(await listen(t.app));
       const blocker = await t.pool.connect();

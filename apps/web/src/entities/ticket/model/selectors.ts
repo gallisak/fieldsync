@@ -26,7 +26,6 @@ const keysRead = (m: QueuedMutation): Key[] => {
   }
 };
 
-/** Keys (`"ticket/<id>"`, `"part/<id>"`) of rows with changes the server has not confirmed yet. */
 export function selectPendingKeys(pending: readonly QueuedMutation[]): Set<string> {
   const keys = new Set<string>();
   for (const m of pending) for (const k of keysRead(m)) keys.add(`${k.entity}/${k.id}`);

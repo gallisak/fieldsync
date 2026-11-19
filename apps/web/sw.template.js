@@ -61,7 +61,6 @@ async function networkFirst(request, url) {
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
-  // The API is another origin: sync requests never go through the cache.
   if (request.method !== 'GET' || url.origin !== self.location.origin) return;
   if (url.pathname.startsWith('/_next/static/')) event.respondWith(cacheFirst(request));
   else if (request.mode === 'navigate') event.respondWith(networkFirst(request, url));

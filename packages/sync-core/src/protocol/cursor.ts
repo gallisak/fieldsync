@@ -17,7 +17,6 @@ const cursorSchema = z.discriminatedUnion('k', [
 
 export type CursorData = z.infer<typeof cursorSchema>;
 
-// Cursor JSON is ASCII, so btoa/atob behave the same in browsers and in Node.
 export function encodeCursor(data: CursorData): Cursor {
   return btoa(JSON.stringify(data)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') as Cursor;
 }

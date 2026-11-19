@@ -1,7 +1,6 @@
 import type { RejectionCode } from '../protocol/errors';
 import type { Change, Cursor, Mutation, Row } from '../protocol/types';
 
-/** A queued local mutation. `createdAt` is stamped once at enqueue time and reused as `ctx.now` on replay. */
 export interface StoredMutation extends Mutation {
   createdAt: string;
 }

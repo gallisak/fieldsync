@@ -60,7 +60,6 @@ export function useSession(): Session | null | undefined {
   return useSyncExternalStore(subscribe, readSession, () => undefined);
 }
 
-/** The signed-in user. Only for components below the session gate: it throws when signed out. */
 export function useViewer(): Viewer {
   const session = useSession();
   if (!session) throw new Error('useViewer() is used without a signed-in session');

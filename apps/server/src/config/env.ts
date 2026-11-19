@@ -3,7 +3,6 @@ import { resolve } from 'path';
 import { parseEnv } from 'util';
 import { z } from 'zod';
 
-/** The repository root's `.env`, reached from both `src/config` and `dist/config`. */
 export const ENV_FILE = resolve(__dirname, '../../../../.env');
 
 export function readEnvFile(path: string = ENV_FILE): Record<string, string> {

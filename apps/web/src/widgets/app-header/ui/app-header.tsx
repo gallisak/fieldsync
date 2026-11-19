@@ -19,7 +19,6 @@ import {
 import { SyncStatusBadge } from './sync-status-badge';
 
 interface AppHeaderProps {
-  /** Renders the rejection inbox around a trigger; the page passes it, since widgets cannot import each other. */
   inbox: (trigger: ReactElement) => ReactNode;
 }
 

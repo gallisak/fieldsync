@@ -13,7 +13,6 @@ export function ServiceWorkerRegistration() {
   return null;
 }
 
-/** When the server requires a newer client, fetch the new shell so that "Reload" gets it. */
 export function UpdateShellOnUpgrade() {
   const { badge } = useSyncStatus();
   useEffect(() => {

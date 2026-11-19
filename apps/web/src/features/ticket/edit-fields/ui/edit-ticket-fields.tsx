@@ -21,7 +21,6 @@ export function EditTicketFields({ ticket }: { ticket: Ticket }) {
     defaultValues: { title, description },
   });
   const { dirtyFields } = form.formState;
-  // The server value the user last saw, per field: a field being typed in keeps it until saved.
   const seen = useRef<TicketFields>({ title, description });
 
   useEffect(() => {

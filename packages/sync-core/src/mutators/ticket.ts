@@ -3,7 +3,6 @@ import { MutationRejected, defineMutator, type MutatorTx } from './define';
 import { createTicketArgs, deleteTicketArgs, moveTicketArgs, setStatusArgs, updateTicketArgs } from './schemas';
 import { ALLOWED_TRANSITIONS } from './transitions';
 
-/** Same answer for "never existed", "deleted", "moved away" and "no access", so ids cannot be probed. */
 function requireTicket(tx: MutatorTx, id: string): Row {
   const ticket = tx.get('ticket', id);
   if (!ticket) throw new MutationRejected('NO_ACCESS', 'Ticket is unavailable: deleted, moved, or access revoked');
@@ -14,7 +13,6 @@ export const createTicket = defineMutator({
   args: createTicketArgs,
   reads: (a) => [{ entity: 'ticket', id: a.id }],
   apply(tx, a, ctx) {
-    // A deleted id is taken too: reviving it would hand an old ticket's id to new content.
     if (tx.exists('ticket', a.id)) throw new MutationRejected('ALREADY_EXISTS', 'A ticket with this id already exists');
     tx.put('ticket', a.id, {
       id: a.id,
@@ -29,7 +27,6 @@ export const createTicket = defineMutator({
   },
 });
 
-/** Writes only the fields present in the patch, so concurrent edits of different fields both survive (F18). */
 export const updateTicket = defineMutator({
   args: updateTicketArgs,
   reads: (a) => [{ entity: 'ticket', id: a.id }],

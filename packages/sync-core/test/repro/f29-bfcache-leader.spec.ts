@@ -1,6 +1,5 @@
 import { WebLocksCoordinator } from '../../src/tabs/web-locks';
 
-/** One exclusive lock, granted in request order, like `navigator.locks` for a single name. */
 class FakeLocks {
   private held = false;
   private readonly queue: { cb: () => unknown; resolve: (v: unknown) => void; reject: (e: unknown) => void }[] = [];

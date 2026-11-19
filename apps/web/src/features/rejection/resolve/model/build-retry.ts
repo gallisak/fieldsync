@@ -11,7 +11,6 @@ export interface Retry {
   args: Record<string, unknown>;
 }
 
-/** The mutation to issue again for a rejection, or `null` when retrying makes no sense. */
 export function buildRetry(r: StoredRejection, view: ReadonlyMap<string, Row>): Retry | null {
   const { name, args } = r.mutation;
   switch (r.code) {

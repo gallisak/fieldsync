@@ -101,7 +101,6 @@ export function checkConvergence(server: SimServer, devices: Device[], at: At): 
       const view = difference(canonical([...client.view().values()]), expected);
       if (view) fail(at, 5, `${where}: view ≠ base: ${view}`);
     }
-    // Keyed by the current client id: the simulated server never loses a client, so none is reset.
     const client = d.tabs[0];
     const rejected = new Set(client.rejections.map((r) => `${client.clientId}/${r.mutation.id}`));
     for (const key of d.issued) {

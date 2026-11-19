@@ -68,7 +68,6 @@ export class SimNetwork {
   ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       if (signal?.aborted) return reject(signal.reason);
-      // Giving up does not unsend the request: the server may still execute it, only the answer is ignored.
       const onAbort = () => reject(signal?.reason);
       signal?.addEventListener('abort', onAbort, { once: true });
       const finish = (fn: () => void) => {

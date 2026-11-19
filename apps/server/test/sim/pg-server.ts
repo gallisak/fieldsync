@@ -119,7 +119,6 @@ export class PgServer implements SimServer {
     return this.rows.find((r) => r.entity === 'part' && r.row.id === partId)?.row.quantity as number | undefined;
   }
 
-  /** Live rows in the order they were first written, as the model keeps them, so both draw the same targets. */
   async refresh(): Promise<void> {
     if (!this.dirty) return;
     const { rows } = await this.t.pool.query<{
@@ -134,7 +133,6 @@ export class PgServer implements SimServer {
          LEFT JOIN (SELECT entity, entity_id, min(version) AS first FROM change_log GROUP BY entity, entity_id) f
            ON f.entity = e.entity AND f.entity_id = e.id`,
     );
-    // GC removes the log rows that date a first write, so the first version is remembered while the row exists.
     const present = new Set<string>();
     for (const r of rows) {
       const key = `${r.entity}/${r.id}`;

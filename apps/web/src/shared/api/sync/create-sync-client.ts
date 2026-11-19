@@ -3,8 +3,7 @@ import { HttpTransport, IdbStorage, SyncClient, WebLocksCoordinator } from '@fie
 const LEGACY_TOKEN_KEY = 'fs_token';
 
 export function createSyncClient({ apiUrl, token, userId }: { apiUrl: string; token: string; userId: string }) {
-  // The pre-IndexedDB app kept one unscoped state in localStorage. Only the user who wrote it may import it:
-  // anyone else would push that user's queued changes under their own account.
+  // Only the user who wrote the legacy state may import it, or their queue would be pushed under another account.
   const ownsLegacyState = globalThis.localStorage?.getItem(LEGACY_TOKEN_KEY) === token;
   if (ownsLegacyState) globalThis.localStorage.removeItem(LEGACY_TOKEN_KEY);
 

@@ -41,7 +41,6 @@ export class HttpTransport implements Transport {
   }
 
   private async call<T>(path: string, init: RequestInit, signal?: AbortSignal): Promise<T> {
-    // Built by hand, not with AbortSignal.any/timeout: works on older runtimes and leaves no timer behind.
     const controller = new AbortController();
     let timedOut = false;
     const timer = setTimeout(() => {

@@ -5,10 +5,6 @@ import { useCallback } from 'react';
 import { toast } from 'sonner';
 import { useSyncClient } from './sync-context';
 
-/**
- * Queues a mutation. A local refusal is shown as a toast and nothing is queued; the result says whether the
- * change was queued. Never waits for the network.
- */
 export function useMutate(): (name: MutatorName, args: Record<string, unknown>) => boolean {
   const client = useSyncClient();
   return useCallback(

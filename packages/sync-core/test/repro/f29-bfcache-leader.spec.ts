@@ -63,7 +63,7 @@ afterAll(() => {
 });
 
 describe('F29 a page kept in the back/forward cache keeps the leadership', () => {
-  it.failing(
+  it(
     'hands the leadership on when the page is hidden into the cache, and asks again when it is shown',
     async () => {
       const a = coordinator();

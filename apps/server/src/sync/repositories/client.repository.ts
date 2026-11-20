@@ -6,6 +6,8 @@ export interface ClientRow {
   lastMutationId: number;
 }
 
+const TOUCH_AFTER = `interval '1 hour'`;
+
 @Injectable()
 export class ClientRepository {
   // One statement that locks the row: with a separate insert and select, GC could delete the row in between.
@@ -23,17 +25,19 @@ export class ClientRepository {
   async touch(q: Pool | PoolClient, clientId: string, userId: string): Promise<void> {
     await q.query(
       `UPDATE clients SET last_seen_at = now()
-        WHERE client_id = $1 AND user_id = $2 AND last_seen_at < now() - interval '1 hour'`,
+        WHERE client_id = $1 AND user_id = $2 AND last_seen_at < now() - ${TOUCH_AFTER}`,
       [clientId, userId],
     );
   }
 
-  async find(q: Pool | PoolClient, clientId: string): Promise<ClientRow | undefined> {
-    const { rows } = await q.query<{ user_id: string; last_mutation_id: string }>(
-      `SELECT user_id, last_mutation_id FROM clients WHERE client_id = $1`,
+  /** `due`: `touch` would change the row. */
+  async find(q: Pool | PoolClient, clientId: string): Promise<(ClientRow & { due: boolean }) | undefined> {
+    const { rows } = await q.query<{ user_id: string; last_mutation_id: string; due: boolean }>(
+      `SELECT user_id, last_mutation_id, last_seen_at < now() - ${TOUCH_AFTER} AS due FROM clients WHERE client_id = $1`,
       [clientId],
     );
-    return rows.length ? { userId: rows[0].user_id, lastMutationId: Number(rows[0].last_mutation_id) } : undefined;
+    if (!rows.length) return undefined;
+    return { userId: rows[0].user_id, lastMutationId: Number(rows[0].last_mutation_id), due: rows[0].due };
   }
 
   async setLastMutationId(c: PoolClient, clientId: string, mutationId: number): Promise<void> {

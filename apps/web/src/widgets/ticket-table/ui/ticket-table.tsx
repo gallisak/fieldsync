@@ -7,10 +7,10 @@ import { useViewer } from '@/entities/session';
 import { SiteSelect } from '@/entities/site';
 import { TicketRow, usePendingKeys, useTickets } from '@/entities/ticket';
 import { CreateTicketDialog } from '@/features/ticket/create';
-import { useHasSynced, useSyncStatus } from '@/shared/api';
+import { useHasSynced } from '@/shared/api';
 import { Button } from '@/shared/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/ui/card';
-import { LoadingCard } from '@/shared/ui/loading-card';
+import { SyncLoadingCard } from '@/shared/ui/loading-card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/ui/select';
 import { Table, TableBody, TableHead, TableHeader, TableRow } from '@/shared/ui/table';
 import { STATUS_LABEL, filterTickets, readFilters } from '../model/filters';
@@ -36,8 +36,6 @@ function TicketTableContent() {
   const params = useSearchParams();
   const pathname = usePathname() ?? '/';
   const synced = useHasSynced();
-  const { facts } = useSyncStatus();
-  const loading = facts.blocked ? 'stopped' : facts.connection !== 'online' ? 'offline' : 'loading';
 
   const siteIds = useMemo(() => sites.map((s) => s.id), [sites]);
   const siteNames = useMemo(() => new Map(sites.map((s) => [s.id, s.name])), [sites]);
@@ -52,7 +50,7 @@ function TicketTableContent() {
     replaceUrl(query ? `${pathname}?${query}` : pathname);
   };
 
-  if (tickets.length === 0 && !synced) return <LoadingCard title="Tickets" state={loading} />;
+  if (tickets.length === 0 && !synced) return <SyncLoadingCard title="Tickets" />;
   if (tickets.length === 0) {
     return (
       <Card>

@@ -18,13 +18,19 @@ export class AccessService {
     return new Set(rows.map((r) => r.site_id));
   }
 
-  // One round trip; the clock is read after the row locks the caller already holds.
+  /** The query `accessibleSites` runs, to read as `ARRAY(text)` beside other columns in one round trip. */
+  sitesQuery(user: AuthUser): { text: string; values: unknown[] } {
+    return user.role === 'admin'
+      ? { text: `SELECT id::text FROM sites`, values: [] }
+      : { text: `SELECT site_id::text FROM user_sites WHERE user_id = $1`, values: [user.id] };
+  }
+
+  // The clock is read after the row locks the caller already holds.
   async accessibleSitesNow(q: Queryable, user: AuthUser): Promise<{ sites: Set<string>; now: Date }> {
-    const admin = user.role === 'admin';
-    const list = admin ? `SELECT id::text FROM sites` : `SELECT site_id::text FROM user_sites WHERE user_id = $1`;
+    const list = this.sitesQuery(user);
     const { rows } = await q.query<{ sites: string[]; now: Date }>(
-      `SELECT ARRAY(${list}) AS sites, clock_timestamp() AS now`,
-      admin ? [] : [user.id],
+      `SELECT ARRAY(${list.text}) AS sites, clock_timestamp() AS now`,
+      list.values,
     );
     return { sites: new Set(rows[0].sites), now: rows[0].now };
   }

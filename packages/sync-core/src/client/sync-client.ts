@@ -420,9 +420,14 @@ export class SyncClient {
 
   private derive(): NonNullable<SyncClient['derived']> {
     if (this.derived?.version === this.dataVersion) return this.derived;
-    const view = new Map(this.base);
-    for (const m of this.queue) applyLocally(view, m);
-    for (const m of this.unsaved) applyLocally(view, m);
+    // The base is replaced, never changed in place, so with nothing queued it is the view.
+    let view: ReadonlyMap<string, Row> = this.base;
+    if (this.queue.length > 0 || this.unsaved.length > 0) {
+      const replayed = new Map(this.base);
+      for (const m of this.queue) applyLocally(replayed, m);
+      for (const m of this.unsaved) applyLocally(replayed, m);
+      view = replayed;
+    }
     this.derived = { version: this.dataVersion, view, pending: [...this.queue, ...this.unsaved] };
     return this.derived;
   }
@@ -574,19 +579,21 @@ export class SyncClient {
         snapshot = staged;
       }
       staged = undefined;
+      let from: Cursor | null = null;
       const committed = await this.serial(async () => {
         let ok: boolean;
+        from = this.cursor;
         try {
           ok = await this.storage.commitPull({
             receivedAt: new Date(this.clock.now()).toISOString(),
-            expectedCursor: this.cursor,
+            expectedCursor: from,
             cursor: resp.cursor,
             ...(snapshot ? { snapshot } : { changes: resp.changes }),
             lastMutationId: resp.lastMutationId,
             rejections: resp.rejections,
           });
           // Refused: another client sharing the storage moved on; continue from there.
-          if (ok) await this.adoptCommitted(resp, snapshot);
+          if (ok) await this.adoptCommitted(resp.cursor, snapshot ?? resp.changes, snapshot !== undefined);
           else this.adopt(await this.storage.load());
         } catch (err) {
           throw new LocalWriteError({ cause: err });
@@ -595,18 +602,21 @@ export class SyncClient {
         return ok;
       });
       cursor = this.cursor;
-      if (committed) this.tabs?.post({ t: 'state-changed' });
+      if (committed) {
+        this.tabs?.post(
+          snapshot ? { t: 'state-changed' } : { t: 'state-changed', pull: { from, to: resp.cursor, changes: resp.changes } },
+        );
+      }
       if (committed && !resp.hasMore && !snapshot) break;
     }
   }
 
-  // Base and cursor change only together, in a commit: with the cursor still ours, the stored base is the one
-  // built here. The queue is read back, since tabs without a leader share it.
-  private async adoptCommitted(resp: PullResponse, snapshot: Change[] | undefined): Promise<void> {
+  // Base and cursor change only together, in a commit: with the cursor still `to`, the stored base is this one
+  // with `changes` applied. The queue is read back, since tabs without a leader share it.
+  private async adoptCommitted(to: Cursor | null, changes: readonly Change[], snapshot: boolean): Promise<void> {
     const q = this.storage.loadQueue ? await this.storage.loadQueue() : undefined;
-    if (!q || q.clientId !== this.id || q.cursor !== resp.cursor) return this.adopt(await this.storage.load());
+    if (!q || q.clientId !== this.id || q.cursor !== to) return this.adopt(await this.storage.load());
     let changed = !sameIds(this.queue, q.pending) || !sameIds(this.rejected, q.rejections);
-    const changes = snapshot ?? resp.changes;
     if (snapshot || changes.length > 0) {
       const base = snapshot ? new Map<string, Row>() : new Map(this.base);
       applyChanges(base, changes);
@@ -661,7 +671,7 @@ export class SyncClient {
     if (this.disposed) return;
     switch (m.t) {
       case 'queue-changed':
-        void this.reload().then(
+        void this.follow(this.cursor, this.cursor, []).then(
           () => {
             if (this.isLeader) this.trigger();
           },
@@ -675,7 +685,9 @@ export class SyncClient {
         this.trigger();
         return;
       case 'state-changed':
-        void this.reload().catch((err: unknown) => console.error('fieldsync: could not reload local state', err));
+        void (m.pull ? this.follow(m.pull.from, m.pull.to, m.pull.changes) : this.reload()).catch((err: unknown) =>
+          console.error('fieldsync: could not reload local state', err),
+        );
         return;
       case 'status':
         if (this.isLeader || this.selfBlocked) return;
@@ -686,6 +698,15 @@ export class SyncClient {
   private reload(): Promise<void> {
     return this.serial(async () => {
       this.adopt(await this.storage.load());
+      this.emit();
+    });
+  }
+
+  // Another tab moved storage from `from` to `to` with `changes`: from there, only the queue is read back.
+  private follow(from: Cursor | null, to: Cursor | null, changes: readonly Change[]): Promise<void> {
+    return this.serial(async () => {
+      if (from === this.cursor) await this.adoptCommitted(to, changes, false);
+      else this.adopt(await this.storage.load());
       this.emit();
     });
   }

@@ -193,9 +193,8 @@ export class MutationExecutor {
     }
     if (entries.length === 0) return [];
 
-    const first = await this.changeLog.allocateVersions(c, entries.length);
+    const first = await this.changeLog.append(c, entries);
     const logRows: LogRow[] = entries.map((e, i) => ({ ...e, version: first + i, txSeq: first }));
-    await this.changeLog.insert(c, logRows);
     await this.hooks.afterLogInsert?.(c, m);
 
     let run: { w: Write; version: number }[] = [];

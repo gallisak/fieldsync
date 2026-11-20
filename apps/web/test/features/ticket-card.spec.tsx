@@ -78,4 +78,18 @@ describe('RelativeTime', () => {
     expect(div.textContent).toBe('1 minute ago');
     await act(async () => root.unmount());
   });
+
+  it('runs one timer for every timestamp on the page, and none once they are gone', async () => {
+    jest.useFakeTimers({ now: Date.parse('2026-01-01T00:00:10Z') });
+    const div = document.body.appendChild(document.createElement('div'));
+    const root = createRoot(div);
+    const times = Array.from({ length: 100 }, (_, i) => <RelativeTime key={i} iso="2026-01-01T00:00:00Z" />);
+    await act(async () => root.render(<>{times}</>));
+    expect(jest.getTimerCount()).toBe(1);
+
+    await act(async () => jest.advanceTimersByTime(60_000));
+    expect(div.querySelectorAll('time')[99].textContent).toBe('1 minute ago');
+    await act(async () => root.unmount());
+    expect(jest.getTimerCount()).toBe(0);
+  });
 });

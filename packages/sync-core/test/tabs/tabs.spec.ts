@@ -1,5 +1,13 @@
 import { randomUUID } from 'crypto';
-import { MemoryStorage, MemoryTabHub, SyncClient, TransportError, type TabCoordinator, type Transport } from '../../src';
+import {
+  MemoryStorage,
+  MemoryTabHub,
+  SyncClient,
+  TransportError,
+  type SyncStorage,
+  type TabCoordinator,
+  type Transport,
+} from '../../src';
 import { FakeServer } from '../support/fake-server';
 import { ScriptedTransport } from '../support/scripted-transport';
 
@@ -16,7 +24,7 @@ async function eventually(condition: () => boolean | Promise<boolean>, what: str
 
 describe('several tabs on one storage', () => {
   const clients: SyncClient[] = [];
-  const open = (storage: MemoryStorage, transport: Transport, tabs?: TabCoordinator) => {
+  const open = (storage: SyncStorage, transport: Transport, tabs?: TabCoordinator) => {
     const c = new SyncClient({ transport, storage, tabs, env: {} });
     clients.push(c);
     c.start();
@@ -49,6 +57,38 @@ describe('several tabs on one storage', () => {
     expect(followerTransport.calls).toBe(0);
     expect(a.rows('ticket')).toHaveLength(20);
     expect(b.facts).toMatchObject({ phase: 'idle', connection: 'online' });
+  });
+
+  it('after the first load, neither tab reads the whole storage again for a pull or for the other tab\'s mutation', async () => {
+    const server = new FakeServer();
+    const shared = new MemoryStorage();
+    const loads = { a: 0, b: 0 };
+    const counted = (tab: 'a' | 'b'): SyncStorage => ({
+      load: () => {
+        loads[tab] += 1;
+        return shared.load();
+      },
+      loadQueue: () => shared.loadQueue(),
+      enqueue: (m) => shared.enqueue(m),
+      commitPull: (c) => shared.commitPull(c),
+      dismissRejection: (id) => shared.dismissRejection(id),
+      resetClient: () => shared.resetClient(),
+      close: () => undefined,
+    });
+    const hub = new MemoryTabHub();
+    const a = open(counted('a'), server.transport(), hub.join());
+    const b = open(counted('b'), server.transport(), hub.join());
+    await a.mutate('ticket.create', create('first'));
+    await eventually(() => b.pendingCount === 0 && b.rows('ticket').length === 1, 'the first ticket synced in both tabs');
+    const settled = { ...loads };
+
+    await mutateInterleaved(a, b);
+    await eventually(
+      () => [a, b].every((t) => t.pendingCount === 0 && t.rows('ticket').length === 21),
+      'both tabs to show all 21 synced tickets',
+    );
+    expect(server.applied).toHaveLength(21);
+    expect(loads).toEqual(settled);
   });
 
   it("sends a follower's mutation through the idle leader and shows it in every tab", async () => {

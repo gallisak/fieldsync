@@ -1,8 +1,10 @@
 import type { SyncFacts } from '../client/status';
+import type { Change, Cursor } from '../protocol/types';
 
 export type TabMessage =
   | { t: 'queue-changed' }
-  | { t: 'state-changed' }
+  /** With `pull`: a delta the leader committed from `from` to `to`; a tab at `from` applies it instead of reloading. */
+  | { t: 'state-changed'; pull?: { from: Cursor | null; to: Cursor; changes: Change[] } }
   | { t: 'sync-request' }
   | { t: 'status'; facts: SyncFacts };
 

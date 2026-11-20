@@ -65,7 +65,7 @@ sequenceDiagram
   Note over C,IDB: write fails: the change is taken back off the screen and the user is told. Tab dies first: it is lost
   C->>API: POST /sync/push (≤100)
   Note over C,API: request or response lost: retried, deduplicated
-  API->>PG: [tx per mutation] lock client row → dedup → SAVEPOINT → rows FOR UPDATE → authorize on stored site → mutator → lock sync_state, versions → change_log + entities (or rollback to savepoint + mutation_rejections) → last_mutation_id → COMMIT
+  API->>PG: [tx per mutation] lock client row → dedup → last_mutation_id → SAVEPOINT → rows FOR UPDATE → authorize on stored site → mutator → lock sync_state, versions and change_log in one statement → entities (or rollback to savepoint + mutation_rejections) → COMMIT
   Note over API,PG: transient error: whole tx retried ×3, then 503. Any database-side error: 503, id not consumed
   API-->>O: SSE poke after commit (best effort, a 30 s jittered poll covers a lost one)
   C->>API: GET /sync/pull?cursor

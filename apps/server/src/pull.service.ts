@@ -34,10 +34,10 @@ export class PullService {
 
   /** REPEATABLE READ: the changes, the cursor and lastMutationId must describe one database state (F2). */
   async pull(user: AuthUser, q: PullQuery): Promise<PullResponse> {
-    const { response, committed } = await this.db.tx(
+    const { response, committed, touch } = await this.db.tx(
       async (c) => {
-        const sites = [...(await this.access.accessibleSites(c, user))];
-        const state = await this.log.state(c);
+        const state = await this.log.state(c, this.access.sitesQuery(user));
+        const sites = state.ids;
         const fp = this.access.fingerprint(user, sites, state.epoch);
         const cur = q.cursor ? decodeCursor(q.cursor) : undefined;
         const reason = snapshotReason(cur, fp, state);
@@ -59,11 +59,11 @@ export class PullService {
           lastMutationId: !settles ? null : mine ? own.lastMutationId : 0,
           rejections: settles && mine ? await this.rejections.listAfter(c, q.clientId!, q.ackedMutationId) : [],
         };
-        return { response, committed };
+        return { response, committed, touch: mine && own.due };
       },
       { isolation: 'repeatable read', readOnly: true },
     );
-    if (q.clientId) await this.clients.touch(this.db.pool, q.clientId, user.id).catch(() => undefined);
+    if (touch) await this.clients.touch(this.db.pool, q.clientId!, user.id).catch(() => undefined);
     // Counted here, not in the transaction, which may run more than once.
     const now = Date.now();
     for (const at of committed) this.metrics.deliveryLag.observe((now - at.getTime()) / 1000);

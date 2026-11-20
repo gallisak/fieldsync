@@ -10,12 +10,12 @@ import { ChangeStatusButtons } from '@/features/ticket/change-status';
 import { DeleteTicketButton } from '@/features/ticket/delete';
 import { EditTicketFields } from '@/features/ticket/edit-fields';
 import { MoveTicketMenuItem } from '@/features/ticket/move-site';
-import { useHasSynced, useSyncStatus } from '@/shared/api';
+import { useHasSynced } from '@/shared/api';
 import { Badge } from '@/shared/ui/badge';
 import { Button } from '@/shared/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/ui/card';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/shared/ui/dropdown-menu';
-import { LoadingCard } from '@/shared/ui/loading-card';
+import { SyncLoadingCard } from '@/shared/ui/loading-card';
 
 export function TicketDetailsCard({ id }: { id: string }) {
   const ticket = useTicket(id);
@@ -23,12 +23,10 @@ export function TicketDetailsCard({ id }: { id: string }) {
   const pending = usePendingKeys();
   const router = useRouter();
   const synced = useHasSynced();
-  const { facts } = useSyncStatus();
-  const loading = facts.blocked ? 'stopped' : facts.connection !== 'online' ? 'offline' : 'loading';
 
   // A change still queued for it means this device removed it: deleted here, not lost or not loaded yet.
   const deletedHere = !ticket && pending.has(`ticket/${id}`);
-  if (!ticket && !synced && !deletedHere) return <LoadingCard title="Ticket" state={loading} />;
+  if (!ticket && !synced && !deletedHere) return <SyncLoadingCard title="Ticket" />;
   if (!ticket) {
     return (
       <Card>

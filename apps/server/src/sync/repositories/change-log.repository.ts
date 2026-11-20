@@ -60,14 +60,17 @@ const fromDb = (r: DbLogRow): StoredLogRow => ({
 
 @Injectable()
 export class ChangeLogRepository {
-  async state(c: PoolClient): Promise<LogState> {
-    const { rows } = await c.query<{ last_version: string; min_retained_version: string; epoch: string }>(
-      `SELECT last_version, min_retained_version, epoch FROM sync_state`,
+  /** The state and the ids `list` selects, in one round trip. */
+  async state(c: PoolClient, list: { text: string; values: unknown[] }): Promise<LogState & { ids: string[] }> {
+    const { rows } = await c.query<{ last_version: string; min_retained_version: string; epoch: string; ids: string[] }>(
+      `SELECT last_version, min_retained_version, epoch, ARRAY(${list.text}) AS ids FROM sync_state`,
+      list.values,
     );
     return {
       lastVersion: Number(rows[0].last_version),
       minRetained: Number(rows[0].min_retained_version),
       epoch: rows[0].epoch,
+      ids: rows[0].ids,
     };
   }
 
@@ -100,27 +103,25 @@ export class ChangeLogRepository {
   }
 
   /**
+   * Gives the rows consecutive versions, the first also being their txSeq, and inserts them; returns the first.
    * Locks sync_state until COMMIT, so versions become visible in allocation order (F1). Must be the last lock a
-   * writing transaction takes.
+   * writing transaction takes. One statement: every writer waits for that lock, so each round trip under it counts.
    */
-  async allocateVersions(c: PoolClient, n: number): Promise<number> {
-    const { rows } = await c.query<{ last_version: string }>(
-      `UPDATE sync_state SET last_version = last_version + $1 RETURNING last_version`,
-      [n],
-    );
-    return Number(rows[0].last_version) - n + 1;
-  }
-
-  async insert(c: PoolClient, rows: LogRow[]): Promise<void> {
-    if (rows.length === 0) return;
-    await c.query(
+  async append(c: PoolClient, rows: Omit<LogRow, 'version' | 'txSeq'>[]): Promise<number> {
+    const { rows: out } = await c.query<{ first: string }>(
       // statement_timestamp: after the lock waits, and still one value for every row of the change.
-      `INSERT INTO change_log (version, tx_seq, site_id, entity, entity_id, op, data, client_id, mutation_id, created_at)
-       SELECT *, statement_timestamp() FROM unnest($1::bigint[], $2::bigint[], $3::uuid[], $4::text[], $5::uuid[],
-                            $6::text[], $7::jsonb[], $8::text[], $9::bigint[])`,
+      `WITH v AS (
+         UPDATE sync_state SET last_version = last_version + cardinality($1::uuid[])
+         RETURNING last_version - cardinality($1::uuid[]) + 1 AS first
+       ), logged AS (
+         INSERT INTO change_log (version, tx_seq, site_id, entity, entity_id, op, data, client_id, mutation_id, created_at)
+         SELECT v.first + u.n - 1, v.first, u.site_id, u.entity, u.entity_id, u.op, u.data, u.client_id, u.mutation_id,
+                statement_timestamp()
+           FROM v, unnest($1::uuid[], $2::text[], $3::uuid[], $4::text[], $5::jsonb[], $6::text[], $7::bigint[])
+                   WITH ORDINALITY AS u(site_id, entity, entity_id, op, data, client_id, mutation_id, n)
+       )
+       SELECT first FROM v`,
       [
-        rows.map((r) => r.version),
-        rows.map((r) => r.txSeq),
         rows.map((r) => r.siteId),
         rows.map((r) => r.entity),
         rows.map((r) => r.entityId),
@@ -130,5 +131,6 @@ export class ChangeLogRepository {
         rows.map((r) => r.mutationId),
       ],
     );
+    return Number(out[0].first);
   }
 }

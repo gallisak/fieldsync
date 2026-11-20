@@ -1,3 +1,6 @@
+'use client';
+
+import { useSyncStatus } from '@/shared/api';
 import { Card, CardDescription, CardHeader, CardTitle } from './card';
 import { Skeleton } from './skeleton';
 
@@ -20,4 +23,11 @@ export function LoadingCard({ title, state }: { title: string; state: LoadingSta
       </CardHeader>
     </Card>
   );
+}
+
+/** Subscribed to the sync status on its own: the page around it does not re-render with every pull. */
+export function SyncLoadingCard({ title }: { title: string }) {
+  const { facts } = useSyncStatus();
+  const state = facts.blocked ? 'stopped' : facts.connection !== 'online' ? 'offline' : 'loading';
+  return <LoadingCard title={title} state={state} />;
 }

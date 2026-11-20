@@ -40,6 +40,7 @@ function TicketTableContent() {
   const loading = facts.blocked ? 'stopped' : facts.connection !== 'online' ? 'offline' : 'loading';
 
   const siteIds = useMemo(() => sites.map((s) => s.id), [sites]);
+  const siteNames = useMemo(() => new Map(sites.map((s) => [s.id, s.name])), [sites]);
   const filters = useMemo(() => readFilters(params, siteIds), [params, siteIds]);
   const visible = useMemo(() => filterTickets(tickets, filters), [tickets, filters]);
 
@@ -123,7 +124,7 @@ function TicketTableContent() {
               <TicketRow
                 key={t.id}
                 ticket={t}
-                siteName={sites.find((s) => s.id === t.siteId)?.name ?? 'Unknown site'}
+                siteName={siteNames.get(t.siteId) ?? 'Unknown site'}
                 unsynced={pending.has(`ticket/${t.id}`)}
               />
             ))}

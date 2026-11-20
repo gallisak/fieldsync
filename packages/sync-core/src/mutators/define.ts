@@ -54,7 +54,12 @@ export function defineMutator<S extends z.ZodType>(spec: {
   scans?(a: z.infer<S>): ScanSpec[];
   apply(tx: MutatorTx, a: z.infer<S>, ctx: MutatorCtx): void;
 }): MutatorDef {
+  // reads, scans and apply each parse, and the client replays its queue on every change: parse an args object once.
+  // Nothing changes args after mutate() or after the request body is read.
+  const parsed = new WeakMap<object, z.infer<S>>();
   const parse = (raw: unknown): z.infer<S> => {
+    const key = typeof raw === 'object' && raw !== null ? raw : undefined;
+    if (key && parsed.has(key)) return parsed.get(key) as z.infer<S>;
     const result = spec.args.safeParse(raw);
     if (!result.success) {
       const issues = result.error.issues.map((i) => ({
@@ -63,6 +68,7 @@ export function defineMutator<S extends z.ZodType>(spec: {
       }));
       throw new MutationRejected('BAD_ARGS', 'Invalid arguments', issues);
     }
+    if (key) parsed.set(key, result.data);
     return result.data;
   };
   return {

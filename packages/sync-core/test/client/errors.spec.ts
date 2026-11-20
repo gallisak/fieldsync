@@ -123,6 +123,9 @@ describe('client error handling', () => {
       override load() {
         return this.broken ? Promise.reject(new DOMException('gone', 'UnknownError')) : super.load();
       }
+      override loadQueue() {
+        return this.broken ? Promise.reject(new DOMException('gone', 'UnknownError')) : super.loadQueue();
+      }
     }
     const storage = new Unreadable();
     const client = open(new ScriptedTransport().alwaysPull(emptyPull()), storage);

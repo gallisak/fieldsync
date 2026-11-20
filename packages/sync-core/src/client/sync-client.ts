@@ -2,6 +2,7 @@ import { MutationRejected, getMutator, type MutatorTx } from '../mutators';
 import { LocalWriteError, StorageVersionError } from '../storage/errors';
 import { MemoryStorage } from '../storage/memory';
 import type { PersistedState, StoredMutation, StoredRejection, SyncStorage } from '../storage/types';
+import { applyChanges } from '../storage/whole-state-storage';
 import type { TabCoordinator, TabMessage } from '../tabs/coordinator';
 import { decodeCursor } from '../protocol/cursor';
 import { TransportError } from '../transport/errors';
@@ -104,6 +105,9 @@ class MapTx implements MutatorTx {
 
 const NO_ROWS: readonly Row[] = [];
 
+const sameIds = (a: readonly { id: number }[], b: readonly { id: number }[]) =>
+  a.length === b.length && a.every((x, i) => x.id === b[i].id);
+
 function applyLocally(state: Map<string, Row>, m: UnsavedMutation): void {
   try {
     getMutator(m.name)?.apply(new MapTx(state), m.args, { now: m.createdAt });
@@ -141,7 +145,7 @@ export class SyncClient {
   private derived?: {
     version: number;
     view: ReadonlyMap<string, Row>;
-    byEntity: Map<string, readonly Row[]>;
+    byEntity?: Map<string, readonly Row[]>;
     pending: readonly QueuedMutation[];
   };
   private writeChain: Promise<unknown>;
@@ -247,22 +251,32 @@ export class SyncClient {
       throw new MutationRejected('QUEUE_FULL', `${this.pendingCount} changes are waiting to sync; reconnect first`);
     }
     const createdAt = new Date(this.clock.now()).toISOString();
-    def.apply(new MapTx(new Map(this.view())), args, { now: createdAt });
+    const next = new Map(this.view());
+    def.apply(new MapTx(next), args, { now: createdAt });
 
     const entry: UnsavedMutation = { name, args, createdAt };
     this.unsaved.push(entry);
+    // Replaying the queue would give the same view: mutators are deterministic.
     this.dataVersion += 1;
+    this.derived = { version: this.dataVersion, view: next, pending: [...this.queue, ...this.unsaved] };
     this.emit();
     if (this.pendingCount >= this.warnAt && !this.queueWarned) {
       this.queueWarned = true;
       console.warn(`fieldsync: ${this.pendingCount} changes are waiting to sync`);
     }
     const durable = this.serial(async () => {
+      let saved = false;
       try {
         this.queue.push(await this.storage.enqueue(entry));
+        saved = true;
       } finally {
+        const current = this.derived?.version === this.dataVersion ? this.derived : undefined;
         this.unsaved = this.unsaved.filter((u) => u !== entry);
         this.dataVersion += 1;
+        // The oldest unsaved entry moved to the end of the queue: the order, and so the view, stays the same.
+        if (saved && current) {
+          this.derived = { ...current, version: this.dataVersion, pending: [...this.queue, ...this.unsaved] };
+        }
         this.emit();
       }
     });
@@ -281,7 +295,18 @@ export class SyncClient {
   }
 
   rows(entity: EntityName): readonly Row[] {
-    return this.derive().byEntity.get(entity) ?? NO_ROWS;
+    const derived = this.derive();
+    if (!derived.byEntity) {
+      const byEntity = new Map<string, Row[]>();
+      for (const [key, row] of derived.view) {
+        const name = key.slice(0, key.indexOf('/'));
+        const list = byEntity.get(name);
+        if (list) list.push(row);
+        else byEntity.set(name, [row]);
+      }
+      derived.byEntity = byEntity;
+    }
+    return derived.byEntity.get(entity) ?? NO_ROWS;
   }
 
   start(): void {
@@ -398,14 +423,7 @@ export class SyncClient {
     const view = new Map(this.base);
     for (const m of this.queue) applyLocally(view, m);
     for (const m of this.unsaved) applyLocally(view, m);
-    const byEntity = new Map<string, Row[]>();
-    for (const [key, row] of view) {
-      const entity = key.slice(0, key.indexOf('/'));
-      const list = byEntity.get(entity);
-      if (list) list.push(row);
-      else byEntity.set(entity, [row]);
-    }
-    this.derived = { version: this.dataVersion, view, byEntity, pending: [...this.queue, ...this.unsaved] };
+    this.derived = { version: this.dataVersion, view, pending: [...this.queue, ...this.unsaved] };
     return this.derived;
   }
 
@@ -558,7 +576,6 @@ export class SyncClient {
       staged = undefined;
       const committed = await this.serial(async () => {
         let ok: boolean;
-        let state: PersistedState;
         try {
           ok = await this.storage.commitPull({
             receivedAt: new Date(this.clock.now()).toISOString(),
@@ -568,12 +585,12 @@ export class SyncClient {
             lastMutationId: resp.lastMutationId,
             rejections: resp.rejections,
           });
-          // Also when the commit was refused: another client sharing the storage moved on; continue from there.
-          state = await this.storage.load();
+          // Refused: another client sharing the storage moved on; continue from there.
+          if (ok) await this.adoptCommitted(resp, snapshot);
+          else this.adopt(await this.storage.load());
         } catch (err) {
           throw new LocalWriteError({ cause: err });
         }
-        this.adopt(state);
         this.emit();
         return ok;
       });
@@ -581,6 +598,26 @@ export class SyncClient {
       if (committed) this.tabs?.post({ t: 'state-changed' });
       if (committed && !resp.hasMore && !snapshot) break;
     }
+  }
+
+  // Base and cursor change only together, in a commit: with the cursor still ours, the stored base is the one
+  // built here. The queue is read back, since tabs without a leader share it.
+  private async adoptCommitted(resp: PullResponse, snapshot: Change[] | undefined): Promise<void> {
+    const q = this.storage.loadQueue ? await this.storage.loadQueue() : undefined;
+    if (!q || q.clientId !== this.id || q.cursor !== resp.cursor) return this.adopt(await this.storage.load());
+    let changed = !sameIds(this.queue, q.pending) || !sameIds(this.rejected, q.rejections);
+    const changes = snapshot ?? resp.changes;
+    if (snapshot || changes.length > 0) {
+      const base = snapshot ? new Map<string, Row>() : new Map(this.base);
+      applyChanges(base, changes);
+      this.base = base;
+      changed = true;
+    }
+    this.cursor = q.cursor;
+    this.lastMutationId = q.lastMutationId;
+    this.queue = q.pending;
+    this.rejected = q.rejections;
+    if (changed) this.dataVersion += 1;
   }
 
   private setFacts(patch: Partial<Pick<SyncFacts, 'connection' | 'phase' | 'blocked' | 'storage'>>): void {

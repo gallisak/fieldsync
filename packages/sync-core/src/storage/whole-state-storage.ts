@@ -1,6 +1,6 @@
 import type { Change, Cursor, Row } from '../protocol/types';
 import { newId } from '../uuid';
-import type { PersistedState, PullCommit, StoredMutation, StoredRejection, SyncStorage } from './types';
+import type { PersistedState, PullCommit, QueueState, StoredMutation, StoredRejection, SyncStorage } from './types';
 
 export interface WholeState {
   clientId: string;
@@ -19,7 +19,7 @@ export function emptyState(clientId: string): WholeState {
   return { clientId, cursor: null, lastMutationId: 0, nextMutationId: 1, base: [], pending: [], rejections: [] };
 }
 
-function applyChanges(base: Map<string, Row>, changes: Change[]): void {
+export function applyChanges(base: Map<string, Row>, changes: readonly Change[]): void {
   for (const c of changes) {
     const key = `${c.entity}/${c.id}`;
     if (c.op === 'put' && c.data) base.set(key, c.data);
@@ -48,6 +48,11 @@ export abstract class WholeStateStorage implements SyncStorage {
 
   async load(): Promise<PersistedState> {
     return toPersisted(this.current());
+  }
+
+  async loadQueue(): Promise<QueueState> {
+    const { clientId, cursor, lastMutationId, pending, rejections } = this.current();
+    return { clientId, cursor, lastMutationId, pending, rejections };
   }
 
   async enqueue(m: Omit<StoredMutation, 'id'>): Promise<StoredMutation> {

@@ -79,6 +79,27 @@ describe('client facts and view', () => {
     expect(client.rows('ticket').map((r) => r.title).sort()).toEqual(['a', 'b']);
   });
 
+  it('keeps the view when a mutation is stored, and the data version when a pull changed nothing', async () => {
+    const transport = new ScriptedTransport()
+      .alwaysPush({ results: [{ id: 1, status: 'applied' }], lastMutationId: 1 })
+      .alwaysPull(emptyPull(null));
+    const client = open({ transport });
+    await client.ready;
+    const stored = client.mutate('ticket.create', create('a'));
+    const view = client.view();
+    await stored;
+    expect(client.view()).toBe(view);
+    expect(client.pending[0].id).toBe(1);
+
+    await client.sync();
+    const version = client.snapshotVersion;
+    const pulls = transport.callsOf('pull').length;
+    await client.sync();
+    expect(transport.callsOf('pull')).toHaveLength(pulls + 1);
+    expect(client.snapshotVersion).toBe(version);
+    expect(client.view()).toBe(view);
+  });
+
   it('refuses a mutation that cannot apply to what the user sees, and queues nothing', async () => {
     const storage = new MemoryStorage();
     const client = open({ storage });

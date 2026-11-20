@@ -18,6 +18,17 @@ export class AccessService {
     return new Set(rows.map((r) => r.site_id));
   }
 
+  // One round trip; the clock is read after the row locks the caller already holds.
+  async accessibleSitesNow(q: Queryable, user: AuthUser): Promise<{ sites: Set<string>; now: Date }> {
+    const admin = user.role === 'admin';
+    const list = admin ? `SELECT id::text FROM sites` : `SELECT site_id::text FROM user_sites WHERE user_id = $1`;
+    const { rows } = await q.query<{ sites: string[]; now: Date }>(
+      `SELECT ARRAY(${list}) AS sites, clock_timestamp() AS now`,
+      admin ? [] : [user.id],
+    );
+    return { sites: new Set(rows[0].sites), now: rows[0].now };
+  }
+
   /** Changes with the user's sites and with the database epoch; either way the client needs a snapshot. */
   fingerprint(user: AuthUser, sites: Iterable<string>, epoch = ''): string {
     return createHash('sha256')

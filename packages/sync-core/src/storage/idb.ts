@@ -3,7 +3,7 @@ import type { Change, Cursor, EntityName, Row } from '../protocol/types';
 import { StorageVersionError } from './errors';
 import { LOCAL_SCHEMA, migrations } from './idb-migrations';
 import { clearLegacyState, readLegacyState, type LegacySource, type LegacyState } from './legacy-localstorage';
-import type { PersistedState, PullCommit, StoredMutation, StoredRejection, SyncStorage } from './types';
+import type { PersistedState, PullCommit, QueueState, StoredMutation, StoredRejection, SyncStorage } from './types';
 import { newClientId } from './whole-state-storage';
 
 interface Meta {
@@ -93,6 +93,17 @@ export class IdbStorage implements SyncStorage {
     return state;
   }
 
+  async loadQueue(): Promise<QueueState> {
+    const tx = await this.tx(['meta', 'mutations', 'rejections']);
+    const meta = await readMeta(tx, this.newId);
+    const [pending, rejections] = await Promise.all([
+      tx.objectStore('mutations').getAll() as Promise<StoredMutation[]>,
+      tx.objectStore('rejections').getAll() as Promise<StoredRejection[]>,
+    ]);
+    await tx.done;
+    return { clientId: meta.clientId, cursor: meta.cursor, lastMutationId: meta.lastMutationId, pending, rejections };
+  }
+
   async enqueue(m: Omit<StoredMutation, 'id'>): Promise<StoredMutation> {
     const tx = await this.tx(['meta', 'mutations']);
     const meta = await readMeta(tx, this.newId);
@@ -112,40 +123,40 @@ export class IdbStorage implements SyncStorage {
       return false;
     }
 
+    const mutations = tx.objectStore('mutations');
+    const acked = c.lastMutationId === null ? undefined : IDBKeyRange.upperBound(c.lastMutationId);
+    const rejected = acked && c.rejections.length > 0 ? ((await mutations.getAll(acked)) as StoredMutation[]) : [];
+
+    const writes: Promise<unknown>[] = [];
     const entities = tx.objectStore('entities');
-    if (c.snapshot) await entities.clear();
+    if (c.snapshot) writes.push(entities.clear());
     for (const change of c.snapshot ?? c.changes ?? []) {
       const key = `${change.entity}/${change.id}`;
-      if (change.op === 'put' && change.data) await entities.put(entityRecord(change), key);
-      else await entities.delete(key);
+      writes.push(change.op === 'put' && change.data ? entities.put(entityRecord(change), key) : entities.delete(key));
     }
     meta.cursor = c.cursor;
 
-    if (c.lastMutationId !== null) {
-      const acked = c.lastMutationId;
+    if (c.lastMutationId !== null && acked) {
       const reasons = new Map(c.rejections.map((r) => [r.mutationId, r]));
       const at = c.receivedAt ?? new Date().toISOString();
-      const mutations = tx.objectStore('mutations');
-      for (const m of (await mutations.getAll()) as StoredMutation[]) {
-        if (m.id > acked) break;
+      for (const m of rejected) {
         const r = reasons.get(m.id);
-        if (r) {
-          const rejection: Omit<StoredRejection, 'id'> = {
-            mutation: m,
-            code: r.code,
-            message: r.message,
-            ...(r.details === undefined ? {} : { details: r.details }),
-            at,
-          };
-          await tx.objectStore('rejections').add(rejection);
-        }
-        await mutations.delete(m.id);
+        if (!r) continue;
+        const rejection: Omit<StoredRejection, 'id'> = {
+          mutation: m,
+          code: r.code,
+          message: r.message,
+          ...(r.details === undefined ? {} : { details: r.details }),
+          at,
+        };
+        writes.push(tx.objectStore('rejections').add(rejection));
       }
-      meta.lastMutationId = Math.max(meta.lastMutationId, acked);
+      writes.push(mutations.delete(acked));
+      meta.lastMutationId = Math.max(meta.lastMutationId, c.lastMutationId);
       meta.nextMutationId = Math.max(meta.nextMutationId, meta.lastMutationId + 1);
     }
-    await writeMeta(tx, meta);
-    await tx.done;
+    writes.push(writeMeta(tx, meta));
+    await Promise.all([...writes, tx.done]);
     return true;
   }
 
@@ -161,7 +172,7 @@ export class IdbStorage implements SyncStorage {
     const mutations = tx.objectStore('mutations');
     const pending = (await mutations.getAll()) as StoredMutation[];
     await mutations.clear();
-    for (const [i, m] of pending.entries()) await mutations.put({ ...m, id: i + 1 });
+    await Promise.all(pending.map((m, i) => mutations.put({ ...m, id: i + 1 })));
     Object.assign(meta, { clientId: this.newId(), lastMutationId: 0, nextMutationId: pending.length + 1 });
     await writeMeta(tx, meta);
     const state = await this.readAll(tx, meta);

@@ -24,6 +24,8 @@ export interface PersistedState {
   rejections: StoredRejection[];
 }
 
+export type QueueState = Omit<PersistedState, 'base'>;
+
 export interface PullCommit {
   expectedCursor: Cursor | null;
   cursor: Cursor;
@@ -38,6 +40,8 @@ export interface PullCommit {
 /** Every method is atomic, also when several tabs share the storage. */
 export interface SyncStorage {
   load(): Promise<PersistedState>;
+  /** `load` without the base, which is the large part. */
+  loadQueue?(): Promise<QueueState>;
   enqueue(m: Omit<StoredMutation, 'id'>): Promise<StoredMutation>;
   commitPull(c: PullCommit): Promise<boolean>;
   dismissRejection(rejectionId: number): Promise<void>;

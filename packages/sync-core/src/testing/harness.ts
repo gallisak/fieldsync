@@ -2,7 +2,7 @@ import { SyncClient } from '../client/sync-client';
 import { ALLOWED_TRANSITIONS, MutationRejected } from '../mutators';
 import type { Cursor, MutatorName, PullResponse, Row, TicketStatus } from '../protocol/types';
 import { MemoryStorage } from '../storage/memory';
-import type { PersistedState, PullCommit, StoredMutation, SyncStorage } from '../storage/types';
+import type { PersistedState, PullCommit, QueueState, StoredMutation, SyncStorage } from '../storage/types';
 import { MemoryTabHub } from '../tabs/memory';
 import type { Transport } from '../transport/http';
 import { checkConvergence, checkSafety } from './invariants';
@@ -137,6 +137,12 @@ class LedgerStorage implements SyncStorage {
 
   async load(): Promise<PersistedState> {
     const state = await this.inner.load();
+    this.clientId = state.clientId;
+    return state;
+  }
+
+  async loadQueue(): Promise<QueueState> {
+    const state = this.inner.loadQueue ? await this.inner.loadQueue() : await this.inner.load();
     this.clientId = state.clientId;
     return state;
   }

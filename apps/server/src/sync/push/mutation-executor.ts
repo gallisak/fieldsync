@@ -12,13 +12,19 @@ import { AccessService } from '../../access/access.service';
 import type { AuthUser } from '../../auth/auth.guard';
 import { ChangeLogRepository, type LogRow } from '../repositories/change-log.repository';
 
-const LOCK_ORDER: Record<EntityName, number> = { ticket: 0, part: 1 };
-
 const noAccess = () => new MutationRejected('NO_ACCESS', 'Ticket is unavailable: deleted, moved, or access revoked');
 
 interface Loaded {
   row: Row | undefined;
   siteId?: string;
+}
+
+interface LockedRow {
+  entity: EntityName;
+  id: string;
+  data: Row | null;
+  site_id: string;
+  deleted: boolean;
 }
 
 interface Write {
@@ -104,20 +110,20 @@ export class MutationExecutor {
     def.parse(m.args);
 
     const loaded = new Map<string, Loaded>();
-    // One global lock order (tickets before parts, then by id) so concurrent mutations cannot deadlock.
-    const keys = [...def.reads(m.args)].sort(
-      (a, b) => LOCK_ORDER[a.entity] - LOCK_ORDER[b.entity] || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
-    );
-    for (const key of keys) {
-      const { rows } = await c.query<{ data: Row | null; site_id: string; deleted: boolean }>(
-        `SELECT data, site_id, deleted FROM entities WHERE entity = $1 AND id = $2 FOR UPDATE`,
-        [key.entity, key.id],
+    const keys = def.reads(m.args);
+    for (const key of keys) loaded.set(`${key.entity}/${key.id}`, { row: undefined });
+    if (keys.length > 0) {
+      // One global lock order (tickets before parts, then by id) so concurrent mutations cannot deadlock. Rows are
+      // locked as the sort returns them.
+      const { rows } = await c.query<LockedRow>(
+        `SELECT entity, id, data, site_id, deleted FROM entities
+          WHERE (entity, id) IN (SELECT * FROM unnest($1::text[], $2::uuid[]))
+          ORDER BY entity = 'part', id FOR UPDATE`,
+        [keys.map((k) => k.entity), keys.map((k) => k.id)],
       );
-      const found = rows[0];
-      loaded.set(`${key.entity}/${key.id}`, {
-        row: found && !found.deleted ? (found.data ?? undefined) : undefined,
-        siteId: found?.site_id,
-      });
+      for (const r of rows) {
+        loaded.set(`${r.entity}/${r.id}`, { row: r.deleted ? undefined : (r.data ?? undefined), siteId: r.site_id });
+      }
     }
 
     const scanned = new Map<string, string[]>();
@@ -135,14 +141,13 @@ export class MutationExecutor {
       for (const r of rows) loaded.set(`${spec.entity}/${r.id}`, { row: r.data, siteId: r.site_id });
     }
 
-    // Read in this transaction, after the row locks: a revocation committed before it is always seen.
-    const sites = await this.access.accessibleSites(c, user);
+    // Read in this transaction, after the row locks: a revocation committed before it is always seen. The clock too:
+    // the transaction's start time can be older than the change it now builds on.
+    const { sites, now } = await this.access.accessibleSitesNow(c, user);
     if ([...loaded.values()].some((l) => l.siteId !== undefined && !sites.has(l.siteId))) throw noAccess();
 
-    // After the row locks: the transaction's start time can be older than the change it now builds on.
-    const { rows: clock } = await c.query<{ now: Date }>(`SELECT clock_timestamp() AS now`);
     const tx = new BufferedTx(loaded, scanned, await this.loadPeople(c, m, loaded));
-    def.apply(tx, m.args, { now: clock[0].now.toISOString() });
+    def.apply(tx, m.args, { now: now.toISOString() });
     if (tx.writes.some((w) => w.op === 'put' && !sites.has(w.row?.siteId as string))) throw noAccess();
 
     const touched = await this.write(c, tx.writes, clientId, m);
@@ -193,30 +198,58 @@ export class MutationExecutor {
     await this.changeLog.insert(c, logRows);
     await this.hooks.afterLogInsert?.(c, m);
 
+    let run: { w: Write; version: number }[] = [];
+    const keys = new Set<string>();
     for (const [i, w] of writes.entries()) {
-      const version = logRows[versionIndex[i]].version;
-      if (w.op === 'put' && w.fresh) {
-        const { rowCount } = await c.query(
-          `INSERT INTO entities (entity, id, site_id, data, deleted, version) VALUES ($1, $2, $3, $4, false, $5)
-           ON CONFLICT (entity, id) DO NOTHING`,
-          [w.entity, w.id, w.row?.siteId, JSON.stringify(w.row), version],
-        );
-        if (rowCount === 0) throw new ConcurrentInsert(`${w.entity} ${w.id} was inserted concurrently`);
-      } else if (w.op === 'put') {
-        await c.query(
-          `INSERT INTO entities (entity, id, site_id, data, deleted, version) VALUES ($1, $2, $3, $4, false, $5)
-           ON CONFLICT (entity, id) DO UPDATE
-             SET site_id = EXCLUDED.site_id, data = EXCLUDED.data, deleted = false, version = EXCLUDED.version`,
-          [w.entity, w.id, w.row?.siteId, JSON.stringify(w.row), version],
-        );
-      } else {
-        await c.query(`UPDATE entities SET deleted = true, data = NULL, version = $3 WHERE entity = $1 AND id = $2`, [
-          w.entity,
-          w.id,
-          version,
-        ]);
+      // One statement cannot change a row twice: a repeated key starts the next batch.
+      const key = `${w.entity}/${w.id}`;
+      if (keys.has(key)) {
+        await this.writeEntities(c, run);
+        run = [];
+        keys.clear();
       }
+      keys.add(key);
+      run.push({ w, version: logRows[versionIndex[i]].version });
     }
+    await this.writeEntities(c, run);
     return [...new Set(logRows.map((r) => r.siteId))];
+  }
+
+  private async writeEntities(c: PoolClient, run: { w: Write; version: number }[]): Promise<void> {
+    const puts = (fresh: boolean) => run.filter((r) => r.w.op === 'put' && r.w.fresh === fresh);
+    const columns = (rows: typeof run) => [
+      rows.map((r) => r.w.entity),
+      rows.map((r) => r.w.id),
+      rows.map((r) => r.w.row?.siteId),
+      rows.map((r) => JSON.stringify(r.w.row)),
+      rows.map((r) => r.version),
+    ];
+    const insert = `INSERT INTO entities (entity, id, site_id, data, deleted, version)
+       SELECT entity, id, site_id, data, false, version
+         FROM unnest($1::text[], $2::uuid[], $3::uuid[], $4::jsonb[], $5::bigint[])
+              AS u(entity, id, site_id, data, version)`;
+
+    const fresh = puts(true);
+    if (fresh.length > 0) {
+      const { rowCount } = await c.query(`${insert} ON CONFLICT (entity, id) DO NOTHING`, columns(fresh));
+      if (rowCount !== fresh.length) throw new ConcurrentInsert('an entity was inserted concurrently');
+    }
+    const existing = puts(false);
+    if (existing.length > 0) {
+      await c.query(
+        `${insert} ON CONFLICT (entity, id) DO UPDATE
+           SET site_id = EXCLUDED.site_id, data = EXCLUDED.data, deleted = false, version = EXCLUDED.version`,
+        columns(existing),
+      );
+    }
+    const dels = run.filter((r) => r.w.op === 'del');
+    if (dels.length > 0) {
+      await c.query(
+        `UPDATE entities e SET deleted = true, data = NULL, version = u.version
+           FROM unnest($1::text[], $2::uuid[], $3::bigint[]) AS u(entity, id, version)
+          WHERE e.entity = u.entity AND e.id = u.id`,
+        [dels.map((r) => r.w.entity), dels.map((r) => r.w.id), dels.map((r) => r.version)],
+      );
+    }
   }
 }

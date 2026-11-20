@@ -1,21 +1,23 @@
 import { getMutator, type Key, type QueuedMutation, type Row } from '@fieldsync/sync-core';
+import { cachedParser } from '@/shared/lib/parse-cache';
 import { ticketSchema, type Ticket } from './types';
 
 type View = ReadonlyMap<string, Row>;
+
+const parseTicket = cachedParser(ticketSchema);
 
 export function selectTickets(view: View): Ticket[] {
   const out: Ticket[] = [];
   for (const [key, row] of view) {
     if (!key.startsWith('ticket/')) continue;
-    const parsed = ticketSchema.safeParse(row);
-    if (parsed.success) out.push(parsed.data);
+    const ticket = parseTicket(row);
+    if (ticket) out.push(ticket);
   }
   return out.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
 }
 
 export function selectTicket(view: View, id: string): Ticket | null {
-  const parsed = ticketSchema.safeParse(view.get(`ticket/${id}`));
-  return parsed.success ? parsed.data : null;
+  return parseTicket(view.get(`ticket/${id}`));
 }
 
 const keysRead = (m: QueuedMutation): Key[] => {

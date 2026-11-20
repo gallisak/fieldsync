@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { memo } from 'react';
 import { Badge } from '@/shared/ui/badge';
 import { RelativeTime } from '@/shared/ui/relative-time';
 import { TableCell, TableRow } from '@/shared/ui/table';
@@ -11,7 +12,7 @@ interface TicketRowProps {
   unsynced: boolean;
 }
 
-export function TicketRow({ ticket, siteName, unsynced }: TicketRowProps) {
+export const TicketRow = memo(function TicketRow({ ticket, siteName, unsynced }: TicketRowProps) {
   return (
     <TableRow>
       <TableCell className="font-medium">
@@ -35,4 +36,4 @@ export function TicketRow({ ticket, siteName, unsynced }: TicketRowProps) {
       </TableCell>
     </TableRow>
   );
-}
+});

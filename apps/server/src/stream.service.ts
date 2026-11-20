@@ -19,6 +19,8 @@ interface Subscriber {
 export class StreamService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(StreamService.name);
   private readonly subscribers = new Set<Subscriber>();
+  private readonly byUser = new Map<string, Set<Subscriber>>();
+  private readonly bySite = new Map<string, Set<Subscriber>>();
   private readonly refreshing = new Map<string, Promise<void>>();
   private timer?: NodeJS.Timeout;
   private closing = false;
@@ -42,6 +44,8 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     if (this.timer) clearInterval(this.timer);
     for (const sub of this.subscribers) sub.res.end();
     this.subscribers.clear();
+    this.byUser.clear();
+    this.bySite.clear();
   }
 
   add(userId: string, sites: Iterable<string>, res: Response): void {
@@ -53,10 +57,10 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
       return;
     }
     // A peer that vanished without closing its socket (network switch) still counts; the newest stream is live.
-    const open = [...this.subscribers].filter((s) => s.userId === userId);
+    const open = [...(this.byUser.get(userId) ?? [])];
     const excess = open.length + 1 - this.config.STREAM_MAX_PER_USER;
     for (const stale of excess > 0 ? open.slice(0, excess) : []) {
-      this.subscribers.delete(stale);
+      this.remove(stale);
       stale.res.end();
     }
 
@@ -67,9 +71,12 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
       'x-accel-buffering': 'no',
     });
     res.write('retry: 3000\n\n');
-    const sub: Subscriber = { userId, sites: new Set(sites), res, dirty: false };
+    const sub: Subscriber = { userId, sites: new Set(), res, dirty: false };
     this.subscribers.add(sub);
-    res.on('close', () => this.subscribers.delete(sub));
+    if (!this.byUser.has(userId)) this.byUser.set(userId, new Set());
+    this.byUser.get(userId)!.add(sub);
+    this.setSites(sub, sites);
+    res.on('close', () => this.remove(sub));
     // The sites were read before the subscriber existed, so a grant or revoke in between would not reach it.
     this.refreshUser(userId, false).catch((err: unknown) =>
       this.logger.error(`stream access refresh failed: ${(err as Error).message}`),
@@ -82,9 +89,9 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   }
 
   notify(siteIds: string[]): void {
-    for (const sub of this.subscribers) {
-      if (siteIds.some((s) => sub.sites.has(s))) this.poke(sub);
-    }
+    const reached = new Set<Subscriber>();
+    for (const site of siteIds) for (const sub of this.bySite.get(site) ?? []) reached.add(sub);
+    for (const sub of reached) this.poke(sub);
   }
 
   /** One at a time per user, so an older read never overwrites a newer one. */
@@ -100,13 +107,36 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async reloadSites(userId: string, poke: boolean): Promise<void> {
-    if (![...this.subscribers].some((s) => s.userId === userId)) return;
+    if (!this.byUser.has(userId)) return;
     const { rows } = await this.db.pool.query<AuthUser>(`SELECT id, role FROM users WHERE id = $1`, [userId]);
     const sites = rows[0] ? await this.access.accessibleSites(this.db.pool, rows[0]) : new Set<string>();
-    for (const sub of [...this.subscribers].filter((s) => s.userId === userId)) {
-      sub.sites = new Set(sites);
+    for (const sub of [...(this.byUser.get(userId) ?? [])]) {
+      this.setSites(sub, sites);
       if (poke) this.poke(sub);
     }
+  }
+
+  private setSites(sub: Subscriber, sites: Iterable<string>): void {
+    for (const site of sub.sites) this.unindex(site, sub);
+    sub.sites = new Set(sites);
+    for (const site of sub.sites) {
+      if (!this.bySite.has(site)) this.bySite.set(site, new Set());
+      this.bySite.get(site)!.add(sub);
+    }
+  }
+
+  private remove(sub: Subscriber): void {
+    if (!this.subscribers.delete(sub)) return;
+    for (const site of sub.sites) this.unindex(site, sub);
+    const own = this.byUser.get(sub.userId);
+    own?.delete(sub);
+    if (own?.size === 0) this.byUser.delete(sub.userId);
+  }
+
+  private unindex(site: string, sub: Subscriber): void {
+    const subs = this.bySite.get(site);
+    subs?.delete(sub);
+    if (subs?.size === 0) this.bySite.delete(site);
   }
 
   private poke(sub: Subscriber): void {
